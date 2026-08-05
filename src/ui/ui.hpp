@@ -1,0 +1,20 @@
+#pragma once
+// Panel entry points. One panel per translation unit so parallel work on the
+// UI never collides in a shared file.
+
+#include "ui/app_state.hpp"
+
+namespace chemcad::ui {
+
+void drawMenuBar(AppState&);        // ui/menu_bar.cpp
+void drawToolPalette(AppState&);    // ui/tool_palette.cpp
+void drawCanvas(AppState&);         // ui/canvas.cpp
+void drawPeriodicTable(AppState&);  // ui/periodic_table.cpp
+void drawPropertiesPanel(AppState&);// ui/properties_panel.cpp
+void drawReactionPlanner(AppState&);// ui/reaction_planner.cpp
+void drawStatusBar(AppState&);      // ui/status_bar.cpp
+
+// Applies the dark theme, sizing and fonts. Called once at startup.
+void applyTheme(float uiScale);
+
+}  // namespace chemcad::ui

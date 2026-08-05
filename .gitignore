@@ -1,0 +1,9 @@
+build/
+build-*/
+.cache/
+*.o
+*.so
+*.a
+compile_commands.json
+.DS_Store
+*.chemcad.bak
