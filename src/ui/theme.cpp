@@ -95,6 +95,9 @@ void applyTheme(float uiScale) {
   s.TabBorderSize = 0.0f;
   s.TabBarOverlineSize = 2.0f;
   s.WindowTitleAlign = ImVec2(0.5f, 0.5f);
+  // Docked panels don't expose the stock "Hide tab bar" menu: ChemCAD owns
+  // the layout and keeps panel titles consistently visible.
+  s.WindowMenuButtonPosition = ImGuiDir_None;
   s.SeparatorTextBorderSize = 1.0f;
   s.SeparatorTextPadding = ImVec2(16, 2);
   s.DockingSeparatorSize = 2.0f;

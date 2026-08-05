@@ -53,7 +53,9 @@ void hexagon(ImDrawList* dl, ImVec2 c, float radius, ImU32 col, float t) {
 void draw(ImDrawList* dl, Icon icon, ImVec2 centre, float size, ImU32 color,
           float thickness) {
   if (!dl || size <= 0.0f) return;
-  const float h = size * 0.5f;
+  // Glyph coordinates are normalized around ±0.4. Using `size` as the unit
+  // lets the drawing occupy ~80% of the requested box instead of only ~40%.
+  const float h = size;
   const float t = thickness > 0.0f ? thickness : std::max(1.4f, size * 0.078f);
 
   switch (icon) {

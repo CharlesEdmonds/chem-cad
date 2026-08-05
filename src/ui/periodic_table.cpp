@@ -46,6 +46,20 @@ ImVec4 categoryColor(const std::string& category) {
   return {0.55f, 0.60f, 0.65f, 1.0f};
 }
 
+const char* categoryDisplayName(const std::string& category) {
+  if (category == "alkali-metal") return "Alkali metal";
+  if (category == "alkaline-earth") return "Alkaline earth metal";
+  if (category == "transition-metal") return "Transition metal";
+  if (category == "post-transition") return "Post-transition metal";
+  if (category == "metalloid") return "Metalloid";
+  if (category == "nonmetal") return "Nonmetal";
+  if (category == "halogen") return "Halogen";
+  if (category == "noble-gas") return "Noble gas";
+  if (category == "lanthanide") return "Lanthanide";
+  if (category == "actinide") return "Actinide";
+  return "Unknown category";
+}
+
 void selectElement(AppState& st, const ElementData& element) {
   st.currentElement = element.z;
   st.tool = Tool::Atom;
@@ -54,25 +68,88 @@ void selectElement(AppState& st, const ElementData& element) {
 
 void elementTooltip(const ElementData& element) {
   ImGui::BeginTooltip();
+  const float fs = ImGui::GetFontSize();
+  const float tile = fs * 2.75f;
+  const ImVec4 category = categoryColor(element.category);
+
+  // Large, category-tinted symbol tile.
+  const ImVec2 tileMin = ImGui::GetCursorScreenPos();
+  ImGui::Dummy(ImVec2(tile, tile));
+  const ImVec2 tileMax(tileMin.x + tile, tileMin.y + tile);
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(tileMin, tileMax,
+                    style::mix(style::col::BgSurface, category, 0.18f),
+                    style::metrics().radiusMd);
+  dl->AddRect(tileMin, tileMax, style::u32(category, 0.80f),
+              style::metrics().radiusMd, 0, style::metrics().hairline);
+  ImFont* symbolFont =
+      style::fonts::semibold() ? style::fonts::semibold() : ImGui::GetFont();
+  const float symbolSize = fs * 1.42f;
+  const ImVec2 symbolExtent =
+      symbolFont->CalcTextSizeA(symbolSize, 10000.0f, 0.0f,
+                                element.symbol.c_str());
+  dl->AddText(symbolFont, symbolSize,
+              ImVec2(tileMin.x + (tile - symbolExtent.x) * 0.5f,
+                     tileMin.y + (tile - symbolExtent.y) * 0.5f),
+              style::mix(category, style::col::Text, 0.45f),
+              element.symbol.c_str());
+
+  // Name, atomic number and human-readable category.
+  ImGui::SameLine(0.0f, style::metrics().gap);
+  ImGui::BeginGroup();
   const bool pushed = style::pushFont(style::fonts::semibold());
-  ImGui::Text("%s", element.name.c_str());
+  ImGui::TextUnformatted(element.name.c_str());
   style::popFont(pushed);
+  ImGui::TextDisabled("ELEMENT  %u", static_cast<unsigned>(element.z));
+  widgets::badge(categoryDisplayName(element.category), category);
+  ImGui::EndGroup();
+
+  ImGui::Spacing();
   ImGui::Separator();
-  ImGui::Text("Symbol: %s", element.symbol.c_str());
-  ImGui::Text("Atomic number: %u", static_cast<unsigned>(element.z));
-  ImGui::Text("Standard atomic weight: %.6g", element.mass);
-  ImGui::TextColored(categoryColor(element.category), "Category: %s",
-                     element.category.c_str());
+  ImGui::Spacing();
+
+  // Aligned stat rows are easier to scan than a stack of prose labels.
+  constexpr ImGuiTableFlags tableFlags =
+      ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings;
+  if (ImGui::BeginTable("##element_stats", 2, tableFlags)) {
+    ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthStretch,
+                            0.68f);
+    ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch,
+                            0.32f);
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("Atomic number");
+    ImGui::TableNextColumn();
+    const bool monoZ = style::pushFont(style::fonts::mono());
+    ImGui::Text("%u", static_cast<unsigned>(element.z));
+    style::popFont(monoZ);
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("Standard atomic weight");
+    ImGui::TableNextColumn();
+    const bool monoMass = style::pushFont(style::fonts::mono());
+    ImGui::Text("%.6g", element.mass);
+    style::popFont(monoMass);
+    ImGui::EndTable();
+  }
+
+  ImGui::Spacing();
+  ImGui::TextColored(style::col::Accent, "Click");
+  ImGui::SameLine(0.0f, 4.0f);
+  ImGui::TextDisabled("to select and switch to the Atom tool");
   ImGui::EndTooltip();
 }
 
 // One element tile: behaviour via an invisible button, everything else drawn.
-void drawTile(ImDrawList* dl, ImVec2 min, float cell, const ElementData& element,
+void drawTile(ImDrawList* dl, ImVec2 min, ImVec2 size, const ElementData& element,
               bool selected, bool match, float hoverT) {
   const style::Metrics& m = style::metrics();
   const float alpha = match ? 1.0f : 0.20f;
+  const float cell = std::min(size.x, size.y);
   const float radius = std::min(m.radiusMd, cell * 0.22f);
-  const ImVec2 max(min.x + cell, min.y + cell);
+  const ImVec2 max(min.x + size.x, min.y + size.y);
   const ImVec4 cat = categoryColor(element.category);
 
   const ImU32 fill = style::mix(style::col::BgSurface, cat, 0.05f + 0.13f * hoverT, alpha);
@@ -98,31 +175,32 @@ void drawTile(ImDrawList* dl, ImVec2 min, float cell, const ElementData& element
 
   ImFont* font = ImGui::GetFont();
   const float fs = ImGui::GetFontSize();
-  const float symbolSize = std::min(fs, cell * 0.46f);
+  const float symbolSize = std::min(fs, size.x * 0.56f);
   const ImU32 symbolCol =
       selected ? style::u32(style::col::Accent, alpha)
                : style::mix(cat, style::col::Text, 0.42f + 0.25f * hoverT, alpha);
   const ImVec2 symbolExtent = font->CalcTextSizeA(symbolSize, 10000.0f, 0.0f,
                                                   element.symbol.c_str());
   dl->AddText(font, symbolSize,
-              ImVec2(min.x + (cell - symbolExtent.x) * 0.5f,
-                     min.y + (cell - symbolExtent.y) * 0.5f - cell * 0.04f),
+              ImVec2(min.x + (size.x - symbolExtent.x) * 0.5f,
+                     min.y + (size.y - symbolExtent.y) * 0.5f - size.y * 0.035f),
               symbolCol, element.symbol.c_str());
 
   // Atomic number, top-left.
-  if (cell >= fs * 1.25f) {
+  if (size.x >= fs * 1.25f) {
     char zbuf[8];
     std::snprintf(zbuf, sizeof(zbuf), "%u", static_cast<unsigned>(element.z));
-    const float zSize = std::min(fs * 0.62f, cell * 0.26f);
-    dl->AddText(font, zSize, ImVec2(min.x + cell * 0.10f, min.y + cell * 0.07f),
+    const float zSize = std::min(fs * 0.62f, size.x * 0.26f);
+    dl->AddText(font, zSize, ImVec2(min.x + size.x * 0.10f, min.y + size.y * 0.07f),
                 style::u32(style::col::TextFaint, alpha), zbuf);
   }
 }
 
 // Ln/An spacer tile: dashed outline, dim label.
-void drawPlaceholder(ImDrawList* dl, ImVec2 min, float cell, const char* label) {
+void drawPlaceholder(ImDrawList* dl, ImVec2 min, ImVec2 size, const char* label) {
   const style::Metrics& m = style::metrics();
-  const ImVec2 max(min.x + cell, min.y + cell);
+  const float cell = std::min(size.x, size.y);
+  const ImVec2 max(min.x + size.x, min.y + size.y);
   const ImU32 col = style::u32(style::col::TextFaint, 0.55f);
   // Dashed square: four dashed edges.
   const float dash = cell * 0.14f;
@@ -145,10 +223,11 @@ void drawPlaceholder(ImDrawList* dl, ImVec2 min, float cell, const char* label) 
   dashed(ImVec2(cmin.x, cmax.y), cmin);
 
   ImFont* font = ImGui::GetFont();
-  const float size = std::min(ImGui::GetFontSize() * 0.8f, cell * 0.4f);
-  const ImVec2 extent = font->CalcTextSizeA(size, 10000.0f, 0.0f, label);
-  dl->AddText(font, size,
-              ImVec2(min.x + (cell - extent.x) * 0.5f, min.y + (cell - extent.y) * 0.5f),
+  const float fontSize = std::min(ImGui::GetFontSize() * 0.8f, cell * 0.4f);
+  const ImVec2 extent = font->CalcTextSizeA(fontSize, 10000.0f, 0.0f, label);
+  dl->AddText(font, fontSize,
+              ImVec2(min.x + (size.x - extent.x) * 0.5f,
+                     min.y + (size.y - extent.y) * 0.5f),
               col, label);
 }
 
@@ -189,22 +268,30 @@ void drawPeriodicTable(AppState& st) {
   }
   if (enter && matched.size() == 1) selectElement(st, *matched.front());
 
-  // All 18 groups must be reachable without horizontal scrolling: C, N and O
-  // are the most-used tiles in the app, and they sit in the right-hand
-  // groups. Size the cells from the space actually available. The content
-  // width is exactly 18 cells + 17 gaps — an 18th gap would always overflow.
-  const float gap = std::max(2.0f, ImGui::GetStyle().ItemSpacing.x * 0.35f);
-  const float avail = ImGui::GetContentRegionAvail().x;
-  const float preferred = std::max(30.0f, ImGui::GetFontSize() * 2.05f);
-  const float fitted = (avail - 17.0f * gap) / 18.0f;
-  const float cell = std::clamp(fitted, 18.0f, preferred);
-  const float step = cell + gap;
-  const float width = 18.0f * cell + 17.0f * gap;
-  const float height = 10.0f * cell + 9.0f * gap;
+  // Fit all 18 groups horizontally, then use the panel's available height to
+  // make the tiles taller. Element tiles are deliberately portrait-shaped in
+  // roomy panels: the table occupies the box instead of leaving a large dead
+  // area, while narrow docks still keep every group visible.
+  const ImVec2 avail = ImGui::GetContentRegionAvail();
+  const float gapX = std::max(1.0f, ImGui::GetStyle().ItemSpacing.x * 0.18f);
+  const float gapY = std::max(2.0f, ImGui::GetStyle().ItemSpacing.y * 0.32f);
+  const float preferredW = std::max(32.0f, ImGui::GetFontSize() * 2.10f);
+  const float fittedW = (avail.x - 17.0f * gapX) / 18.0f;
+  const float cellW = std::clamp(fittedW, 15.0f, preferredW);
+  const float fittedH = (avail.y - 9.0f * gapY) / 10.0f;
+  const float cellH = std::clamp(fittedH, cellW, cellW * 1.65f);
+  const float stepX = cellW + gapX;
+  const float stepY = cellH + gapY;
+  const float width = 18.0f * cellW + 17.0f * gapX;
+  const float height = 10.0f * cellH + 9.0f * gapY;
 
   ImGui::SetNextWindowContentSize(ImVec2(width, height));
-  if (!ImGui::BeginChild("##ptable_grid", ImVec2(0, 0), ImGuiChildFlags_None,
-                         ImGuiWindowFlags_HorizontalScrollbar)) {
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  const bool visible = ImGui::BeginChild(
+      "##ptable_grid", ImVec2(0, 0), ImGuiChildFlags_None,
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+  ImGui::PopStyleVar();
+  if (!visible) {
     ImGui::EndChild();
     return;
   }
@@ -212,13 +299,13 @@ void drawPeriodicTable(AppState& st) {
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const ImVec2 origin = ImGui::GetCursorPos();
   auto placeholderAt = [&](int group, int period, const char* label, const char* tooltip) {
-    const ImVec2 pos(origin.x + (group - 1) * step, origin.y + (period - 1) * step);
+    const ImVec2 pos(origin.x + (group - 1) * stepX, origin.y + (period - 1) * stepY);
     ImGui::SetCursorPos(pos);
     ImGui::PushID(label);
-    ImGui::InvisibleButton("##placeholder", ImVec2(cell, cell));
+    ImGui::InvisibleButton("##placeholder", ImVec2(cellW, cellH));
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tooltip);
     const ImVec2 screen = ImGui::GetItemRectMin();
-    drawPlaceholder(dl, screen, cell, label);
+    drawPlaceholder(dl, screen, ImVec2(cellW, cellH), label);
     ImGui::PopID();
   };
   placeholderAt(3, 6, "Ln", "Lanthanides (57-71), shown below");
@@ -238,17 +325,17 @@ void drawPeriodicTable(AppState& st) {
     }
 
     const bool match = matches(element, query);
-    const ImVec2 pos(origin.x + (column - 1) * step, origin.y + (row - 1) * step);
+    const ImVec2 pos(origin.x + (column - 1) * stepX, origin.y + (row - 1) * stepY);
     ImGui::SetCursorPos(pos);
     ImGui::PushID(static_cast<int>(element.z));
-    ImGui::InvisibleButton("##tile", ImVec2(cell, cell));
+    ImGui::InvisibleButton("##tile", ImVec2(cellW, cellH));
     const bool clicked = ImGui::IsItemClicked();
     const bool hovered = ImGui::IsItemHovered();
     const float t = widgets::hoverT(ImGui::GetItemID(), hovered);
     const ImVec2 screen = ImGui::GetItemRectMin();
 
     const bool selected = st.currentElement == element.z;
-    drawTile(dl, screen, cell, element, selected, match, t);
+    drawTile(dl, screen, ImVec2(cellW, cellH), element, selected, match, t);
 
     if (clicked) selectElement(st, element);
     if (hovered) elementTooltip(element);

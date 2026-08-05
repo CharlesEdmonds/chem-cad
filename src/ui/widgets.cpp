@@ -99,7 +99,8 @@ bool iconButton(const char* id, icons::Icon icon, ImVec2 size, bool selected,
   const ImVec2 max(min.x + size.x, min.y + size.y);
   const style::Metrics& m = style::metrics();
   const ImVec2 centre((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
-  const float glyph = std::min(m.iconSize, std::min(size.x, size.y) * 0.62f);
+  const float glyph =
+      std::min(m.iconSize * 1.25f, std::min(size.x, size.y) * 0.80f);
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
   ImU32 glyphColor;
