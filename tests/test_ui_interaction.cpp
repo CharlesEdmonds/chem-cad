@@ -84,6 +84,18 @@ void clickAt(ui::AppState& st, float x, float y) {
   canvasFrame(st);
 }
 
+// Same gesture, but driving an arbitrary panel window.
+void panelClickAt(ui::AppState& st, void (*draw)(ui::AppState&), const char* title,
+                  float x, float y) {
+  mouseTo(x, y);
+  panelFrame(st, draw, title);
+  ImGui::GetIO().AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+  panelFrame(st, draw, title);
+  ImGui::GetIO().AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+  panelFrame(st, draw, title);
+  panelFrame(st, draw, title);
+}
+
 void dragFromTo(ui::AppState& st, float x0, float y0, float x1, float y1) {
   mouseTo(x0, y0);
   canvasFrame(st);
@@ -316,6 +328,64 @@ TEST_CASE("properties panel reports formula and mass for the sketch") {
   CHECK(st.props.formula == "C2H6O");
   CHECK(st.props.mw == doctest::Approx(46.0419).epsilon(0.001));
   CHECK(chem::canonicalize(st.props.smiles) == chem::canonicalize("CCO"));
+}
+
+TEST_CASE("tool palette icon grid switches the active tool") {
+  HeadlessImGui gui;
+  ui::AppState st;
+  st.tool = ui::Tool::Select;
+  // The 2-column grid starts at the window's content origin (8,8); cells are
+  // 66px squares (cap = 3 * iconSize at default scale), rows stride 66+4.
+  panelFrame(st, &ui::drawToolPalette, "Tools");
+
+  // Eraser is row 0, column 1: grid is centred in the 700px window.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 387.0f, 41.0f);
+  CHECK(st.tool == ui::Tool::Eraser);
+
+  // Bond is row 1, column 0.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 313.0f, 111.0f);
+  CHECK(st.tool == ui::Tool::Bond);
+}
+
+TEST_CASE("bond order icon row switches the bond order") {
+  HeadlessImGui gui;
+  ui::AppState st;
+  panelFrame(st, &ui::drawToolPalette, "Tools");
+  REQUIRE(st.currentOrder == core::BondOrder::Single);
+
+  // Four cells share the row after the Bond section header; double is cell 1.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 263.0f, 329.0f);
+  CHECK(st.currentOrder == core::BondOrder::Double);
+}
+
+TEST_CASE("clicking a periodic table tile arms the atom tool with that element") {
+  HeadlessImGui gui;
+  ui::AppState st;
+  panelFrame(st, &ui::drawPeriodicTable, "Periodic Table");
+
+  // Hydrogen is the top-left tile; its position is pinned at the grid origin
+  // regardless of how the cell-fitting math resolves.
+  panelClickAt(st, &ui::drawPeriodicTable, "Periodic Table", 26.0f, 49.0f);
+  CHECK(st.currentElement == 1);
+  CHECK(st.tool == ui::Tool::Atom);
+}
+
+TEST_CASE("periodic table search selects a unique match on Enter") {
+  HeadlessImGui gui;
+  ui::AppState st;
+  panelFrame(st, &ui::drawPeriodicTable, "Periodic Table");
+
+  // Focus the search field, type, hit Enter: the unique match is selected.
+  panelClickAt(st, &ui::drawPeriodicTable, "Periodic Table", 350.0f, 17.0f);
+  ImGui::GetIO().AddInputCharactersUTF8("tungsten");
+  panelFrame(st, &ui::drawPeriodicTable, "Periodic Table");
+  ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, true);
+  panelFrame(st, &ui::drawPeriodicTable, "Periodic Table");
+  ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, false);
+  panelFrame(st, &ui::drawPeriodicTable, "Periodic Table");
+
+  CHECK(st.currentElement == 74);
+  CHECK(st.tool == ui::Tool::Atom);
 }
 
 TEST_CASE("reaction planner renders routes with their side products") {
