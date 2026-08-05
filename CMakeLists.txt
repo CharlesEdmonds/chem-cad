@@ -19,6 +19,7 @@ include(cmake/Dependencies.cmake)
 # Dev builds read them straight from the source tree; the env var
 # CHEMCAD_DATA_DIR overrides at runtime for installed/relocated copies.
 set(CHEMCAD_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
+set(CHEMCAD_ASSETS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 
 add_subdirectory(src/core)
 add_subdirectory(src/chem)

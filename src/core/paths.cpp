@@ -5,6 +5,9 @@
 #ifndef CHEMCAD_DATA_DIR
 #define CHEMCAD_DATA_DIR "data"
 #endif
+#ifndef CHEMCAD_ASSETS_DIR
+#define CHEMCAD_ASSETS_DIR "assets"
+#endif
 
 namespace chemcad::core {
 namespace fs = std::filesystem;
@@ -12,6 +15,11 @@ namespace fs = std::filesystem;
 fs::path dataDir() {
   if (const char* env = std::getenv("CHEMCAD_DATA_DIR"); env && *env) return fs::path(env);
   return fs::path(CHEMCAD_DATA_DIR);
+}
+
+fs::path assetsDir() {
+  if (const char* env = std::getenv("CHEMCAD_ASSETS_DIR"); env && *env) return fs::path(env);
+  return fs::path(CHEMCAD_ASSETS_DIR);
 }
 
 fs::path cacheDir() {

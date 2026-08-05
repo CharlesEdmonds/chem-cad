@@ -10,6 +10,10 @@ namespace chemcad::core {
 // Compile-time source path, overridable at runtime with $CHEMCAD_DATA_DIR.
 std::filesystem::path dataDir();
 
+// Bundled read-only assets (assets/fonts/*.ttf).
+// Compile-time source path, overridable at runtime with $CHEMCAD_ASSETS_DIR.
+std::filesystem::path assetsDir();
+
 // Writable per-user cache (~/.cache/chemcad), created on demand.
 std::filesystem::path cacheDir();
 

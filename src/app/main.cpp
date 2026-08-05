@@ -20,6 +20,7 @@
 #include "chem/bridge.hpp"
 #include "core/paths.hpp"
 #include "ui/app_state.hpp"
+#include "ui/theme.hpp"
 #include "ui/ui.hpp"
 
 namespace {
@@ -141,7 +142,7 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
   ImGuiID center = dockspaceId;
   // The tool column holds bond-order/stereo/ring combos, and the right dock has
   // to fit all 18 periodic-table groups, so neither can be a thin strip.
-  const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.075f, nullptr, &center);
+  const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.105f, nullptr, &center);
   const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.30f, nullptr, &center);
   ImGuiID rightBottom = right;
   const ImGuiID rightTop =
@@ -186,6 +187,7 @@ int main(int, char**) {
   io.IniFilename = iniPath.c_str();
 
   chemcad::ui::applyTheme(1.25f);
+  chemcad::ui::style::fonts::load();
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init("#version 330");
 
@@ -274,7 +276,7 @@ int main(int, char**) {
     ImGui::Render();
     glfwGetFramebufferSize(window, &fbw, &fbh);
     glViewport(0, 0, fbw, fbh);
-    glClearColor(0.07f, 0.08f, 0.09f, 1.0f);
+    glClearColor(0.043f, 0.055f, 0.075f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
