@@ -7,9 +7,11 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <cstring>
 #include <string>
 
 #include "imgui.h"
+#include "imgui_internal.h"
 
 #include "chem/bridge.hpp"
 #include "core/model.hpp"
@@ -368,6 +370,25 @@ TEST_CASE("clicking a periodic table tile arms the atom tool with that element")
   panelClickAt(st, &ui::drawPeriodicTable, "Periodic Table", 26.0f, 49.0f);
   CHECK(st.currentElement == 1);
   CHECK(st.tool == ui::Tool::Atom);
+}
+
+TEST_CASE("hovering a tool button fires its tooltip after the hover delay") {
+  HeadlessImGui gui;
+  ui::AppState st;
+  // Park the cursor over the eraser cell and let the hover/stationary delays
+  // elapse (0.40s + 0.15s at 1/60s per frame), then look for the tooltip.
+  mouseTo(387.0f, 41.0f);
+  for (int i = 0; i < 60; ++i) panelFrame(st, &ui::drawToolPalette, "Tools");
+
+  bool tooltipActive = false;
+  ImGuiContext& g = *ImGui::GetCurrentContext();
+  for (ImGuiWindow* window : g.Windows) {
+    if (window->WasActive && std::strstr(window->Name, "Tooltip") != nullptr) {
+      tooltipActive = true;
+      break;
+    }
+  }
+  CHECK(tooltipActive);
 }
 
 TEST_CASE("periodic table search selects a unique match on Enter") {
