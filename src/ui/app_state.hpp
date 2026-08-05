@@ -160,6 +160,10 @@ struct AppState {
   // the buffer swap, which is the only moment the canvas pixels exist.
   std::optional<std::string> pendingPngExport;
 
+  // Display terminal single-bonded carbons as CH3 instead of relying entirely
+  // on skeletal-notation line ends. View menu can restore the compact form.
+  bool showTerminalMethylLabels = true;
+
   void touch() {
     ++docRevision;
     dirty = true;

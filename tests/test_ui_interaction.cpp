@@ -176,6 +176,53 @@ TEST_CASE("bond tool draws and extends a skeleton") {
   CHECK(std::fabs(cross) > 0.1f);
 }
 
+TEST_CASE("M preset attaches a visible methyl-ready terminal carbon") {
+  HeadlessImGui gui;
+  ui::AppState st;
+  st.tool = ui::Tool::Bond;
+  canvasFrame(st);
+  clickAt(st, 700.0f, 500.0f);
+  REQUIRE(totalAtoms(st) == 2);
+
+  // M always restores a plain single bond, even after another bond/stereo mode.
+  st.tool = ui::Tool::Chain;
+  st.currentOrder = core::BondOrder::Triple;
+  st.currentStereo = core::BondStereo::Wedge;
+  const ImVec2 tip = screenOf(st, 0, 1);
+  mouseTo(tip.x, tip.y);
+  canvasFrame(st);
+  REQUIRE(st.hoverAtom.valid());
+  pressKey(st, ImGuiKey_M);
+  CHECK(st.tool == ui::Tool::Bond);
+  CHECK(st.currentOrder == core::BondOrder::Single);
+  CHECK(st.currentStereo == core::BondStereo::None);
+
+  clickAt(st, tip.x, tip.y);
+  REQUIRE(totalAtoms(st) == 3);
+  REQUIRE(totalBonds(st) == 2);
+  const core::Molecule& propane = st.doc.molecules[0];
+  const core::Atom& methyl = propane.atoms().back();
+  CHECK(chem::implicitHCount(propane, methyl.id) == 3);
+  CHECK(chem::canonicalize(chem::toSmiles(propane)) == chem::canonicalize("CCC"));
+  CHECK(st.statusMessage == "Added methyl group (CH3)");
+}
+
+TEST_CASE("terminal methyl labels can be shown or hidden") {
+  HeadlessImGui gui;
+  ui::AppState st;
+  st.doc.molecules.push_back(chem::fromSmiles("CC"));
+  st.touch();
+
+  st.showTerminalMethylLabels = false;
+  canvasFrame(st);
+  const int skeletalVertices = ImGui::GetDrawData()->TotalVtxCount;
+
+  st.showTerminalMethylLabels = true;
+  canvasFrame(st);
+  const int labelledVertices = ImGui::GetDrawData()->TotalVtxCount;
+  CHECK(labelledVertices > skeletalVertices);
+}
+
 TEST_CASE("hovering an atom and pressing an element key retypes it") {
   HeadlessImGui gui;
   ui::AppState st;

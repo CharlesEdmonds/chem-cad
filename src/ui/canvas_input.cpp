@@ -450,6 +450,7 @@ void finishBondGesture(AppState& st, Runtime& rt) {
       st.statusMessage = "Those atoms are already bonded";
       return;
     }
+    const bool createdTerminal = !target.valid();
     st.snapshot();
     core::AtomId targetId = target.id;
     if (!target.valid()) {
@@ -460,6 +461,8 @@ void finishBondGesture(AppState& st, Runtime& rt) {
     }
     addStyledBond(*mol, rt.downAtom.id, targetId, st.currentOrder, st.currentStereo);
     markChanged(st);
+    if (createdTerminal && st.currentOrder == core::BondOrder::Single)
+      st.statusMessage = "Added methyl group (CH3)";
     return;
   }
 
@@ -633,6 +636,16 @@ void handleKeyboard(AppState& st) {
   if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
       ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
     deleteSelection(st);
+    return;
+  }
+
+  // M is a direct methyl-building preset: it restores a plain single bond, so
+  // clicking an atom immediately sprouts a terminal CH3. Drag to choose angle.
+  if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_M, false)) {
+    st.tool = Tool::Bond;
+    st.currentOrder = core::BondOrder::Single;
+    st.currentStereo = core::BondStereo::None;
+    st.statusMessage = "Methyl preset: click an atom to attach CH3; drag to choose direction";
     return;
   }
 

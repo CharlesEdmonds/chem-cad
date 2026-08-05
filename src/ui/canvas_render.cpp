@@ -92,7 +92,16 @@ LabelData makeLabel(AppState& st, Runtime& rt, int molIndex, const core::Molecul
                     const core::Atom& atom) {
   LabelData label;
   const int degree = mol.degree(atom.id);
-  label.visible = atom.atomicNumber != 6 || atom.charge != 0 || atom.isotope != 0 || degree == 0;
+  const bool conventionalLabel =
+      atom.atomicNumber != 6 || atom.charge != 0 || atom.isotope != 0 || degree == 0;
+  const bool methylCandidate = st.showTerminalMethylLabels && atom.atomicNumber == 6 &&
+                               atom.charge == 0 && atom.isotope == 0 && degree == 1;
+  if (!conventionalLabel && !methylCandidate) return label;
+
+  int hydrogens = implicitHydrogens(st, rt, molIndex, mol, atom.id);
+  if (atom.atomicNumber == 6 && degree == 0 && atom.explicitH < 0 && hydrogens == 0)
+    hydrogens = 4;
+  label.visible = conventionalLabel || (methylCandidate && hydrogens == 3);
   if (!label.visible) return label;
 
   std::string symbol = "?";
@@ -101,8 +110,6 @@ LabelData makeLabel(AppState& st, Runtime& rt, int molIndex, const core::Molecul
   } catch (const std::exception& error) {
     st.statusMessage = std::string("Element display: ") + error.what();
   }
-  int hydrogens = implicitHydrogens(st, rt, molIndex, mol, atom.id);
-  if (atom.atomicNumber == 6 && degree == 0 && atom.explicitH < 0 && hydrogens == 0) hydrogens = 4;
 
   label.fontSize = std::clamp(ImGui::GetFontSize() * std::sqrt(st.cam.zoom), 12.0f, 32.0f);
   label.smallSize = label.fontSize * 0.68f;

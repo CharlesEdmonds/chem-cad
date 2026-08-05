@@ -47,6 +47,15 @@ proportions — default 1.25, override with `CHEMCAD_UI_SCALE` (0.5–3.0):
 CHEMCAD_UI_SCALE=1.5 ./build/chemcad
 ```
 
+### Drawing methyl groups
+
+In skeletal notation an unlabeled terminal line end is a carbon with enough
+implicit hydrogens to satisfy valence—on a single bond, that is `CH3`. ChemCAD
+shows those terminal carbons as `CH3` by default so the structure is explicit;
+disable **View → Show terminal CH3 labels** for traditional compact notation.
+With the Bond tool, click an atom to attach a methyl group or drag to choose its
+direction. Press `M` at any time to restore the methyl-ready single-bond preset.
+
 ## Layout
 
 | Area | What it does |

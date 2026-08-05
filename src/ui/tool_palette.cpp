@@ -24,8 +24,8 @@ constexpr std::array kTools{
               "Drag a box around atoms and bonds to select them"},
     ToolEntry{Tool::Eraser, icons::Icon::Eraser, "Eraser", "E",
               "Click an atom or bond to delete it"},
-    ToolEntry{Tool::Bond, icons::Icon::Bond, "Bond", "B",
-              "Click or drag to draw a bond"},
+    ToolEntry{Tool::Bond, icons::Icon::Bond, "Bond", "B / M",
+              "Click an atom to attach CH3; drag to place or connect carbon. M resets a plain methyl-ready bond"},
     ToolEntry{Tool::Chain, icons::Icon::Chain, "Chain", "K",
               "Drag to draw a zig-zag carbon chain"},
     ToolEntry{Tool::RingTemplate, icons::Icon::Ring, "Ring template", "R",
@@ -143,7 +143,7 @@ void drawToolPalette(AppState& st) {
 
   drawToolGrid(st, avail);
 
-  widgets::sectionHeader("Bond");
+  widgets::sectionHeader("Bond  ·  M = CH3");
   drawIconRow(
       "##order", kOrders, avail, &OrderEntry::icon, &OrderEntry::name,
       [](const OrderEntry& e, const AppState& s) { return s.currentOrder == e.order; },

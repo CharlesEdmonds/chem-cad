@@ -48,6 +48,28 @@ std::string hoverDescription(AppState& st) {
   return "No item hovered";
 }
 
+std::string toolHint(const AppState& st) {
+  switch (st.tool) {
+    case Tool::Bond:
+      return "Bond: click an atom to attach CH3; drag to place or connect carbon (M preset)";
+    case Tool::Chain:
+      return "Chain: drag from an atom or empty space to draw a carbon chain";
+    case Tool::RingTemplate:
+      return "Ring: click the canvas or an atom to stamp the selected ring";
+    case Tool::Atom:
+      return "Atom: click to place or retype the selected element";
+    case Tool::Eraser:
+      return "Eraser: click an atom or bond to remove it";
+    case Tool::ChargePlus:
+      return "Positive charge: click an atom to increase formal charge";
+    case Tool::ChargeMinus:
+      return "Negative charge: click an atom to decrease formal charge";
+    case Tool::Select:
+      return "Select: click or drag around atoms and bonds";
+  }
+  return "Choose a tool, then draw in the Sketch canvas";
+}
+
 // Thin vertical hairline between segments.
 void divider() {
   ImGui::SameLine(0.0f, 10.0f);
@@ -78,9 +100,9 @@ void drawStatusBar(AppState& st) {
         style::u32(style::col::Border), style::metrics().hairline);
 
     if (ImGui::BeginMenuBar()) {
-      const char* message = st.statusMessage.empty()
-                                ? "Hint: choose a tool, then draw in the Sketch canvas"
-                                : st.statusMessage.c_str();
+      const std::string idleMessage = toolHint(st);
+      const char* message =
+          st.statusMessage.empty() ? idleMessage.c_str() : st.statusMessage.c_str();
       ImGui::TextUnformatted(message);
       divider();
 

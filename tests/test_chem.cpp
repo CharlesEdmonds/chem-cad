@@ -55,6 +55,16 @@ TEST_CASE("properties report formula mass and rings") {
   CHECK(benzene.rings == 1);
 }
 
+TEST_CASE("terminal single-bonded carbons are methyl groups") {
+  const core::Molecule ethane = chem::fromSmiles("CC");
+  REQUIRE(ethane.atomCount() == 2);
+  for (const core::Atom& atom : ethane.atoms()) {
+    CHECK(atom.atomicNumber == 6);
+    CHECK(ethane.degree(atom.id) == 1);
+    CHECK(chem::implicitHCount(ethane, atom.id) == 3);
+  }
+}
+
 TEST_CASE("invalid valence is translated to ChemError") {
   core::Molecule molecule;
   const core::AtomId center = molecule.addAtom({});
