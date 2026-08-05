@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <string>
 
+#include "ui/theme.hpp"
+
 namespace chemcad::ui {
 namespace {
 
@@ -193,12 +195,13 @@ bool moleculeThumbButton(const char* id, const core::Molecule& mol, ImVec2 size)
   const bool hovered = ImGui::IsItemHovered();
   const ImVec2 max(min.x + size.x, min.y + size.y);
   ImDrawList* dl = ImGui::GetWindowDrawList();
+  const float radius = style::metrics().radiusMd;
   const ImU32 background =
       ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
   const ImU32 border =
-      ImGui::GetColorU32(hovered ? ImGuiCol_ButtonHovered : ImGuiCol_Border);
-  dl->AddRectFilled(min, max, background, 4.0f);
-  dl->AddRect(min, max, border, 4.0f, 0, hovered ? 2.0f : 1.0f);
+      hovered ? style::u32(style::col::Accent, 0.75f) : style::u32(style::col::Border);
+  dl->AddRectFilled(min, max, background, radius);
+  dl->AddRect(min, max, border, radius, 0, hovered ? 1.6f : 1.0f);
   drawMoleculeThumb(dl, mol, ImVec2(min.x + 2.0f, min.y + 2.0f),
                     ImVec2(max.x - 2.0f, max.y - 2.0f));
   return clicked;

@@ -10,8 +10,11 @@
 #include "chem/bridge.hpp"
 #include "naming/naming.hpp"
 #include "rxn/engine.hpp"
+#include "ui/icons.hpp"
 #include "ui/mol_thumb.hpp"
+#include "ui/theme.hpp"
 #include "ui/ui.hpp"
+#include "ui/widgets.hpp"
 
 namespace chemcad::ui {
 namespace {
@@ -20,7 +23,7 @@ namespace {
 // UI scale by default, and hardcoded widths clip their own button labels.
 inline float uiScale() { return ImGui::GetFontSize() / 13.0f; }
 inline float materialWidth() { return 230.0f * uiScale(); }
-inline float materialHeight() { return 210.0f * uiScale(); }
+inline float materialHeight() { return 228.0f * uiScale(); }
 inline ImVec2 routeThumbSize() { return ImVec2(88.0f * uiScale(), 66.0f * uiScale()); }
 // Width that fits `label` inside a regular framed button.
 inline float buttonWidthFor(const char* label) {
@@ -42,10 +45,14 @@ int resizeStringInput(ImGuiInputTextCallbackData* data) {
 }
 
 bool stringInputWithHint(const char* label, const char* hint, std::string& value,
-                         ImGuiInputTextFlags flags) {
+                         ImGuiInputTextFlags flags, bool mono = false) {
   flags |= ImGuiInputTextFlags_CallbackResize;
-  return ImGui::InputTextWithHint(label, hint, value.data(), value.capacity() + 1, flags,
-                                  resizeStringInput, &value);
+  const bool pushed = mono ? style::pushFont(style::fonts::mono()) : false;
+  const bool result = ImGui::InputTextWithHint(label, hint, value.data(),
+                                               value.capacity() + 1, flags,
+                                               resizeStringInput, &value);
+  style::popFont(pushed);
+  return result;
 }
 
 MaterialBox* materialAt(AppState& st, bool target, int startIndex) {
@@ -190,51 +197,79 @@ void lookupName(AppState& st, bool target, int startIndex, MaterialBox& box) {
 
 bool materialBoxWidget(AppState& st, MaterialBox& box, bool target, int startIndex) {
   bool remove = false;
-  ImGui::BeginChild("##material_box", ImVec2(materialWidth(), materialHeight()),
-                    ImGuiChildFlags_Borders);
+  const ImVec2 cardSize(materialWidth(), materialHeight());
+  if (!widgets::beginCard("##material_box", cardSize)) return false;
 
+  const float innerWidth = ImGui::GetContentRegionAvail().x;
   const char* heading = target ? "PRODUCT" : "STARTING MATERIAL";
-  ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "%s", heading);
+  const ImVec4 headingColor = target ? style::col::Accent : style::col::TextDim;
+
+  // Header row: accent tick + label, close chip on the right for starts.
+  const float fs = ImGui::GetFontSize();
+  {
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(innerWidth, fs));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float tickW = std::max(2.0f, fs * 0.16f);
+    const float tickH = fs * 0.85f;
+    const float tickY = pos.y + (fs - tickH) * 0.5f + 1.0f;
+    dl->AddRectFilled(ImVec2(pos.x, tickY), ImVec2(pos.x + tickW, tickY + tickH),
+                      style::u32(headingColor), tickW * 0.5f);
+    const bool pushed = style::pushFont(style::fonts::semibold());
+    dl->AddText(ImVec2(pos.x + tickW + style::metrics().gap * 0.6f, pos.y),
+                style::u32(headingColor), heading);
+    style::popFont(pushed);
+  }
   if (!target) {
+    const float chip = fs * 1.25f;
     ImGui::SameLine();
-    ImGui::SetCursorPosX(materialWidth() - 31.0f);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + innerWidth - chip -
+                         ImGui::GetStyle().WindowPadding.x * 0.5f);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - fs * 0.9f);
     const bool onlyStart = st.planner.starts.size() <= 1;
     ImGui::BeginDisabled(onlyStart);
-    remove = ImGui::SmallButton("x");
+    ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha, 0.35f);
+    remove = widgets::iconButton("##remove", icons::Icon::Close, ImVec2(chip, chip),
+                                 false, "Remove this starting material");
+    ImGui::PopStyleVar();
     ImGui::EndDisabled();
-    if (onlyStart && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      ImGui::SetTooltip("At least one starting material is required.");
   }
 
   if (moleculeThumbButton("##preview", box.preview,
-                          ImVec2(materialWidth() - 16.0f, 67.0f)) &&
+                          ImVec2(innerWidth, 67.0f * uiScale())) &&
       box.previewValid) {
     openInSketch(st, box.smiles);
   }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", box.previewValid ? "Open in the Sketch canvas"
+                                             : "Structure preview");
 
   ImGui::SetNextItemWidth(-1.0f);
-  const bool smilesEnter = stringInputWithHint(
-      "##smiles", "SMILES", box.smiles, ImGuiInputTextFlags_EnterReturnsTrue);
+  const bool smilesEnter = stringInputWithHint("##smiles", "SMILES", box.smiles,
+                                               ImGuiInputTextFlags_EnterReturnsTrue, true);
   const bool smilesCommitted = smilesEnter || ImGui::IsItemDeactivatedAfterEdit();
   if (smilesCommitted) rebuildPreview(box);
-  if (ImGui::IsItemHovered()) ImGui::SetTooltip("SMILES");
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", "SMILES string; Enter updates the preview");
 
   // Reserve exactly what the adjacent "Look up" button needs so neither clips.
   const float lookupWidth = ImGui::CalcTextSize("Look up").x +
                             ImGui::GetStyle().FramePadding.x * 2.0f +
                             ImGui::GetStyle().ItemSpacing.x * 2.0f;
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - lookupWidth);
-  const bool nameEnter = stringInputWithHint(
-      "##name", "Chemical name", box.nameInput, ImGuiInputTextFlags_EnterReturnsTrue);
+  const bool nameEnter = stringInputWithHint("##name", "Chemical name", box.nameInput,
+                                             ImGuiInputTextFlags_EnterReturnsTrue);
   const bool nameCommitted = nameEnter;
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", "IUPAC or common name; resolved via OPSIN / PubChem");
   ImGui::SameLine();
   ImGui::BeginDisabled(box.status == Status::Loading || box.nameInput.empty());
-  const bool lookupClicked = ImGui::SmallButton("Look up");
+  const bool lookupClicked = widgets::ghostButton("Look up");
   ImGui::EndDisabled();
   if (nameCommitted || lookupClicked) lookupName(st, target, startIndex, box);
 
   ImGui::BeginDisabled(st.doc.empty());
-  if (ImGui::SmallButton("From sketch")) {
+  if (widgets::ghostButton("From sketch")) {
     const int largest = st.doc.largestMoleculeIndex();
     if (largest >= 0) {
       try {
@@ -250,31 +285,36 @@ bool materialBoxWidget(AppState& st, MaterialBox& box, bool target, int startInd
     }
   }
   ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip("%s", "Copy the largest sketched molecule into this box");
   ImGui::SameLine();
   if (box.status == Status::Loading) {
     ImGui::TextDisabled("looking up...");
   } else if (!box.error.empty()) {
-    ImGui::TextColored(ImVec4(1.0f, 0.34f, 0.34f, 1.0f), "%s", box.error.c_str());
+    ImGui::TextColored(style::col::Danger, "%s", box.error.c_str());
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", box.error.c_str());
   } else if (!box.label.empty()) {
     ImGui::TextDisabled("%s", box.label.c_str());
   }
 
-  ImGui::EndChild();
+  widgets::endCard();
   return remove;
 }
 
-void drawArrow(ImVec2 size) {
+void drawArrow(ImVec2 size, ImVec4 color, float thicknessScale = 1.0f) {
   const ImVec2 min = ImGui::GetCursorScreenPos();
   ImGui::Dummy(size);
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  const ImU32 colour = ImGui::GetColorU32(ImGuiCol_Text);
+  const ImU32 colour = style::u32(color);
   const float y = min.y + size.y * 0.5f;
-  const float left = min.x + 10.0f;
-  const float right = min.x + size.x - 10.0f;
-  dl->AddLine(ImVec2(left, y), ImVec2(right, y), colour, 2.0f);
-  dl->AddTriangleFilled(ImVec2(right, y), ImVec2(right - 11.0f, y - 7.0f),
-                        ImVec2(right - 11.0f, y + 7.0f), colour);
+  const float pad = size.x * 0.08f;
+  const float left = min.x + pad;
+  const float right = min.x + size.x - pad;
+  const float t = std::max(1.6f, style::metrics().hairline * 2.0f) * thicknessScale;
+  dl->AddLine(ImVec2(left, y), ImVec2(right, y), colour, t);
+  const float head = size.y * 0.28f;
+  dl->AddTriangleFilled(ImVec2(right, y), ImVec2(right - head * 1.6f, y - head),
+                        ImVec2(right - head * 1.6f, y + head), colour);
 }
 
 void dispatchSearch(AppState& st) {
@@ -298,6 +338,7 @@ void dispatchSearch(AppState& st) {
   st.planner.error.clear();
   st.planner.searching = true;
   st.planner.searched = false;
+
   st.tasks.run<std::vector<rxn::Route>>(
       [request] { return rxn::suggestRoutes(request); },
       [&st](std::vector<rxn::Route> routes) {
@@ -315,13 +356,16 @@ void connectorControls(AppState& st) {
                               ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x * 2.0f;
   const float kWidth = std::max({190.0f * uiScale(), buttonWidth, checkboxWidth});
   ImGui::BeginGroup();
-  drawArrow(ImVec2(kWidth, 42.0f));
+  drawArrow(ImVec2(kWidth, 42.0f * uiScale()), style::col::Accent);
   ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (kWidth - buttonWidth) * 0.5f);
   ImGui::BeginDisabled(st.planner.searching);
-  if (ImGui::Button("Suggest Routes", ImVec2(buttonWidth, 0.0f))) dispatchSearch(st);
+  if (widgets::primaryButton("Suggest Routes", ImVec2(buttonWidth, 0.0f)))
+    dispatchSearch(st);
   ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip("%s", "Search the reaction knowledge base for routes");
   if (st.planner.searching) {
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 55.0f);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (kWidth - ImGui::CalcTextSize("searching...").x) * 0.5f);
     ImGui::TextDisabled("searching...");
   }
 
@@ -331,34 +375,24 @@ void connectorControls(AppState& st) {
   ImGui::EndDisabled();
   if (!aiAvailable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     ImGui::SetTooltip("CHEMCAD_LLM_API_KEY is not set.");
+  else if (aiAvailable && ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", "Let the AI propose a route when the knowledge base stalls");
 
   ImGui::SetNextItemWidth(kWidth - ImGui::CalcTextSize("Routes").x -
                           ImGui::GetStyle().ItemSpacing.x * 2.0f);
   ImGui::SliderInt("Depth", &st.planner.maxDepth, 1, 4);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", "Maximum number of reaction steps per route");
   ImGui::SetNextItemWidth(kWidth - ImGui::CalcTextSize("Routes").x -
                           ImGui::GetStyle().ItemSpacing.x * 2.0f);
   ImGui::SliderInt("Routes", &st.planner.maxRoutes, 1, 10);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", "Maximum number of routes to report");
   ImGui::EndGroup();
 }
 
-void routeBadge(bool ai) {
-  const ImVec2 itemMin = ImGui::GetItemRectMin();
-  const ImVec2 itemMax = ImGui::GetItemRectMax();
-  const char* text = ai ? "AI" : "KB";
-  const ImVec2 textSize = ImGui::CalcTextSize(text);
-  const ImVec2 badgeMax(itemMax.x - 8.0f, itemMax.y - 4.0f);
-  const ImVec2 badgeMin(badgeMax.x - textSize.x - 14.0f, itemMin.y + 4.0f);
-  const ImU32 background =
-      ai ? IM_COL32(132, 75, 185, 255) : IM_COL32(50, 135, 78, 255);
-  ImDrawList* dl = ImGui::GetWindowDrawList();
-  dl->AddRectFilled(badgeMin, badgeMax, background, 5.0f);
-  dl->AddText(ImVec2((badgeMin.x + badgeMax.x - textSize.x) * 0.5f,
-                     (badgeMin.y + badgeMax.y - textSize.y) * 0.5f),
-              IM_COL32_WHITE, text);
-}
-
 void stepArrow(const rxn::Step& step) {
-  constexpr float kWidth = 185.0f;
+  const float kWidth = 185.0f * uiScale();
   ImGui::BeginGroup();
   const std::string reagents = joined(step.reagents);
   ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + kWidth);
@@ -367,13 +401,12 @@ void stepArrow(const rxn::Step& step) {
   else
     ImGui::TextWrapped("%s", reagents.c_str());
   ImGui::PopTextWrapPos();
-  drawArrow(ImVec2(kWidth, 22.0f));
+  drawArrow(ImVec2(kWidth, 22.0f * uiScale()), style::col::TextDim);
   ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + kWidth);
   if (step.conditions.empty())
     ImGui::TextDisabled("conditions not specified");
   else
-    ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "%s",
-                       step.conditions.c_str());
+    ImGui::TextColored(style::col::TextDim, "%s", step.conditions.c_str());
   ImGui::PopTextWrapPos();
   ImGui::EndGroup();
 }
@@ -382,8 +415,8 @@ void drawStep(AppState& st, const rxn::Step& step, const RoutePreviewCache& cach
               int stepIndex) {
   ImGui::PushID(stepIndex);
   std::string heading = "Step " + std::to_string(stepIndex + 1);
-  if (!step.reactionName.empty()) heading += " - " + step.reactionName;
-  ImGui::SeparatorText(heading.c_str());
+  if (!step.reactionName.empty()) heading += "  ·  " + step.reactionName;
+  widgets::sectionHeader(heading.c_str(), style::col::Teal);
 
   ImGui::BeginGroup();
   if (step.reactantSmiles.empty()) {
@@ -393,6 +426,8 @@ void drawStep(AppState& st, const rxn::Step& step, const RoutePreviewCache& cach
       ImGui::PushID(static_cast<int>(i));
       moleculeThumbButton("##reactant", cachedMolecule(cache, step.reactantSmiles[i]),
                           routeThumbSize());
+      if (ImGui::IsItemHovered() && !step.reactantSmiles[i].empty())
+        ImGui::SetTooltip("%s", step.reactantSmiles[i].c_str());
       ImGui::PopID();
       if (i + 1 < step.reactantSmiles.size()) {
         ImGui::SameLine();
@@ -411,11 +446,13 @@ void drawStep(AppState& st, const rxn::Step& step, const RoutePreviewCache& cach
   moleculeThumbButton("##product", cachedMolecule(cache, step.productSmiles), routeThumbSize());
   if (ImGui::IsItemHovered() && !step.productSmiles.empty())
     ImGui::SetTooltip("%s", step.productSmiles.c_str());
-  if (ImGui::SmallButton("Open in Sketch")) openInSketch(st, step.productSmiles);
+  if (widgets::ghostButton("Open in Sketch")) openInSketch(st, step.productSmiles);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", "Append this product to the Sketch canvas");
   ImGui::EndGroup();
 
   ImGui::Spacing();
-  ImGui::TextColored(ImVec4(0.96f, 0.72f, 0.25f, 1.0f), "Side products:");
+  ImGui::TextColored(style::col::Accent, "Side products:");
   ImGui::SameLine();
   if (step.sideProductSmiles.empty()) {
     ImGui::TextDisabled("none predicted");
@@ -426,9 +463,11 @@ void drawStep(AppState& st, const rxn::Step& step, const RoutePreviewCache& cach
       ImGui::PushID(static_cast<int>(i));
       ImGui::BeginGroup();
       moleculeThumbButton("##side_product", cachedMolecule(cache, smiles),
-                          ImVec2(82.0f, 56.0f));
-      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 92.0f);
+                          ImVec2(82.0f * uiScale(), 56.0f * uiScale()));
+      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 92.0f * uiScale());
+      const bool mono = style::pushFont(style::fonts::mono());
       ImGui::TextUnformatted(smiles.c_str());
+      style::popFont(mono);
       ImGui::PopTextWrapPos();
       ImGui::EndGroup();
       ImGui::PopID();
@@ -439,8 +478,7 @@ void drawStep(AppState& st, const rxn::Step& step, const RoutePreviewCache& cach
   if (!step.notes.empty()) {
     ImGui::Spacing();
     ImGui::PushTextWrapPos();
-    ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "%s",
-                       step.notes.c_str());
+    ImGui::TextColored(style::col::TextDim, "%s", step.notes.c_str());
     ImGui::PopTextWrapPos();
   }
   ImGui::PopID();
@@ -451,8 +489,7 @@ void drawResults(AppState& st, RoutePreviewCache& cache) {
   if (signature != cache.signature) rebuildRouteCache(cache, st.planner.routes, signature);
 
   if (!st.planner.error.empty())
-    ImGui::TextColored(ImVec4(1.0f, 0.32f, 0.32f, 1.0f), "%s",
-                       st.planner.error.c_str());
+    ImGui::TextColored(style::col::Danger, "%s", st.planner.error.c_str());
 
   if (st.planner.searched && st.planner.routes.empty()) {
     ImGui::Spacing();
@@ -465,25 +502,41 @@ void drawResults(AppState& st, RoutePreviewCache& cache) {
   }
   if (st.planner.routes.empty()) return;
 
-  ImGui::SeparatorText("Suggested routes");
+  widgets::sectionHeader("Suggested Routes", style::col::Teal);
   ImGui::BeginChild("##route_results", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
                     ImGuiWindowFlags_HorizontalScrollbar);
   for (size_t routeIndex = 0; routeIndex < st.planner.routes.size(); ++routeIndex) {
     const rxn::Route& route = st.planner.routes[routeIndex];
     ImGui::PushID(static_cast<int>(routeIndex));
-    std::string title = "Route " + std::to_string(routeIndex + 1) + " - " +
-                        std::to_string(route.steps.size()) + " step";
-    if (route.steps.size() != 1) title += 's';
+    std::string title = "Route " + std::to_string(routeIndex + 1);
     const bool open = ImGui::CollapsingHeader(
         title.c_str(), routeIndex == 0 ? ImGuiTreeNodeFlags_DefaultOpen : 0);
-    routeBadge(route.usesLlm());
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("%s", routeIndex == 0 ? "Highest-ranked route" : "Alternative route");
+
+    ImGui::SameLine();
+    std::string stepsText = std::to_string(route.steps.size()) + " step";
+    if (route.steps.size() != 1) stepsText += 's';
+    widgets::badge(stepsText.c_str(), style::col::TextDim);
+    ImGui::SameLine();
+    widgets::badge(route.usesLlm() ? "AI" : "KB",
+                   route.usesLlm() ? style::col::Violet : style::col::Teal);
+    if (routeIndex == 0) {
+      ImGui::SameLine();
+      widgets::badge("BEST", style::col::Accent);
+    }
+
     if (open) {
-      ImGui::Indent();
-      for (size_t stepIndex = 0; stepIndex < route.steps.size(); ++stepIndex)
-        drawStep(st, route.steps[stepIndex], cache, static_cast<int>(stepIndex));
-      ImGui::Unindent();
+      if (widgets::beginCard("##route_card", ImVec2(0.0f, 0.0f))) {
+        for (size_t stepIndex = 0; stepIndex < route.steps.size(); ++stepIndex) {
+          drawStep(st, route.steps[stepIndex], cache, static_cast<int>(stepIndex));
+          if (stepIndex + 1 < route.steps.size()) ImGui::Spacing();
+        }
+      }
+      widgets::endCard();
     }
     ImGui::PopID();
+    ImGui::Spacing();
   }
   ImGui::EndChild();
 }
@@ -493,13 +546,15 @@ void drawResults(AppState& st, RoutePreviewCache& cache) {
 void drawReactionPlanner(AppState& st) {
   if (st.planner.starts.empty()) st.planner.starts.emplace_back();
 
-  if (ImGui::Button("Add starting material")) st.planner.starts.emplace_back();
+  if (widgets::ghostButton("+ Add starting material")) st.planner.starts.emplace_back();
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", "Reactions can combine several starting materials");
   ImGui::SameLine();
   ImGui::TextDisabled("Build a route from one or more inputs to one product");
 
   int removeIndex = -1;
   ImGui::BeginChild("##reaction_materials", ImVec2(0.0f, materialHeight() + 20.0f),
-                    ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
+                    ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
   for (size_t i = 0; i < st.planner.starts.size(); ++i) {
     ImGui::PushID(static_cast<int>(i));
     if (materialBoxWidget(st, st.planner.starts[i], false, static_cast<int>(i)))
