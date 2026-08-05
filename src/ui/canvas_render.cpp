@@ -11,6 +11,7 @@
 
 #include "chem/bridge.hpp"
 #include "core/sprout.hpp"
+#include "ui/theme.hpp"
 
 namespace chemcad::ui::canvas {
 namespace {
@@ -226,7 +227,7 @@ void drawBond(ImDrawList* draw, const AppState& st, const CanvasRect& rect, int 
   const BondRef ref{molIndex, bond.id};
   const bool selected = st.sel.contains(ref);
   const ImU32 normal = IM_COL32(224, 228, 234, 255);
-  const ImU32 accent = IM_COL32(64, 184, 255, 255);
+  const ImU32 accent = style::u32(style::col::Accent);
   const ImU32 color = selected ? accent : normal;
 
   float inwardSign = 0.0f;
@@ -296,7 +297,7 @@ void drawBond(ImDrawList* draw, const AppState& st, const CanvasRect& rect, int 
   }
 
   if (st.hoverBond == ref) {
-    draw->AddLine(a, b, IM_COL32(95, 210, 255, 185), thickness + 3.0f);
+    draw->AddLine(a, b, style::u32(style::col::Teal, 0.73f), thickness + 3.0f);
   }
 }
 
@@ -314,7 +315,7 @@ void drawLabel(ImDrawList* draw, const AppState& st, const CanvasRect& rect, int
                            label.chargeWidth;
   float x = center.x - totalWidth * 0.5f;
   const float baselineY = center.y - label.fontSize * 0.5f;
-  const ImU32 color = selected ? IM_COL32(64, 184, 255, 255) : atomColor(atom.atomicNumber);
+  const ImU32 color = selected ? style::u32(style::col::Accent) : atomColor(atom.atomicNumber);
   if (!label.isotope.empty()) {
     draw->AddText(font, label.smallSize, {x, baselineY - label.smallSize * 0.35f}, color,
                   label.isotope.c_str());
@@ -332,8 +333,8 @@ void drawLabel(ImDrawList* draw, const AppState& st, const CanvasRect& rect, int
                   label.charge.c_str());
   }
   if (selected || hovered) {
-    draw->AddCircle(center, radius + 2.0f, selected ? IM_COL32(64, 184, 255, 230)
-                                                  : IM_COL32(110, 218, 255, 220),
+    draw->AddCircle(center, radius + 2.0f, selected ? style::u32(style::col::Accent, 0.90f)
+                                                  : style::u32(style::col::Teal, 0.86f),
                     24, selected ? 2.2f : 1.4f);
   }
 }
@@ -345,15 +346,15 @@ void drawUnlabelledAtomFeedback(ImDrawList* draw, const AppState& st, const Canv
   const bool hovered = st.hoverAtom == ref;
   if (!selected && !hovered) return;
   const ImVec2 center = toIm(st.cam.worldToScreen(atom.pos, rect.origin));
-  if (selected) draw->AddCircleFilled(center, 4.0f, IM_COL32(64, 184, 255, 220), 16);
-  draw->AddCircle(center, 8.0f, hovered ? IM_COL32(110, 218, 255, 230)
-                                      : IM_COL32(64, 184, 255, 230),
+  if (selected) draw->AddCircleFilled(center, 4.0f, style::u32(style::col::Accent, 0.86f), 16);
+  draw->AddCircle(center, 8.0f, hovered ? style::u32(style::col::Teal, 0.90f)
+                                      : style::u32(style::col::Accent, 0.90f),
                   20, selected ? 2.2f : 1.4f);
 }
 
 void drawGesturePreview(ImDrawList* draw, const AppState& st, const Runtime& rt,
                         const CanvasRect& rect) {
-  const ImU32 preview = IM_COL32(98, 202, 255, 180);
+  const ImU32 preview = style::u32(style::col::Teal, 0.71f);
   if (rt.gesture == Gesture::Bond && rt.dragged && rt.downAtom.valid()) {
     const core::Atom* atom = nullptr;
     if (rt.downAtom.mol >= 0 && rt.downAtom.mol < static_cast<int>(st.doc.molecules.size())) {
@@ -377,8 +378,8 @@ void drawGesturePreview(ImDrawList* draw, const AppState& st, const Runtime& rt,
                     std::max(1.5f, 2.0f * st.cam.zoom));
     }
   } else if (rt.gesture == Gesture::Marquee && rt.dragged) {
-    draw->AddRect(rt.downScreen, rt.currentScreen, IM_COL32(80, 188, 255, 230), 0.0f, 0, 1.5f);
-    draw->AddRectFilled(rt.downScreen, rt.currentScreen, IM_COL32(64, 160, 230, 35));
+    draw->AddRect(rt.downScreen, rt.currentScreen, style::u32(style::col::Teal, 0.90f), 0.0f, 0, 1.5f);
+    draw->AddRectFilled(rt.downScreen, rt.currentScreen, style::u32(style::col::Teal, 0.10f));
   }
 }
 

@@ -1,11 +1,14 @@
 #include <cmath>
+#include <cstdio>
 #include <string>
 
 #include "imgui.h"
 #include "imgui_internal.h"
 
 #include "ui/element_data.hpp"
+#include "ui/theme.hpp"
 #include "ui/ui.hpp"
+#include "ui/widgets.hpp"
 
 namespace chemcad::ui {
 namespace {
@@ -45,23 +48,35 @@ std::string hoverDescription(AppState& st) {
   return "No item hovered";
 }
 
+// Thin vertical hairline between segments.
 void divider() {
-  ImGui::SameLine();
-  ImGui::TextDisabled("|");
-  ImGui::SameLine();
+  ImGui::SameLine(0.0f, 10.0f);
+  const ImVec2 pos = ImGui::GetCursorScreenPos();
+  const float h = ImGui::GetFontSize();
+  ImGui::Dummy(ImVec2(1.0f, h));
+  ImGui::GetWindowDrawList()->AddLine(ImVec2(pos.x + 0.5f, pos.y + 2.0f),
+                                      ImVec2(pos.x + 0.5f, pos.y + h - 2.0f),
+                                      style::u32(style::col::BorderStrong));
+  ImGui::SameLine(0.0f, 10.0f);
 }
 
 }  // namespace
 
 void drawStatusBar(AppState& st) {
   ImGuiViewport* viewport = ImGui::GetMainViewport();
-  const float height = ImGui::GetFrameHeight();
+  const float height = ImGui::GetFrameHeight() + 2.0f;
   constexpr ImGuiWindowFlags flags =
       ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDecoration |
       ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings |
       ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBringToFrontOnFocus;
 
   if (ImGui::BeginViewportSideBar("##status", viewport, ImGuiDir_Down, height, flags)) {
+    // Hairline separating the bar from the workspace.
+    const ImVec2 wmin = ImGui::GetWindowPos();
+    ImGui::GetWindowDrawList()->AddLine(
+        wmin, ImVec2(wmin.x + ImGui::GetWindowWidth(), wmin.y),
+        style::u32(style::col::Border), style::metrics().hairline);
+
     if (ImGui::BeginMenuBar()) {
       const char* message = st.statusMessage.empty()
                                 ? "Hint: choose a tool, then draw in the Sketch canvas"
@@ -70,20 +85,33 @@ void drawStatusBar(AppState& st) {
       divider();
 
       const std::string hover = hoverDescription(st);
-      ImGui::TextUnformatted(hover.c_str());
-      divider();
+      ImGui::TextDisabled("%s", hover.c_str());
 
-      if (st.props.formula.empty()) {
-        ImGui::TextDisabled("Formula: --");
-      } else {
-        ImGui::Text("Formula: %s", st.props.formula.c_str());
-      }
-      divider();
+      // Right-aligned cluster: formula pill, zoom pill, busy indicator.
+      const std::string formula =
+          st.props.formula.empty() ? "--" : st.props.formula;
+      char zoom[16];
+      std::snprintf(zoom, sizeof(zoom), "%.0f%%", std::round(st.cam.zoom * 100.0f));
 
-      ImGui::Text("Zoom: %.0f%%", std::round(st.cam.zoom * 100.0f));
-      if (st.tasks.busy()) {
-        divider();
-        ImGui::TextDisabled("working...");
+      const float padX = style::metrics().gap * 0.8f;
+      const float spacing = ImGui::GetStyle().ItemSpacing.x;
+      auto pillWidth = [&](const char* text) {
+        return ImGui::CalcTextSize(text).x + padX * 2.0f;
+      };
+      float total = pillWidth(formula.c_str()) + pillWidth(zoom) + spacing;
+      const bool busy = st.tasks.busy();
+      if (busy) total += pillWidth("working") + spacing;
+
+      ImGui::SetCursorPosX(ImGui::GetWindowWidth() - total -
+                           ImGui::GetStyle().WindowPadding.x - 2.0f);
+      const bool mono = style::pushFont(style::fonts::mono());
+      widgets::badge(formula.c_str(), style::col::TextDim);
+      style::popFont(mono);
+      ImGui::SameLine(0.0f, spacing);
+      widgets::badge(zoom, style::col::TextDim);
+      if (busy) {
+        ImGui::SameLine(0.0f, spacing);
+        widgets::badge("working", style::col::Accent);
       }
       ImGui::EndMenuBar();
     }

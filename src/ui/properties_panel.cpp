@@ -11,7 +11,10 @@
 
 #include "chem/bridge.hpp"
 #include "naming/naming.hpp"
+#include "ui/icons.hpp"
+#include "ui/theme.hpp"
 #include "ui/ui.hpp"
+#include "ui/widgets.hpp"
 
 namespace chemcad::ui {
 namespace {
@@ -181,36 +184,57 @@ void drawPropertiesPanel(AppState& st) {
     recomputeProperties(st);
   }
 
-  ImGui::SeparatorText("Properties");
   if (!st.props.chemError.empty()) {
-    ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.32f, 1.0f), "%s", st.props.chemError.c_str());
+    ImGui::TextColored(style::col::Danger, "%s", st.props.chemError.c_str());
   } else if (st.props.computedForRevision != st.docRevision) {
     ImGui::TextDisabled("Updating...");
   } else if (st.props.smiles.empty()) {
     ImGui::TextDisabled("Draw a structure to see its properties.");
   } else {
-    ImGui::Text("Formula: %s", st.props.formula.c_str());
-    ImGui::Text("MW: %.2f", st.props.mw);
-    ImGui::Text("cLogP: %.2f", st.props.logP);
-    ImGui::Text("Rings: %d", st.props.rings);
+    // Identity dashboard: 2x2 stat grid, mono values.
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float cardW = (avail - spacing) * 0.5f;
+    const float cardH = ImGui::GetFontSize() * 3.1f;
 
+    char mw[32];
+    std::snprintf(mw, sizeof(mw), "%.2f", st.props.mw);
+    char logp[32];
+    std::snprintf(logp, sizeof(logp), "%.2f", st.props.logP);
+    char rings[16];
+    std::snprintf(rings, sizeof(rings), "%d", st.props.rings);
+
+    widgets::statCard("FORMULA", st.props.formula.c_str(), ImVec2(cardW, cardH));
+    ImGui::SameLine(0.0f, spacing);
+    widgets::statCard("MW g/mol", mw, ImVec2(cardW, cardH));
+    widgets::statCard("CLOGP", logp, ImVec2(cardW, cardH));
+    ImGui::SameLine(0.0f, spacing);
+    widgets::statCard("RINGS", rings, ImVec2(cardW, cardH));
+
+    ImGui::Spacing();
     std::vector<char> smiles(st.props.smiles.begin(), st.props.smiles.end());
     smiles.push_back('\0');
-    const float copyWidth = ImGui::CalcTextSize("Copy").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-    ImGui::SetNextItemWidth(std::max(50.0f, ImGui::GetContentRegionAvail().x - copyWidth -
+    const float chip = ImGui::GetFrameHeight();
+    ImGui::SetNextItemWidth(std::max(50.0f, ImGui::GetContentRegionAvail().x - chip -
                                                ImGui::GetStyle().ItemSpacing.x));
+    const bool mono = style::pushFont(style::fonts::mono());
     ImGui::InputText("##canonical_smiles", smiles.data(), smiles.size(),
                      ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_AutoSelectAll);
+    style::popFont(mono);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", "Canonical SMILES");
     ImGui::SameLine();
-    if (ImGui::Button("Copy")) {
+    if (widgets::iconButton("##copy_smiles", icons::Icon::Copy, ImVec2(chip, chip), false,
+                            "Copy canonical SMILES")) {
       st.clipboardSmiles = st.props.smiles;
       ImGui::SetClipboardText(st.props.smiles.c_str());
       st.statusMessage = "Canonical SMILES copied";
     }
   }
 
-  ImGui::SeparatorText("Name");
+  widgets::sectionHeader("Name");
   ImGui::Checkbox("Auto-name", &st.props.autoName);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", "Resolve the sketched structure's IUPAC name automatically");
   const bool nameDelayPassed = now - st.props.lastEdit >= std::chrono::milliseconds(1500);
   if (st.props.autoName && !st.props.smiles.empty() &&
       st.props.computedForRevision == st.docRevision &&
@@ -221,28 +245,32 @@ void drawPropertiesPanel(AppState& st) {
   if (st.props.nameStatus == Status::Loading) {
     ImGui::TextDisabled("Looking up...");
   } else if (st.props.nameStatus == Status::Ok) {
-    ImGui::TextWrapped("%s", st.props.name.c_str());
+    const bool pushed = style::pushFont(style::fonts::semibold());
+    ImGui::PushTextWrapPos();
+    ImGui::TextUnformatted(st.props.name.c_str());
+    ImGui::PopTextWrapPos();
+    style::popFont(pushed);
   } else if (st.props.nameStatus == Status::Error) {
-    ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "%s",
-                       st.props.nameError.c_str());
+    ImGui::TextColored(style::col::TextDim, "%s", st.props.nameError.c_str());
   }
 
-  ImGui::Spacing();
-  ImGui::TextUnformatted("Name to structure");
+  widgets::sectionHeader("Build from name");
   BuildNameState& build = buildNameState();
   ImGui::SetNextItemWidth(-1.0f);
   const bool enter = ImGui::InputTextWithHint(
       "##name_to_structure", "e.g. acetylsalicylic acid", build.input.data(),
       build.input.size(), ImGuiInputTextFlags_EnterReturnsTrue);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", "IUPAC or common name; Enter builds the structure");
   if (build.status == Status::Loading) ImGui::BeginDisabled();
-  if (enter || ImGui::Button("Build")) submitBuild(st);
+  if (enter || widgets::primaryButton("Build")) submitBuild(st);
   if (build.status == Status::Loading) {
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::TextDisabled("Resolving...");
   }
   if (build.status == Status::Error && !build.error.empty()) {
-    ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.32f, 1.0f), "%s", build.error.c_str());
+    ImGui::TextColored(style::col::Danger, "%s", build.error.c_str());
   }
 }
 

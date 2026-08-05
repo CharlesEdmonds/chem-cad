@@ -10,7 +10,10 @@
 
 #include "chem/bridge.hpp"
 #include "ui/file_dialog.hpp"
+#include "ui/icons.hpp"
+#include "ui/theme.hpp"
 #include "ui/ui.hpp"
+#include "ui/widgets.hpp"
 
 namespace chemcad::ui {
 namespace {
@@ -191,6 +194,20 @@ void drawMenuBar(AppState& st) {
   static DialogAction dialogAction = DialogAction::None;
 
   if (ImGui::BeginMenuBar()) {
+    // Brand mark: benzene-ring glyph + wordmark, then the menus.
+    {
+      const float h = ImGui::GetFrameHeight();
+      const ImVec2 textSize = ImGui::CalcTextSize("ChemCAD");
+      ImGui::Dummy(ImVec2(h + textSize.x + 14.0f, h));
+      const ImVec2 min = ImGui::GetItemRectMin();
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      icons::draw(dl, icons::Icon::Logo, ImVec2(min.x + h * 0.5f, min.y + h * 0.52f),
+                  h * 0.68f, style::u32(style::col::Accent), 1.6f);
+      const bool pushed = style::pushFont(style::fonts::semibold());
+      dl->AddText(ImVec2(min.x + h + 6.0f, min.y + (h - textSize.y) * 0.5f),
+                  style::u32(style::col::Text), "ChemCAD");
+      style::popFont(pushed);
+    }
     if (ImGui::BeginMenu("File")) {
       if (ImGui::MenuItem("New", "Ctrl+N")) newDocument(st);
       if (ImGui::MenuItem("Open...", "Ctrl+O")) {
@@ -262,11 +279,22 @@ void drawMenuBar(AppState& st) {
   }
 
   if (ImGui::BeginPopupModal("About ChemCAD", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const float logo = ImGui::GetFontSize() * 2.4f;
+    ImGui::Dummy(ImVec2(logo, logo));
+    {
+      const ImVec2 min = ImGui::GetItemRectMin();
+      icons::draw(ImGui::GetWindowDrawList(), icons::Icon::Logo,
+                  ImVec2(min.x + logo * 0.5f, min.y + logo * 0.5f), logo * 0.9f,
+                  style::u32(style::col::Accent), 2.0f);
+    }
+    const bool pushed = style::pushFont(style::fonts::semibold());
     ImGui::TextUnformatted("ChemCAD");
+    style::popFont(pushed);
     ImGui::TextUnformatted("Chemical structure sketching and reaction planning");
     ImGui::Separator();
     ImGui::TextDisabled("C++20 / Dear ImGui / RDKit");
-    if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+    ImGui::TextDisabled("Inter and JetBrains Mono fonts, SIL OFL");
+    if (widgets::primaryButton("Close")) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
 

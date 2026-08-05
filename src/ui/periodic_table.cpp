@@ -214,10 +214,12 @@ void drawPeriodicTable(AppState& st) {
   auto placeholderAt = [&](int group, int period, const char* label, const char* tooltip) {
     const ImVec2 pos(origin.x + (group - 1) * step, origin.y + (period - 1) * step);
     ImGui::SetCursorPos(pos);
+    ImGui::PushID(label);
     ImGui::InvisibleButton("##placeholder", ImVec2(cell, cell));
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tooltip);
     const ImVec2 screen = ImGui::GetItemRectMin();
     drawPlaceholder(dl, screen, cell, label);
+    ImGui::PopID();
   };
   placeholderAt(3, 6, "Ln", "Lanthanides (57-71), shown below");
   placeholderAt(3, 7, "An", "Actinides (89-103), shown below");
