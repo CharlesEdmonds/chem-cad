@@ -37,6 +37,16 @@ Every suite is hermetic — no network required. `test_ui_interaction` drives th
 real canvas and panel code through a null ImGui backend, so sketching gestures
 are verified without a display.
 
+## Interface
+
+The UI uses the bundled Inter and JetBrains Mono fonts (SIL OFL, in
+`assets/fonts/`). It scales from font metrics, so any UI scale keeps its
+proportions — default 1.25, override with `CHEMCAD_UI_SCALE` (0.5–3.0):
+
+```bash
+CHEMCAD_UI_SCALE=1.5 ./build/chemcad
+```
+
 ## Layout
 
 | Area | What it does |

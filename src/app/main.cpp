@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -186,7 +187,13 @@ int main(int, char**) {
   static const std::string iniPath = (chemcad::core::cacheDir() / "imgui.ini").string();
   io.IniFilename = iniPath.c_str();
 
-  chemcad::ui::applyTheme(1.25f);
+  // UI scale: default 1.25, overridable for accessibility or dense displays.
+  float uiScale = 1.25f;
+  if (const char* env = std::getenv("CHEMCAD_UI_SCALE"); env && *env) {
+    if (const float parsed = std::strtof(env, nullptr); parsed >= 0.5f && parsed <= 3.0f)
+      uiScale = parsed;
+  }
+  chemcad::ui::applyTheme(uiScale);
   chemcad::ui::style::fonts::load();
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init("#version 330");
