@@ -1,0 +1,86 @@
+[
+  {
+    "id": "hbr_addition_markovnikov",
+    "name": "Hydrobromination of alkene",
+    "smarts": "[C;H1,H2:1]=[C:2]>>[C:1]([Br])[C:2]",
+    "arity": 1,
+    "reagents": ["HBr"],
+    "conditions": "0 C to rt",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "Electrophilic addition gives the Markovnikov bromide in the absence of peroxides.",
+    "tags": ["addition", "alkene", "markovnikov"]
+  },
+  {
+    "id": "hcl_addition_markovnikov",
+    "name": "Hydrochlorination of alkene",
+    "smarts": "[C;H1,H2:1]=[C:2]>>[C:1]([Cl])[C:2]",
+    "arity": 1,
+    "reagents": ["HCl"],
+    "conditions": "0 C to rt",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Protonation precedes chloride capture and may permit carbocation rearrangement.",
+    "tags": ["addition", "alkene", "markovnikov"]
+  },
+  {
+    "id": "alkene_acid_hydration",
+    "name": "Acid-catalysed alkene hydration",
+    "smarts": "[C;H1,H2:1]=[C:2]>>[C:1]([O])[C:2]",
+    "arity": 1,
+    "reagents": ["H2O", "H2SO4 (cat.)"],
+    "conditions": "dilute aqueous acid",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Gives the Markovnikov alcohol; rearrangement is possible for carbocation intermediates.",
+    "tags": ["addition", "hydration", "markovnikov"]
+  },
+  {
+    "id": "alkene_bromination",
+    "name": "Bromination of alkene",
+    "smarts": "[C:1]=[C:2]>>[C:1]([Br])[C:2]([Br])",
+    "arity": 1,
+    "reagents": ["Br2"],
+    "conditions": "CH2Cl2, 0 C to rt",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "A bromonium ion gives anti addition of bromine across the double bond.",
+    "tags": ["addition", "alkene", "halogenation"]
+  },
+  {
+    "id": "hydroboration_oxidation",
+    "name": "Hydroboration-oxidation",
+    "smarts": "[C:1]=[C;H1,H2:2]>>[C:1][C:2]O",
+    "arity": 1,
+    "reagents": ["1. BH3-THF", "2. H2O2, NaOH"],
+    "conditions": "0 C to rt",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "Syn hydration places OH at the less substituted carbon without rearrangement.",
+    "tags": ["addition", "hydration", "anti-markovnikov"]
+  },
+  {
+    "id": "alkene_syn_dihydroxylation",
+    "name": "Syn dihydroxylation",
+    "smarts": "[C:1]=[C:2]>>[C:1]([O])[C:2]([O])",
+    "arity": 1,
+    "reagents": ["OsO4 (cat.)", "NMO"],
+    "conditions": "tert-butanol/water, rt",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Concerted addition affords a cis-1,2-diol.",
+    "tags": ["addition", "oxidation", "diol"]
+  },
+  {
+    "id": "alkene_epoxidation_mcpba",
+    "name": "mCPBA epoxidation",
+    "smarts": "[C:1]=[C:2]>>[C:1]1[O][C:2]1",
+    "arity": 1,
+    "reagents": ["mCPBA"],
+    "conditions": "CH2Cl2, 0 C to rt",
+    "byproducts": ["O=C(O)c1cccc(Cl)c1"],
+    "priority": 9,
+    "notes": "Stereospecific oxygen transfer preserves the alkene's relative substituent geometry.",
+    "tags": ["addition", "epoxide", "oxidation"]
+  }
+]

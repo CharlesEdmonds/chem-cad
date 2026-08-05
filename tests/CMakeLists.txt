@@ -4,7 +4,12 @@ file(GLOB CHEMCAD_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/te
 
 foreach(test_src IN LISTS CHEMCAD_TEST_SOURCES)
   get_filename_component(test_name "${test_src}" NAME_WE)
-  add_executable(${test_name} "${test_src}")
+  # ui/camera.cpp is pure geometry with no ImGui dependency, so tests compile it
+  # directly rather than linking all of chemcad_ui (which would make every suite
+  # unbuildable whenever a panel is mid-edit).
+  add_executable(${test_name} "${test_src}" "${CMAKE_SOURCE_DIR}/src/ui/camera.cpp")
+  # chemcad_chem keeps RDKit PRIVATE on purpose (only bridge.cpp may see it), so
+  # suites that validate reaction SMARTS directly need their own RDKit link.
   target_link_libraries(${test_name} PRIVATE
     doctest::doctest
     chemcad_core
@@ -12,7 +17,13 @@ foreach(test_src IN LISTS CHEMCAD_TEST_SOURCES)
     chemcad_naming
     chemcad_rxn
     chemcad_app
-    nlohmann_json::nlohmann_json)
+    nlohmann_json::nlohmann_json
+    ${CHEMCAD_RDKIT_LIBS})
+  # The headless interaction suite drives the real panels through a null ImGui
+  # backend, so it needs the UI layer; other suites stay lightweight.
+  if(test_name STREQUAL "test_ui_interaction")
+    target_link_libraries(${test_name} PRIVATE chemcad_ui imgui_lib)
+  endif()
   target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/src)
   add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()

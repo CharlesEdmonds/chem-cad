@@ -1,0 +1,50 @@
+[
+  {
+    "id": "e2_bromide_zaitsev",
+    "name": "E2 dehydrohalogenation (Zaitsev)",
+    "smarts": "[C;H1,H2:1]-[C;X4:2][Br:3]>>[C:1]=[C:2]",
+    "arity": 1,
+    "reagents": ["NaOEt"],
+    "conditions": "ethanol, heat",
+    "byproducts": ["Br"],
+    "priority": 9,
+    "notes": "A small strong base usually favors the more substituted Zaitsev alkene.",
+    "tags": ["elimination", "e2", "zaitsev"]
+  },
+  {
+    "id": "e2_chloride_zaitsev",
+    "name": "E2 elimination of alkyl chloride",
+    "smarts": "[C;H1,H2:1]-[C;X4:2][Cl:3]>>[C:1]=[C:2]",
+    "arity": 1,
+    "reagents": ["NaOEt"],
+    "conditions": "ethanol, heat",
+    "byproducts": ["Cl"],
+    "priority": 8,
+    "notes": "Requires an antiperiplanar beta hydrogen and leaving group.",
+    "tags": ["elimination", "e2", "zaitsev"]
+  },
+  {
+    "id": "e2_hofmann_bulky_base",
+    "name": "E2 dehydrohalogenation (Hofmann)",
+    "smarts": "[C;H2,H3:1]-[C;X4:2][Br:3]>>[C:1]=[C:2]",
+    "arity": 1,
+    "reagents": ["KOtBu"],
+    "conditions": "tert-butanol, heat",
+    "byproducts": ["Br"],
+    "priority": 7,
+    "notes": "A bulky base preferentially removes the least hindered beta hydrogen.",
+    "tags": ["elimination", "e2", "hofmann"]
+  },
+  {
+    "id": "acid_dehydration_of_alcohol",
+    "name": "Acid-catalysed alcohol dehydration",
+    "smarts": "[C;H1,H2:1]-[C;X4:2][O;H1:3]>>[C:1]=[C:2]",
+    "arity": 1,
+    "reagents": ["H2SO4 (cat.)"],
+    "conditions": "concentrated acid, heat",
+    "byproducts": ["O"],
+    "priority": 7,
+    "notes": "Secondary and tertiary alcohols dehydrate readily; carbocation rearrangements can occur.",
+    "tags": ["elimination", "dehydration", "alkene"]
+  }
+]

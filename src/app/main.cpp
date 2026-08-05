@@ -139,8 +139,10 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
   ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
 
   ImGuiID center = dockspaceId;
-  const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.055f, nullptr, &center);
-  const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
+  // The tool column holds bond-order/stereo/ring combos, and the right dock has
+  // to fit all 18 periodic-table groups, so neither can be a thin strip.
+  const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.075f, nullptr, &center);
+  const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.30f, nullptr, &center);
   ImGuiID rightBottom = right;
   const ImGuiID rightTop =
       ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.52f, nullptr, &rightBottom);
@@ -193,7 +195,13 @@ int main(int, char**) {
   bool layoutBuilt = false;
   while (!glfwWindowShouldClose(window)) {
     glfwPollEvents();
-    if (glfwGetWindowAttrib(window, GLFW_ICONIFIED)) {
+    // Skip rendering only when there is genuinely no surface to draw into.
+    // GLFW_ICONIFIED is unreliable without a window manager (bare X servers and
+    // headless sessions report it spuriously), which would leave the window
+    // permanently blank.
+    int fbw = 0, fbh = 0;
+    glfwGetFramebufferSize(window, &fbw, &fbh);
+    if (fbw <= 0 || fbh <= 0) {
       glfwWaitEventsTimeout(0.1);
       continue;
     }
@@ -264,7 +272,6 @@ int main(int, char**) {
 
     // ---- render
     ImGui::Render();
-    int fbw = 0, fbh = 0;
     glfwGetFramebufferSize(window, &fbw, &fbh);
     glViewport(0, 0, fbw, fbh);
     glClearColor(0.07f, 0.08f, 0.09f, 1.0f);

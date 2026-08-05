@@ -1,0 +1,50 @@
+[
+  {
+    "id": "curtius_rearrangement",
+    "name": "Curtius rearrangement",
+    "smarts": "[C:1](=[O:2])[N:3]=[N+:4]=[N-:5]>>[N:3]=[C:1]=[O:2]",
+    "arity": 1,
+    "reagents": ["heat", "then H2O or ROH"],
+    "conditions": "anhydrous solvent, heat",
+    "byproducts": ["N#N"],
+    "priority": 7,
+    "notes": "Acyl azide rearrangement gives an isocyanate with loss of nitrogen; trapping controls the final product.",
+    "tags": ["rearrangement", "curtius", "isocyanate"]
+  },
+  {
+    "id": "baeyer_villiger_oxidation",
+    "name": "Baeyer-Villiger oxidation",
+    "smarts": "[C:1](=[O:2])[C:3]>>[C:1](=[O:2])O[C:3]",
+    "arity": 1,
+    "reagents": ["mCPBA"],
+    "conditions": "CH2Cl2, 0 C to rt",
+    "byproducts": ["O=C(O)c1cccc(Cl)c1"],
+    "priority": 8,
+    "notes": "Peracid oxidation inserts oxygen next to the carbonyl; migratory aptitude controls regioselectivity.",
+    "tags": ["rearrangement", "baeyer-villiger", "ester"]
+  },
+  {
+    "id": "beckmann_rearrangement",
+    "name": "Beckmann rearrangement",
+    "smarts": "[C:1](=[N:2][O;H1:3])[C:4]>>[C:1](=[O:3])[N:2][C:4]",
+    "arity": 1,
+    "reagents": ["H2SO4"],
+    "conditions": "concentrated acid, heat",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "The group anti to the oxime leaving group migrates to nitrogen to form an amide or lactam.",
+    "tags": ["rearrangement", "beckmann", "amide"]
+  },
+  {
+    "id": "hofmann_rearrangement",
+    "name": "Hofmann rearrangement",
+    "smarts": "[C:1](=[O:2])[N;H2:3]>>[N:3]",
+    "arity": 1,
+    "reagents": ["Br2", "NaOH"],
+    "conditions": "aqueous base, heat",
+    "byproducts": ["O=C=O", "Br"],
+    "priority": 6,
+    "notes": "A primary amide is converted to an amine containing one fewer carbon.",
+    "tags": ["rearrangement", "hofmann", "amine"]
+  }
+]

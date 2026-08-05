@@ -1,0 +1,86 @@
+[
+  {
+    "id": "friedel_crafts_acylation",
+    "name": "Friedel-Crafts acylation",
+    "smarts": "[c;H1:1].[C:2](=[O:3])[Cl:4]>>[c:1][C:2]=[O:3]",
+    "arity": 2,
+    "reagents": ["AlCl3"],
+    "conditions": "anhydrous CH2Cl2, 0 C to rt",
+    "byproducts": ["Cl"],
+    "priority": 9,
+    "notes": "Acylium substitution gives an aryl ketone without carbocation rearrangement.",
+    "tags": ["friedel-crafts", "acylation", "aromatic"]
+  },
+  {
+    "id": "friedel_crafts_alkylation",
+    "name": "Friedel-Crafts alkylation",
+    "smarts": "[c;H1:1].[C;X4:2][Cl:3]>>[c:1][C:2]",
+    "arity": 2,
+    "reagents": ["AlCl3"],
+    "conditions": "anhydrous solvent, 0 C to rt",
+    "byproducts": ["Cl"],
+    "priority": 7,
+    "notes": "Carbocation rearrangement and polyalkylation may occur; strongly deactivated rings do not react.",
+    "tags": ["friedel-crafts", "alkylation", "aromatic"]
+  },
+  {
+    "id": "aromatic_nitration",
+    "name": "Electrophilic aromatic nitration",
+    "smarts": "[c;H1:1]>>[c:1][N+](=O)[O-]",
+    "arity": 1,
+    "reagents": ["HNO3", "H2SO4"],
+    "conditions": "0-55 C",
+    "byproducts": ["O"],
+    "priority": 9,
+    "notes": "The nitronium ion substitutes an aromatic hydrogen; substituents control regioselectivity.",
+    "tags": ["eas", "nitration", "aromatic"]
+  },
+  {
+    "id": "aromatic_bromination",
+    "name": "Electrophilic aromatic bromination",
+    "smarts": "[c;H1:1]>>[c:1]Br",
+    "arity": 1,
+    "reagents": ["Br2", "FeBr3"],
+    "conditions": "CH2Cl2, rt",
+    "byproducts": ["Br"],
+    "priority": 9,
+    "notes": "Lewis-acid activation of bromine enables electrophilic aromatic substitution.",
+    "tags": ["eas", "halogenation", "aromatic"]
+  },
+  {
+    "id": "aromatic_chlorination",
+    "name": "Electrophilic aromatic chlorination",
+    "smarts": "[c;H1:1]>>[c:1]Cl",
+    "arity": 1,
+    "reagents": ["Cl2", "FeCl3"],
+    "conditions": "CH2Cl2, rt",
+    "byproducts": ["Cl"],
+    "priority": 8,
+    "notes": "The ring undergoes electrophilic chlorination with regiochemistry set by existing substituents.",
+    "tags": ["eas", "halogenation", "aromatic"]
+  },
+  {
+    "id": "aromatic_sulfonation",
+    "name": "Electrophilic aromatic sulfonation",
+    "smarts": "[c;H1:1]>>[c:1]S(=O)(=O)O",
+    "arity": 1,
+    "reagents": ["fuming H2SO4"],
+    "conditions": "40-100 C",
+    "byproducts": ["O"],
+    "priority": 7,
+    "notes": "Sulfonation is reversible; hot dilute acid can remove the sulfonic acid group.",
+    "tags": ["eas", "sulfonation", "aromatic"]
+  },
+  {
+    "id": "gattermann_koch_formylation",
+    "name": "Gattermann-Koch formylation",
+    "smarts": "[c;H1:1]>>[c:1]C=O",
+    "arity": 1,
+    "reagents": ["CO", "HCl", "AlCl3", "CuCl"],
+    "conditions": "pressurized CO, 25-60 C",
+    "byproducts": [],
+    "priority": 5,
+    "notes": "Introduces a formyl group onto activated aromatic rings.",
+    "tags": ["eas", "formylation", "aromatic"]
+  }
+]

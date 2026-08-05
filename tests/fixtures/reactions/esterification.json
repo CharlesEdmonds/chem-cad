@@ -1,0 +1,14 @@
+[
+  {
+    "id": "fixture_fischer_esterification",
+    "name": "Fischer esterification",
+    "smarts": "[C:1](=[O:2])[OX2H1].[OX2H1:3][C:4]>>[C:1](=[O:2])[O:3][C:4]",
+    "arity": 2,
+    "reagents": ["H2SO4 (cat.)"],
+    "conditions": "reflux",
+    "byproducts": ["O"],
+    "priority": 10,
+    "notes": "Remove water to drive the equilibrium.",
+    "tags": ["esterification"]
+  }
+]

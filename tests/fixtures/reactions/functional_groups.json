@@ -1,0 +1,26 @@
+[
+  {
+    "id": "fixture_sn2_bromide_to_alcohol",
+    "name": "SN2 hydrolysis",
+    "smarts": "[C:1][Br:2]>>[C:1][OH]",
+    "arity": 1,
+    "reagents": ["NaOH"],
+    "conditions": "aqueous, heat",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Primary bromides react by backside displacement.",
+    "tags": ["substitution", "SN2"]
+  },
+  {
+    "id": "fixture_primary_alcohol_oxidation",
+    "name": "Primary alcohol oxidation",
+    "smarts": "[CH2:1][OH:2]>>[C:1](=[O])[OH:2]",
+    "arity": 1,
+    "reagents": ["KMnO4"],
+    "conditions": "aqueous, heat",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Use excess oxidant for full oxidation to the acid.",
+    "tags": ["oxidation"]
+  }
+]

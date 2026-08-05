@@ -1,0 +1,26 @@
+[
+  {
+    "id": "diels_alder_cycloaddition",
+    "name": "Diels-Alder cycloaddition",
+    "smarts": "[C:1]=[C:2][C:3]=[C:4].[C:5]=[C:6]>>[C:1]1=[C:2][C:3][C:4][C:5][C:6]1",
+    "arity": 2,
+    "reagents": ["heat or Lewis acid"],
+    "conditions": "rt to reflux",
+    "byproducts": [],
+    "priority": 10,
+    "notes": "Concerted suprafacial [4+2] cycloaddition forms a six-membered ring with predictable stereochemistry.",
+    "tags": ["cycloaddition", "diels-alder", "pericyclic"]
+  },
+  {
+    "id": "intramolecular_diels_alder",
+    "name": "Intramolecular Diels-Alder reaction",
+    "smarts": "[C:1]=[C:2][C:3]=[C:4]~[*:7]~[C:5]=[C:6]>>[C:1]1=[C:2][C:3][C:4]~[*:7]~[C:5][C:6]1",
+    "arity": 1,
+    "reagents": ["heat"],
+    "conditions": "toluene, reflux",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Tethering diene and dienophile provides rapid access to fused or bridged ring systems.",
+    "tags": ["cycloaddition", "diels-alder", "intramolecular"]
+  }
+]

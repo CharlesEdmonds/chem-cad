@@ -1,0 +1,98 @@
+[
+  {
+    "id": "grignard_formaldehyde_primary_alcohol",
+    "name": "Grignard addition to formaldehyde",
+    "smarts": "[CH2:1]=[O:2].[C:3][Mg][Br]>>[C:1]([O:2])[C:3]",
+    "arity": 2,
+    "reagents": ["then H3O+"],
+    "conditions": "anhydrous ether, then acidic workup",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "Formaldehyde gives a primary alcohol containing one additional carbon.",
+    "tags": ["grignard", "addition", "primary-alcohol"]
+  },
+  {
+    "id": "grignard_aldehyde_secondary_alcohol",
+    "name": "Grignard addition to aldehyde",
+    "smarts": "[C;H1:1]=[O:2].[C:3][Mg][Br]>>[C:1]([O:2])[C:3]",
+    "arity": 2,
+    "reagents": ["then H3O+"],
+    "conditions": "anhydrous ether, then acidic workup",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "Aldehydes other than formaldehyde furnish secondary alcohols.",
+    "tags": ["grignard", "addition", "secondary-alcohol"]
+  },
+  {
+    "id": "grignard_ketone_tertiary_alcohol",
+    "name": "Grignard addition to ketone",
+    "smarts": "[C;H0:1]=[O:2].[C:3][Mg][Br]>>[C:1]([O:2])[C:3]",
+    "arity": 2,
+    "reagents": ["then H3O+"],
+    "conditions": "anhydrous ether, then acidic workup",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "Ketones furnish tertiary alcohols after aqueous workup.",
+    "tags": ["grignard", "addition", "tertiary-alcohol"]
+  },
+  {
+    "id": "grignard_nitrile_to_ketone",
+    "name": "Grignard addition to nitrile",
+    "smarts": "[C:1]#[N:2].[C:3][Mg][Br]>>[C:1](=O)[C:3]",
+    "arity": 2,
+    "reagents": ["then H3O+"],
+    "conditions": "anhydrous ether, then acidic hydrolysis",
+    "byproducts": ["N"],
+    "priority": 8,
+    "notes": "Single addition followed by imine hydrolysis yields a ketone.",
+    "tags": ["grignard", "nitrile", "ketone"]
+  },
+  {
+    "id": "suzuki_coupling",
+    "name": "Suzuki-Miyaura coupling",
+    "smarts": "[c:1][Br:2].[c:3][B](O)O>>[c:1]-[c:3]",
+    "arity": 2,
+    "reagents": ["Pd(PPh3)4", "K2CO3"],
+    "conditions": "dioxane/water, 80 C",
+    "byproducts": ["B(O)(O)O", "Br"],
+    "priority": 10,
+    "notes": "A robust sp2-sp2 coupling tolerant of many functional groups.",
+    "tags": ["coupling", "suzuki", "aryl"]
+  },
+  {
+    "id": "heck_coupling",
+    "name": "Heck coupling",
+    "smarts": "[c:1][Br:2].[C:3]=[C:4]>>[c:1]-[C:3]=[C:4]",
+    "arity": 2,
+    "reagents": ["Pd(OAc)2", "phosphine", "Et3N"],
+    "conditions": "DMF, 80-120 C",
+    "byproducts": ["Br"],
+    "priority": 9,
+    "notes": "Couples an aryl halide with an alkene, commonly favoring the E-substituted alkene.",
+    "tags": ["coupling", "heck", "alkene"]
+  },
+  {
+    "id": "sonogashira_coupling",
+    "name": "Sonogashira coupling",
+    "smarts": "[c:1][Br:2].[C;H1:3]#[C:4]>>[c:1]-[C:3]#[C:4]",
+    "arity": 2,
+    "reagents": ["Pd(PPh3)2Cl2", "CuI", "Et3N"],
+    "conditions": "amine solvent, rt to 60 C",
+    "byproducts": ["Br"],
+    "priority": 9,
+    "notes": "Forms an aryl-alkynyl carbon-carbon bond from a terminal alkyne.",
+    "tags": ["coupling", "sonogashira", "alkyne"]
+  },
+  {
+    "id": "buchwald_hartwig_amination",
+    "name": "Buchwald-Hartwig amination",
+    "smarts": "[c:1][Br:2].[N;H1,H2:3]>>[c:1][N:3]",
+    "arity": 2,
+    "reagents": ["Pd2(dba)3", "BINAP", "NaOtBu"],
+    "conditions": "anhydrous toluene, 80-110 C",
+    "byproducts": ["Br"],
+    "priority": 9,
+    "notes": "Palladium-catalysed C-N coupling gives aryl amines from aryl halides.",
+    "tags": ["coupling", "buchwald-hartwig", "amine"]
+  }
+]

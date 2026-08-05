@@ -1,0 +1,122 @@
+[
+  {
+    "id": "pcc_primary_alcohol_to_aldehyde",
+    "name": "PCC oxidation of primary alcohol",
+    "smarts": "[C;H2:1][O;H1:2]>>[C:1]=[O:2]",
+    "arity": 1,
+    "reagents": ["PCC"],
+    "conditions": "anhydrous CH2Cl2, rt",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "Anhydrous conditions stop oxidation at the aldehyde.",
+    "tags": ["oxidation", "alcohol", "aldehyde"]
+  },
+  {
+    "id": "jones_primary_alcohol_to_acid",
+    "name": "Jones oxidation of primary alcohol",
+    "smarts": "[C;H2:1][O;H1:2]>>[C:1](=[O:2])O",
+    "arity": 1,
+    "reagents": ["CrO3", "H2SO4"],
+    "conditions": "aqueous acetone, 0 C to rt",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Aqueous chromic acid oxidizes primary alcohols through the aldehyde to carboxylic acids.",
+    "tags": ["oxidation", "alcohol", "carboxylic-acid"]
+  },
+  {
+    "id": "permanganate_primary_alcohol_to_acid",
+    "name": "Permanganate oxidation of primary alcohol",
+    "smarts": "[C;H2:1][O;H1:2]>>[C:1](=[O:2])O",
+    "arity": 1,
+    "reagents": ["KMnO4"],
+    "conditions": "aqueous, heat, then acid workup",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Strong oxidation proceeds to the carboxylic acid.",
+    "tags": ["oxidation", "alcohol", "carboxylic-acid"]
+  },
+  {
+    "id": "jones_secondary_alcohol_to_ketone",
+    "name": "Jones oxidation of secondary alcohol",
+    "smarts": "[C;H1:1][O;H1:2]>>[C:1]=[O:2]",
+    "arity": 1,
+    "reagents": ["CrO3", "H2SO4"],
+    "conditions": "aqueous acetone, 0 C to rt",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "Secondary alcohols are cleanly oxidized to ketones.",
+    "tags": ["oxidation", "alcohol", "ketone"]
+  },
+  {
+    "id": "swern_primary_alcohol_to_aldehyde",
+    "name": "Swern oxidation of primary alcohol",
+    "smarts": "[C;H2:1][O;H1:2]>>[C:1]=[O:2]",
+    "arity": 1,
+    "reagents": ["DMSO", "oxalyl chloride", "Et3N"],
+    "conditions": "-78 C, then warm to rt",
+    "byproducts": ["CSC", "[C-]#[O+]", "O=C=O", "Cl"],
+    "priority": 9,
+    "notes": "Mild, anhydrous oxidation avoids heavy metals and over-oxidation.",
+    "tags": ["oxidation", "swern", "aldehyde"]
+  },
+  {
+    "id": "swern_secondary_alcohol_to_ketone",
+    "name": "Swern oxidation of secondary alcohol",
+    "smarts": "[C;H1:1][O;H1:2]>>[C:1]=[O:2]",
+    "arity": 1,
+    "reagents": ["DMSO", "oxalyl chloride", "Et3N"],
+    "conditions": "-78 C, then warm to rt",
+    "byproducts": ["CSC", "[C-]#[O+]", "O=C=O", "Cl"],
+    "priority": 9,
+    "notes": "Produces ketones under mild conditions.",
+    "tags": ["oxidation", "swern", "ketone"]
+  },
+  {
+    "id": "dess_martin_primary_alcohol_to_aldehyde",
+    "name": "Dess-Martin oxidation of primary alcohol",
+    "smarts": "[C;H2:1][O;H1:2]>>[C:1]=[O:2]",
+    "arity": 1,
+    "reagents": ["Dess-Martin periodinane"],
+    "conditions": "CH2Cl2, 0 C to rt",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "A mild, nearly neutral oxidation that is compatible with sensitive functionality.",
+    "tags": ["oxidation", "dess-martin", "aldehyde"]
+  },
+  {
+    "id": "dess_martin_secondary_alcohol_to_ketone",
+    "name": "Dess-Martin oxidation of secondary alcohol",
+    "smarts": "[C;H1:1][O;H1:2]>>[C:1]=[O:2]",
+    "arity": 1,
+    "reagents": ["Dess-Martin periodinane"],
+    "conditions": "CH2Cl2, 0 C to rt",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "Converts secondary alcohols to ketones without strongly acidic or basic conditions.",
+    "tags": ["oxidation", "dess-martin", "ketone"]
+  },
+  {
+    "id": "benzylic_side_chain_oxidation",
+    "name": "Benzylic side-chain oxidation",
+    "smarts": "[c:1][C;H1,H2,H3:2]>>[c:1][C:2](=O)O",
+    "arity": 1,
+    "reagents": ["KMnO4"],
+    "conditions": "aqueous base, heat, then acid workup",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Any alkylbenzene bearing at least one benzylic hydrogen is oxidized to benzoic acid.",
+    "tags": ["oxidation", "aromatic", "carboxylic-acid"]
+  },
+  {
+    "id": "ozonolysis_reductive_workup",
+    "name": "Reductive ozonolysis",
+    "smarts": "[C:1]=[C:2]>>[C:1]=O.[C:2]=O",
+    "arity": 1,
+    "reagents": ["1. O3", "2. Me2S"],
+    "conditions": "-78 C, then reductive workup",
+    "byproducts": ["CS(C)=O"],
+    "priority": 8,
+    "notes": "Cleaves the alkene into aldehyde and/or ketone fragments without oxidative overworkup.",
+    "tags": ["oxidation", "ozonolysis", "cleavage"]
+  }
+]

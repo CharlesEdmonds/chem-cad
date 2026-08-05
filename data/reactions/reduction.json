@@ -1,0 +1,110 @@
+[
+  {
+    "id": "nabh4_aldehyde_reduction",
+    "name": "NaBH4 reduction of aldehyde",
+    "smarts": "[C;H1:1]=[O:2]>>[C:1][O:2]",
+    "arity": 1,
+    "reagents": ["NaBH4"],
+    "conditions": "MeOH, 0 C to rt",
+    "byproducts": [],
+    "priority": 10,
+    "notes": "Chemoselective hydride reduction gives a primary alcohol.",
+    "tags": ["reduction", "aldehyde", "alcohol"]
+  },
+  {
+    "id": "nabh4_ketone_reduction",
+    "name": "NaBH4 reduction of ketone",
+    "smarts": "[C;H0:1]=[O:2]>>[C:1][O:2]",
+    "arity": 1,
+    "reagents": ["NaBH4"],
+    "conditions": "MeOH, 0 C to rt",
+    "byproducts": [],
+    "priority": 10,
+    "notes": "Reduces ketones to secondary alcohols under mild conditions.",
+    "tags": ["reduction", "ketone", "alcohol"]
+  },
+  {
+    "id": "lialh4_aldehyde_reduction",
+    "name": "LiAlH4 reduction of aldehyde",
+    "smarts": "[C;H1:1]=[O:2]>>[C:1][O:2]",
+    "arity": 1,
+    "reagents": ["1. LiAlH4", "2. H2O"],
+    "conditions": "anhydrous ether, then aqueous workup",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "A powerful hydride reagent converts aldehydes to primary alcohols.",
+    "tags": ["reduction", "aldehyde", "alcohol"]
+  },
+  {
+    "id": "lialh4_ketone_reduction",
+    "name": "LiAlH4 reduction of ketone",
+    "smarts": "[C;H0:1]=[O:2]>>[C:1][O:2]",
+    "arity": 1,
+    "reagents": ["1. LiAlH4", "2. H2O"],
+    "conditions": "anhydrous ether, then aqueous workup",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Ketones are reduced to secondary alcohols.",
+    "tags": ["reduction", "ketone", "alcohol"]
+  },
+  {
+    "id": "lialh4_ester_reduction",
+    "name": "LiAlH4 reduction of ester",
+    "smarts": "[C:1](=[O:2])[O:3][C:4]>>[C:1][O:2].[O:3][C:4]",
+    "arity": 1,
+    "reagents": ["1. LiAlH4", "2. H2O"],
+    "conditions": "anhydrous THF, reflux, then workup",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "Both acyl and alkoxy portions emerge as alcohols.",
+    "tags": ["reduction", "ester", "alcohol"]
+  },
+  {
+    "id": "lialh4_carboxylic_acid_reduction",
+    "name": "LiAlH4 reduction of carboxylic acid",
+    "smarts": "[C:1](=[O:2])[O;H1:3]>>[C:1][O:2]",
+    "arity": 1,
+    "reagents": ["1. LiAlH4", "2. H2O"],
+    "conditions": "anhydrous THF, reflux, then workup",
+    "byproducts": ["O"],
+    "priority": 9,
+    "notes": "Carboxylic acids are reduced to primary alcohols after consuming an initial equivalent of hydride.",
+    "tags": ["reduction", "carboxylic-acid", "alcohol"]
+  },
+  {
+    "id": "catalytic_hydrogenation_alkene",
+    "name": "Catalytic hydrogenation of alkene",
+    "smarts": "[C:1]=[C:2]>>[C:1][C:2]",
+    "arity": 1,
+    "reagents": ["H2", "Pd/C"],
+    "conditions": "H2 atmosphere, rt",
+    "byproducts": [],
+    "priority": 10,
+    "notes": "Hydrogen adds syn at the catalyst surface to give the saturated alkane.",
+    "tags": ["reduction", "hydrogenation", "alkene"]
+  },
+  {
+    "id": "catalytic_hydrogenation_alkyne",
+    "name": "Catalytic hydrogenation of alkyne",
+    "smarts": "[C:1]#[C:2]>>[C:1][C:2]",
+    "arity": 1,
+    "reagents": ["excess H2", "Pd/C"],
+    "conditions": "H2 atmosphere, rt",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "Unpoisoned palladium reduces an alkyne fully to the alkane.",
+    "tags": ["reduction", "hydrogenation", "alkyne"]
+  },
+  {
+    "id": "nitro_to_aniline_reduction",
+    "name": "Reduction of aromatic nitro group",
+    "smarts": "[c:1][N+:2](=O)[O-:3]>>[c:1][N:2]",
+    "arity": 1,
+    "reagents": ["H2", "Pd/C"],
+    "conditions": "EtOH, H2 atmosphere, rt",
+    "byproducts": ["O", "O"],
+    "priority": 9,
+    "notes": "Catalytic hydrogenation reduces an aryl nitro group to the corresponding aniline.",
+    "tags": ["reduction", "nitro", "amine"]
+  }
+]

@@ -1,0 +1,62 @@
+[
+  {
+    "id": "cyclic_acetal_protection",
+    "name": "Cyclic acetal protection",
+    "smarts": "[C:1]=[O:2].[O;H1:3][C:4][C:5][O;H1:6]>>[C:1]1[O:3][C:4][C:5][O:6]1",
+    "arity": 2,
+    "reagents": ["ethylene glycol", "p-TsOH (cat.)"],
+    "conditions": "toluene, reflux, Dean-Stark trap",
+    "byproducts": ["O"],
+    "priority": 9,
+    "notes": "Removal of water drives formation of a five-membered cyclic acetal or ketal.",
+    "tags": ["protecting-group", "acetal", "carbonyl"]
+  },
+  {
+    "id": "cyclic_acetal_deprotection",
+    "name": "Cyclic acetal deprotection",
+    "smarts": "[C:1]1[O:2][C:3][C:4][O:5]1>>[C:1]=O.[O:2][C:3][C:4][O:5]",
+    "arity": 1,
+    "reagents": ["dilute HCl", "H2O"],
+    "conditions": "aqueous THF, rt to reflux",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "Aqueous acid regenerates the carbonyl compound and ethylene glycol.",
+    "tags": ["deprotection", "acetal", "carbonyl"]
+  },
+  {
+    "id": "epoxide_opening_acidic_water",
+    "name": "Acid-catalysed epoxide hydrolysis",
+    "smarts": "[C:1]1[O:2][C:3]1>>[C:1]([O])[C:3][O:2]",
+    "arity": 1,
+    "reagents": ["H2O", "H+ (cat.)"],
+    "conditions": "aqueous acid, rt",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Water attacks the more substituted epoxide carbon with anti ring opening.",
+    "tags": ["epoxide", "ring-opening", "acid"]
+  },
+  {
+    "id": "epoxide_opening_basic_hydroxide",
+    "name": "Base-promoted epoxide hydrolysis",
+    "smarts": "[C:1]1[O:2][C:3]1>>[C:1]([O])[C:3][O:2]",
+    "arity": 1,
+    "reagents": ["NaOH", "H2O"],
+    "conditions": "aqueous, rt to reflux",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Hydroxide attacks the less substituted epoxide carbon by an SN2 pathway.",
+    "tags": ["epoxide", "ring-opening", "base"]
+  },
+  {
+    "id": "epoxide_opening_with_alcohol",
+    "name": "Alcohol opening of epoxide",
+    "smarts": "[C:1]1[O:2][C:3]1.[O;H1:4][C:5]>>[C:1]([O:4][C:5])[C:3][O:2]",
+    "arity": 2,
+    "reagents": ["BF3.OEt2"],
+    "conditions": "alcohol solvent, 0 C to rt",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Lewis-acid activation allows an alcohol nucleophile to give a beta-alkoxy alcohol.",
+    "tags": ["epoxide", "ring-opening", "ether"]
+  }
+]
