@@ -239,12 +239,21 @@ doing it on the bench.
 
 Each phase is charged with a volume, density, viscosity, interfacial
 tension, emulsion stability and colour, and the vessel stacks phases
-dense-first. Shaking disperses settled volume into droplets whose Sauter
-radius falls with shaking vigour and rises with interfacial tension; once
-dispersed, droplets rise or fall through the continuous phase at their
-Stokes terminal velocity, coalescing with each other and rejoining the bulk
-layer as they settle. Emulsion stability governs how long the dispersion
-survives: near 0 it breaks in seconds, near 1 it persists far longer.
+dense-first. A shake is described the way a chemist describes it --
+duration (s), oscillation frequency (Hz) and stroke amplitude (cm) -- and
+everything else is derived: the peak slosh velocity u = 2*pi*f*A, the
+specific power input epsilon = u^2 f / 2, and a Hinze Sauter mean droplet
+size d32 = 0.725 (sigma/rho_c)^0.6 epsilon^-0.4 capped by the Weber
+breakup limit (We_crit = 12). Settled volume disperses progressively over
+the shake duration at the column-turnover rate f_t = u / H, so a 5 s shake
+visibly emulsifies over 5 s while the vessel itself oscillates on screen;
+the derived numbers are displayed live in the panel.
+
+Once dispersed, droplets rise or fall through the continuous phase at
+their Stokes terminal velocity, coalescing with each other and rejoining
+the bulk layer as they settle. Emulsion stability governs how long the
+dispersion survives: near 0 it breaks in seconds, near 1 it persists far
+longer.
 
 Volume is conserved exactly at every step, and the simulation is
 deterministic for a given seed.

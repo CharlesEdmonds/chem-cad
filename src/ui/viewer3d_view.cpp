@@ -193,7 +193,7 @@ void drawBond(ImDrawList* dl, ImVec2 pa, ImVec2 pb, float thick, ImVec4 colorA, 
 }
 
 // ---------------------------------------------------------------- drawing
-void drawViewerCanvas(AppState& st, ImVec2 min, ImVec2 max) {
+void drawViewerCanvas(AppState& st, ImVec2 min, ImVec2 max, bool compact = false) {
   Viewer3DState& vs = st.viewer3d;
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const style::Metrics& m = style::metrics();
@@ -290,7 +290,7 @@ void drawViewerCanvas(AppState& st, ImVec2 min, ImVec2 max) {
     }
   }
 
-  if (hoveredAtom && ImGui::IsItemHovered()) {
+  if (!compact && hoveredAtom && ImGui::IsItemHovered()) {
     ImGui::SetTooltip("%s", chem::symbolFor(hoveredAtom->atomicNumber));
   }
 
@@ -302,11 +302,13 @@ void drawViewerCanvas(AppState& st, ImVec2 min, ImVec2 max) {
               ImVec2(min.x + m.gap, max.y - m.gap - ImGui::GetFontSize()),
               style::u32(style::col::TextDim), caption);
 
-  // Interaction hint, bottom-right.
-  const char* hint = "drag to rotate  |  wheel to zoom  |  double-click resets";
-  const ImVec2 hintSize = ImGui::CalcTextSize(hint);
-  dl->AddText(ImVec2(max.x - m.gap - hintSize.x, max.y - m.gap - hintSize.y),
-              style::u32(style::col::TextFaint), hint);
+  // Interaction hint, bottom-right (the corner overlay has no room for it).
+  if (!compact) {
+    const char* hint = "drag to rotate  |  wheel to zoom  |  double-click resets";
+    const ImVec2 hintSize = ImGui::CalcTextSize(hint);
+    dl->AddText(ImVec2(max.x - m.gap - hintSize.x, max.y - m.gap - hintSize.y),
+                style::u32(style::col::TextFaint), hint);
+  }
 }
 
 }  // namespace
@@ -319,12 +321,16 @@ void drawViewer3D(AppState& st) {
     vs.yawDeg = std::fmod(vs.yawDeg + ImGui::GetIO().DeltaTime * 25.0f, 360.0f);
   }
 
+  // Control row: packs on one line when the panel is wide, stacks when the
+  // docked preview column narrows.
   static const char* kStyles[] = {"Ball and stick", "Licorice", "Space-filling"};
-  ImGui::SetNextItemWidth(170.0f);
+  const float rowW = 170.0f + ImGui::CalcTextSize("Auto-rotate").x + 30.0f + 90.0f;
+  const bool oneRow = ImGui::GetContentRegionAvail().x >= rowW;
+  ImGui::SetNextItemWidth(std::min(170.0f, ImGui::GetContentRegionAvail().x));
   ImGui::Combo("##v3d_style", &vs.style, kStyles, 3);
-  ImGui::SameLine();
+  if (oneRow) ImGui::SameLine();
   ImGui::Checkbox("Auto-rotate", &vs.autoRotate);
-  ImGui::SameLine();
+  if (oneRow) ImGui::SameLine();
   if (widgets::ghostButton("Reset view")) {
     vs.yawDeg = 35.0f;
     vs.pitchDeg = -18.0f;

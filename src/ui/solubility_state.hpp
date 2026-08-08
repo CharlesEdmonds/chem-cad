@@ -76,7 +76,10 @@ struct SolubilityState {
   sol::Simulation funnel;
   bool funnelRunning = false;
   float funnelSpeed = 1.0f;
-  float shakeVigour = 0.6f;
+  // Physical shake inputs (sol::ShakeParams): what a chemist actually sets.
+  float shakeDurationS = 5.0f;    // s
+  float shakeFrequencyHz = 3.0f;  // Hz, 2-4 is a firm hand shake
+  float shakeAmplitudeCm = 5.0f;  // cm stroke half-amplitude
   int funnelVessel = 0;  // mirrors sol::Vessel, kept as int for a plain ImGui combo
 
   ExtractionImport extractionImport;  // suite -> extraction lab hand-off

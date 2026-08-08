@@ -257,6 +257,112 @@ TEST_CASE("describeSolute raises hydrogen bonding for hydroxyl-bearing solutes")
   CHECK(benzene.hansen.hydrogenBond < ethanol.hansen.hydrogenBond);
 }
 
+TEST_CASE("shake derives slosh velocity and power input from physical inputs") {
+  sol::Phase water;
+  water.label = "water";
+  water.volumeMl = 100.0;
+  water.density = 1.0;
+  sol::Phase oil;
+  oil.label = "oil";
+  oil.volumeMl = 100.0;
+  oil.density = 0.8;
+
+  sol::Simulation sim;
+  sim.phases = {water, oil};
+  sol::reset(sim);
+
+  const sol::ShakeParams params{5.0, 3.0, 0.05};
+  sol::shake(sim, params);
+
+  const double expectedU = 2.0 * std::numbers::pi_v<double> * 3.0 * 0.05;
+  CHECK(sim.shake.peakVelocity == doctest::Approx(expectedU).epsilon(1e-9));
+  CHECK(sim.shake.specificPower ==
+        doctest::Approx(0.5 * expectedU * expectedU * 3.0).epsilon(1e-9));
+  CHECK(sim.shake.active);
+  CHECK(sim.shake.remainingS == doctest::Approx(5.0));
+  CHECK(sim.shake.sauterRadiusM > 0.0);
+
+  // A shake is a promise of motion, not instant dispersion: nothing is
+  // emulsified until the clock advances.
+  CHECK(sol::emulsifiedFraction(sim) == doctest::Approx(0.0));
+}
+
+TEST_CASE("harder shaking makes smaller droplets and disperses faster") {
+  auto shakenAt = [](double frequencyHz, double amplitudeM, double tension) {
+    sol::Phase water;
+    water.label = "water";
+    water.volumeMl = 100.0;
+    water.density = 1.0;
+    water.interfacialTension = tension;
+    sol::Phase oil;
+    oil.label = "oil";
+    oil.volumeMl = 100.0;
+    oil.density = 0.8;
+    oil.interfacialTension = tension;
+
+    sol::Simulation sim;
+    sim.seed = 11u;
+    sim.phases = {water, oil};
+    sol::reset(sim);
+    sol::shake(sim, sol::ShakeParams{8.0, frequencyHz, amplitudeM});
+    return sim;
+  };
+
+  sol::Simulation gentle = shakenAt(1.0, 0.02, 30.0);
+  sol::Simulation hard = shakenAt(4.0, 0.08, 30.0);
+
+  // Hinze: d32 falls as epsilon^-0.4, so the harder shake must predict the
+  // smaller mean droplet.
+  CHECK(hard.shake.sauterRadiusM < gentle.shake.sauterRadiusM);
+
+  // Same starting point: nothing dispersed yet.
+  REQUIRE(sol::emulsifiedFraction(gentle) == doctest::Approx(0.0));
+  REQUIRE(sol::emulsifiedFraction(hard) == doctest::Approx(0.0));
+
+  // After the same wall time the harder shake has turned the column over
+  // more often, so more volume is dispersed.
+  for (int i = 0; i < 40; ++i) {  // 2 s
+    sol::step(gentle, 0.05);
+    sol::step(hard, 0.05);
+  }
+  CHECK(sol::emulsifiedFraction(hard) > sol::emulsifiedFraction(gentle));
+
+  // Higher interfacial tension resists breakup: larger mean droplets.
+  sol::Simulation slippery = shakenAt(3.0, 0.05, 5.0);
+  sol::Simulation stiff = shakenAt(3.0, 0.05, 60.0);
+  CHECK(stiff.shake.sauterRadiusM > slippery.shake.sauterRadiusM);
+}
+
+TEST_CASE("a shake emulsifies progressively over its duration, then stops") {
+  sol::Phase water;
+  water.label = "water";
+  water.volumeMl = 100.0;
+  water.density = 1.0;
+  water.emulsionStability = 1.0;  // nothing re-settles: isolates dispersion
+  sol::Phase oil;
+  oil.label = "oil";
+  oil.volumeMl = 100.0;
+  oil.density = 0.8;
+  oil.emulsionStability = 1.0;
+
+  sol::Simulation sim;
+  sim.seed = 5u;
+  sim.phases = {water, oil};
+  sol::reset(sim);
+  sol::shake(sim, sol::ShakeParams{4.0, 3.0, 0.05});
+
+  double previous = 0.0;
+  for (int i = 0; i < 80; ++i) {  // 4 s == the shake duration
+    sol::step(sim, 0.05);
+    const double fraction = sol::emulsifiedFraction(sim);
+    CAPTURE(i);
+    CHECK(fraction >= previous - 1e-12);  // monotonic while shaking
+    previous = fraction;
+  }
+  CHECK(previous > 0.5);  // a 4 s firm shake thoroughly emulsifies
+  CHECK(!sim.shake.active);
+}
+
 TEST_CASE("funnel simulation conserves total charged volume through shaking and settling") {
   sol::Simulation sim;
   sim.vessel = sol::Vessel::SeparatoryFunnel;
@@ -286,7 +392,7 @@ TEST_CASE("funnel simulation conserves total charged volume through shaking and 
   CHECK(total == doctest::Approx(180.0).epsilon(1e-9));
   CHECK(std::abs(settledVolumeMl(sim) + dropletVolumeMl(sim) - total) < 1e-6);
 
-  sol::shake(sim, 0.8);
+  sol::shake(sim, sol::ShakeParams{4.0, 3.0, 0.06});
   CHECK(std::abs(settledVolumeMl(sim) + dropletVolumeMl(sim) - total) < 1e-6);
 
   for (int i = 0; i < 500; ++i) {
@@ -344,7 +450,10 @@ TEST_CASE("emulsion stability governs how long a shaken mixture stays dispersed"
     sim.seed = 7u;
     sim.phases = {water, oil};
     sol::reset(sim);
-    sol::shake(sim, 1.0);
+    sol::shake(sim, sol::ShakeParams{6.0, 3.5, 0.06});
+    // Run the shake to completion so both builds start settling from the
+    // same fully-shaken state.
+    for (int t = 0; t < 140; ++t) sol::step(sim, 0.05);
     return sim;
   };
 
@@ -384,8 +493,8 @@ TEST_CASE("identical seeds and action sequences reproduce identical outcomes") {
   sol::Simulation simA = buildCharged();
   sol::Simulation simB = buildCharged();
 
-  sol::shake(simA, 0.7);
-  sol::shake(simB, 0.7);
+  sol::shake(simA, sol::ShakeParams{5.0, 3.0, 0.05});
+  sol::shake(simB, sol::ShakeParams{5.0, 3.0, 0.05});
   for (int i = 0; i < 200; ++i) {
     sol::step(simA, 0.03);
     sol::step(simB, 0.03);

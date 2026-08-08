@@ -31,17 +31,22 @@ constexpr double kMlToM3 = 1e-6;
 constexpr double kReferenceHeightM = 0.22;
 constexpr int kProfileSamples = 128;  // resolution of the height<->volume map
 
-// Weber-style Sauter-radius scaling constant for `shake`. Calibrated so a
-// typical organic/water interface (~30 mN/m) at a moderate shake (vigour ~
-// 0.5) lands near 0.2 mm droplets, with size falling as shaking intensifies.
-constexpr double kSauterK = 0.002;
+// Hinze (1955) correlation for the Sauter mean droplet diameter in a dilute
+// dispersion: d32 = C_H * (sigma/rho_c)^0.6 * epsilon^-0.4, with sigma the
+// interfacial tension (N/m), rho_c the continuous-phase density (kg/m^3) and
+// epsilon the specific power input (W/kg). C_H = 0.725 is the standard
+// stirred-tank calibration; hand shaking a funnel sits in the same
+// inertial-subrange regime, so the correlation transfers.
+constexpr double kHinzeC = 0.725;
+// Droplets larger than the Weber-number cap cannot survive the shear:
+// We = rho_c * u^2 * d / sigma; We_crit ~ 12 for breakup in turbulent flow.
+constexpr double kWeberCrit = 12.0;
 constexpr double kMinDropletRadius = 20e-6;  // m
 constexpr double kMaxDropletRadius = 3e-3;   // m
 constexpr int kMaxDroplets = 4000;           // hard cap so a session never explodes
 
 constexpr double kDropletRelaxTau = 0.12;   // s, velocity-toward-terminal time constant
 constexpr double kShakeDecayRate = 0.15;    // 1/s, shakeEnergy exponential decay
-constexpr double kStirAmplitude = 0.05;     // m/s, churn velocity scale at shakeEnergy = 1
 constexpr double kCoalesceRate = 3.0;       // droplet-droplet merge attempts, see `step`
 // Bulk re-absorption attempt rate at stability 0, see `integrateSubstep`. A
 // droplet overlapping its own settled layer is offered this many absorption
@@ -76,11 +81,14 @@ double interpolateWidth(const WidthPoint* pts, size_t n, double t) {
   return pts[n - 1].width;
 }
 
-// Narrow stopcock stem, a pear-shaped bulb widening to about 60% of the
-// height, tapering into a neck, and a slight ground-glass stopper flare.
-constexpr std::array<WidthPoint, 12> kFunnelProfile = {{
-    {0.00, 0.05}, {0.05, 0.09}, {0.10, 0.10}, {0.22, 0.16}, {0.35, 0.55}, {0.50, 0.90},
-    {0.60, 1.00}, {0.70, 0.85}, {0.80, 0.42}, {0.85, 0.17}, {0.93, 0.17}, {1.00, 0.27},
+// Real separatory-funnel silhouette: a narrow drain stem, a stopcock bulge,
+// the pear body widening to its equator, a shoulder tapering to the neck,
+// and the ground-glass stopper flange at the top.
+constexpr std::array<WidthPoint, 16> kFunnelProfile = {{
+    {0.00, 0.045}, {0.06, 0.048}, {0.09, 0.05}, {0.11, 0.105}, {0.14, 0.10},
+    {0.18, 0.13},  {0.26, 0.30},  {0.36, 0.58}, {0.46, 0.82},  {0.55, 0.97},
+    {0.62, 1.00},  {0.70, 0.90},  {0.78, 0.55}, {0.84, 0.20},  {0.93, 0.165},
+    {1.00, 0.26},
 }};
 
 // Flat, wide conical base (Erlenmeyer) tapering to a straight narrow neck.
@@ -350,12 +358,112 @@ void coalesceDroplets(Simulation& sim, double dt, std::mt19937& rng) {
   sim.droplets = std::move(kept);
 }
 
+// Volume-weighted mean density of every phase EXCEPT `excludeIndex`, i.e. the
+// continuous medium a droplet of that phase travels through. Falls back to
+// the phase's own density when it is the only liquid (pure self-dispersion).
+double continuousDensity(const Simulation& sim, size_t excludeIndex) {
+  double mass = 0.0, volume = 0.0;
+  for (size_t i = 0; i < sim.phases.size(); ++i) {
+    if (i == excludeIndex) continue;
+    mass += sim.phases[i].density * sim.phases[i].volumeMl;
+    volume += sim.phases[i].volumeMl;
+  }
+  if (volume <= 0.0) return sim.phases[excludeIndex].density * 1000.0;
+  return mass / volume * 1000.0;  // g/mL -> kg/m^3
+}
+
+// Physical mean droplet radius for phase `i` under the current shake: Hinze
+// Sauter radius, capped by Weber breakup, floored at the resolution limit.
+double physicalDropletRadius(const Simulation& sim, size_t i, double epsilon, double u) {
+  const double sigma = std::max(1e-6, sim.phases[i].interfacialTension * 1e-3);  // mN/m -> N/m
+  const double rhoC = std::max(1.0, continuousDensity(sim, i));
+  double r32 = 0.5 * kHinzeC * std::pow(sigma / rhoC, 0.6) * std::pow(std::max(epsilon, 1e-9), -0.4);
+  double rWeber = 0.5 * kWeberCrit * sigma / (rhoC * std::max(u * u, 1e-9));
+  return std::clamp(std::min(r32, rWeber), kMinDropletRadius, kMaxDropletRadius);
+}
+
+// Progressive dispersion: while a shake is active, each phase's settled
+// volume is converted into droplets at the column-turnover rate f_t = u / H
+// (the slosh velocity sweeping the liquid-column height). Runs per substep so
+// a 5 s shake visibly emulsifies over 5 s instead of teleporting.
+void disperseDuringShake(Simulation& sim, double dt, std::mt19937& rng) {
+  if (!sim.shake.active || dt <= 0.0 || sim.phases.empty()) return;
+
+  ColumnGeometry geo = columnGeometry(sim);
+  const double u = sim.shake.peakVelocity;
+  const double turnoverHz = u / std::max(geo.fillHeight, 0.02);
+  const double frac = 1.0 - std::exp(-turnoverHz * dt);
+  if (frac <= 0.0) return;
+
+  std::uniform_real_distribution<double> unit(0.0, 1.0);
+
+  for (size_t i = 0; i < sim.phases.size(); ++i) {
+    double want = sim.settledMl[i] * frac;
+    if (want <= 0.0) continue;
+
+    int capacityLeft = kMaxDroplets - static_cast<int>(sim.droplets.size());
+    if (capacityLeft <= 0) return;
+
+    // A real emulsion shatters into billions of droplets; kMaxDroplets caps
+    // the count for performance, so the budget radius grows to let the capped
+    // population carry the phase's remaining settled volume. The physical
+    // Hinze radius stays the floor, and the UI reports it separately.
+    const double physical = physicalDropletRadius(sim, i, sim.shake.specificPower, u);
+    const double settledM3 = sim.settledMl[i] * kMlToM3;
+    const double budgetRadius =
+        std::cbrt(3.0 * settledM3 / (4.0 * kPi * std::max(capacityLeft, 1)));
+    const double radiusM =
+        std::clamp(std::max(physical, budgetRadius), kMinDropletRadius, kMaxDropletRadius);
+    const float radiusF = static_cast<float>(radiusM);
+    const double dropVolMl = dropletVolumeMl(static_cast<double>(radiusF));
+    if (dropVolMl <= 0.0) continue;
+
+    // Stochastic rounding: the per-substep expectation is often fractional,
+    // and flooring it every substep would stall dispersion entirely.
+    const double expected = std::min(want / dropVolMl, static_cast<double>(capacityLeft));
+    int count = static_cast<int>(expected);
+    if (unit(rng) < expected - static_cast<double>(count)) ++count;
+    count = std::min(count, capacityLeft);
+    if (count <= 0) continue;
+
+    sim.settledMl[i] -= count * dropVolMl;  // the undispersed remainder simply stays settled
+
+    for (int k = 0; k < count; ++k) {
+      Droplet d;
+      d.phase = static_cast<int>(i);
+      d.radius = radiusF;
+      const double dropletY = unit(rng) * geo.fillHeight;
+      const double vesselFrac = std::clamp(dropletY / kReferenceHeightM, 0.0, 1.0);
+      const double halfWidth = geo.maxRadius * vesselWidthAt(sim.vessel, vesselFrac);
+      const double xLimit = std::max(0.0, halfWidth - radiusM);
+      d.position.y = static_cast<float>(dropletY);
+      d.position.x = static_cast<float>((unit(rng) * 2.0 - 1.0) * xLimit);
+      // Churn at a fraction of the slosh velocity, random direction.
+      d.velocity.x = static_cast<float>((unit(rng) * 2.0 - 1.0) * u * 0.5);
+      d.velocity.y = static_cast<float>((unit(rng) * 2.0 - 1.0) * u * 0.5);
+      sim.droplets.push_back(d);
+    }
+  }
+}
+
 // One fixed-length physics slice: Stokes relaxation, stirring, wall clamp and
 // return-to-bulk coalescence for every droplet.
 void integrateSubstep(Simulation& sim, double dt, std::mt19937& rng) {
   if (sim.phases.empty()) return;
 
-  sim.shakeEnergy *= std::exp(-kShakeDecayRate * dt);
+  // Advance the shake clock; the churn envelope is 1 while shaking and decays
+  // with the turbulence afterwards.
+  if (sim.shake.active) {
+    sim.shake.remainingS -= dt;
+    sim.shakeEnergy = 1.0;
+    if (sim.shake.remainingS <= 0.0) {
+      sim.shake.remainingS = 0.0;
+      sim.shake.active = false;
+    }
+  } else {
+    sim.shakeEnergy *= std::exp(-kShakeDecayRate * dt);
+  }
+  disperseDuringShake(sim, dt, rng);
 
   ColumnGeometry geo = columnGeometry(sim);
   std::vector<double> boundaries = layerBoundaries(sim, geo);
@@ -376,7 +484,11 @@ void integrateSubstep(Simulation& sim, double dt, std::mt19937& rng) {
 
     double stir = 0.0;
     if (sim.shakeEnergy > 1e-4) {
-      stir = kStirAmplitude * sim.shakeEnergy *
+      // Churn scales with the actual slosh velocity of the shake, not a fixed
+      // amplitude: a 4 Hz hard shake churns proportionally harder than a
+      // 1 Hz swirl, and the envelope relaxes after the shake ends.
+      const double churn = std::max(0.05, sim.shake.peakVelocity * 0.6);
+      stir = churn * sim.shakeEnergy *
              std::sin(2.0 * kPi * (sim.elapsed * 1.7 + double(d.position.x) * 37.0 +
                                     double(d.position.y) * 53.0));
     }
@@ -431,96 +543,40 @@ void reset(Simulation& sim) {
   // nothing here can lose volume the way a merge can.
   for (size_t i = 0; i < sim.phases.size(); ++i) sim.settledMl[i] = sim.phases[i].volumeMl;
   sim.droplets.clear();
+  sim.shake = ShakeState{};
   sim.shakeEnergy = 0.0;
   sim.elapsed = 0.0;
 }
 
-void shake(Simulation& sim, double vigour) {
-  vigour = std::clamp(vigour, 0.0, 1.0);
-  sim.shakeEnergy = std::min(1.0, sim.shakeEnergy + vigour);
-  if (vigour <= 0.0 || sim.phases.empty()) return;
+void shake(Simulation& sim, const ShakeParams& params) {
+  if (sim.phases.empty()) return;
 
-  std::mt19937 rng(sim.seed);
-  std::uniform_real_distribution<double> unit(0.0, 1.0);
-  std::uniform_real_distribution<double> jitter(-0.02, 0.02);
-  ColumnGeometry geo = columnGeometry(sim);
+  ShakeState state;
+  state.durationS = std::clamp(params.durationS, 0.1, 120.0);
+  state.remainingS = state.durationS;
+  state.frequencyHz = std::clamp(params.frequencyHz, 0.2, 12.0);
+  state.amplitudeM = std::clamp(params.amplitudeM, 0.005, 0.30);
+  state.active = true;
 
-  // First pass: which phases actually disperse anything this call? The
-  // droplet budget below is split evenly across only those phases, so a
-  // phase early in `sim.phases` cannot claim the whole cap and starve a
-  // later one.
-  std::vector<size_t> dispersingPhases;
-  std::vector<double> dispersedMl(sim.phases.size(), 0.0);
+  // Sinusoidal vessel motion: the liquid sloshes at the vessel's peak
+  // velocity u = 2*pi*f*A.
+  state.peakVelocity = 2.0 * kPi * state.frequencyHz * state.amplitudeM;
+  // Each cycle injects kinetic energy ~ 1/2 m u^2; at f cycles per second the
+  // specific power input is epsilon = u^2 f / 2 (W/kg of liquid).
+  state.specificPower = 0.5 * state.peakVelocity * state.peakVelocity * state.frequencyHz;
+
+  // Display aggregate: the volume-weighted physical droplet radius across
+  // phases (per-phase values are recomputed inside the dispersion step).
+  double weighted = 0.0, total = 0.0;
   for (size_t i = 0; i < sim.phases.size(); ++i) {
-    double dispersed = sim.settledMl[i] * vigour * (1.0 - std::exp(-vigour * 3.0));
-    dispersed = std::clamp(dispersed, 0.0, sim.settledMl[i]);
-    dispersedMl[i] = dispersed;
-    if (dispersed > 0.0) dispersingPhases.push_back(i);
+    const double v = std::max(sim.phases[i].volumeMl, 0.0);
+    weighted += physicalDropletRadius(sim, i, state.specificPower, state.peakVelocity) * v;
+    total += v;
   }
-  if (dispersingPhases.empty()) return;
+  state.sauterRadiusM = total > 0.0 ? weighted / total : 0.0;
 
-  int perPhaseBudget = kMaxDroplets / static_cast<int>(dispersingPhases.size());
-
-  for (size_t i : dispersingPhases) {
-    double dispersed = dispersedMl[i];
-
-    double tension = sim.phases[i].interfacialTension;
-    double denom = 1000.0 * (0.05 + vigour) * (0.05 + vigour);
-    double sauterRadiusM = kSauterK * tension / denom;
-
-    int capacityLeft =
-        std::min(perPhaseBudget, kMaxDroplets - static_cast<int>(sim.droplets.size()));
-    capacityLeft = std::max(0, capacityLeft);
-    if (capacityLeft <= 0) continue;
-
-    // A real emulsion shatters into billions of droplets; this simulation
-    // caps the droplet count at kMaxDroplets for performance, so the
-    // droplet budget wins over the physical Sauter radius whenever the
-    // physical size would need more droplets than the budget allows to
-    // carry the dispersed volume. Growing the radius to fit the budget
-    // trades droplet count for a dispersed volume that is still visually
-    // and physically representative, instead of clamping to the physical
-    // radius and silently dispersing almost nothing.
-    double dispersedM3 = dispersed * kMlToM3;
-    double budgetRadiusM = std::cbrt(3.0 * dispersedM3 / (4.0 * kPi * capacityLeft));
-    double radiusM =
-        std::clamp(std::max(sauterRadiusM, budgetRadiusM), kMinDropletRadius, kMaxDropletRadius);
-    // Round to the float precision the droplet will actually store so the
-    // volume subtracted here always matches the volume recovered later.
-    // Unlike `mergeDroplets`, this needs no residual: the rounding happens
-    // once, going forward (radius chosen -> volume derived from it), so the
-    // same double value gets subtracted here and re-summed from the droplet
-    // later -- there is no separate "true" volume it could disagree with.
-    float radiusF = static_cast<float>(radiusM);
-    double dropVolMl = dropletVolumeMl(static_cast<double>(radiusF));
-    if (dropVolMl <= 0.0) continue;
-
-    // If even the budget at kMaxDropletRadius cannot carry the full
-    // dispersed volume, count falls short of capacityLeft here and the
-    // undispersed remainder below simply stays settled.
-    int count = std::min(static_cast<int>(dispersed / dropVolMl), capacityLeft);
-    if (count <= 0) continue;
-
-    sim.settledMl[i] -= count * dropVolMl;  // the undispersed remainder simply stays settled
-
-    for (int k = 0; k < count; ++k) {
-      Droplet d;
-      d.phase = static_cast<int>(i);
-      d.radius = radiusF;
-      double placementFrac = unit(rng);
-      double dropletY = placementFrac * geo.fillHeight;
-      double vesselFrac = std::clamp(dropletY / kReferenceHeightM, 0.0, 1.0);
-      double halfWidth = geo.maxRadius * vesselWidthAt(sim.vessel, vesselFrac);
-      double xLimit = std::max(0.0, halfWidth - radiusM);
-      d.position.y = static_cast<float>(dropletY);
-      d.position.x = static_cast<float>((unit(rng) * 2.0 - 1.0) * xLimit);
-      d.velocity.x = static_cast<float>(jitter(rng));
-      d.velocity.y = static_cast<float>(jitter(rng));
-      sim.droplets.push_back(d);
-    }
-  }
-
-  sim.seed = rng();
+  sim.shake = state;
+  sim.shakeEnergy = 1.0;
 }
 
 void step(Simulation& sim, double dt) {

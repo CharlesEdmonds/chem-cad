@@ -67,10 +67,13 @@ TEST_CASE("the cross-section draws and responds to shaking") {
   ui::AppState st;
   const int settled = settledVertexCount(st);
 
-  // Two default phases are seeded on the first frame; shaking fills the
-  // column with droplets, every one of which is an extra filled circle.
+  // Two default phases are seeded on the first frame; five seconds into a
+  // firm 6 s shake the column is full of droplets, every one of which is an
+  // extra filled circle.
   REQUIRE(st.solubility.funnel.phases.size() == 2);
-  sol::shake(st.solubility.funnel, 1.0);
+  sol::shake(st.solubility.funnel, sol::ShakeParams{6.0, 3.5, 0.06});
+  for (int i = 0; i < 100; ++i) sol::step(st.solubility.funnel, 0.05);  // 5 s
+  REQUIRE(st.solubility.funnel.shake.active);  // still shaking at 5 s of 6 s
   REQUIRE(sol::emulsifiedFraction(st.solubility.funnel) > 0.2);
   const int shaken = settledVertexCount(st);
 

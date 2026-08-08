@@ -29,6 +29,30 @@ struct Droplet {
   int phase = 0;          // index into Simulation::phases
 };
 
+// Physical description of one hand shake: how long, how fast, and how far the
+// vessel is oscillated. These are the quantities a chemist actually controls;
+// everything else (power input, droplet size, dispersion rate) is DERIVED from
+// them -- there is deliberately no dimensionless "vigour" knob.
+struct ShakeParams {
+  double durationS = 5.0;     // seconds of shaking
+  double frequencyHz = 3.0;   // oscillation frequency; 2-4 Hz is a firm hand shake
+  double amplitudeM = 0.05;   // stroke half-amplitude of the vessel motion, m
+};
+
+// Derived shake state, filled by `shake()` and advanced by `step()`. All
+// derived quantities are computed once at shake start so the UI can display
+// the same numbers the physics uses.
+struct ShakeState {
+  bool active = false;
+  double remainingS = 0.0;    // counts down inside step(); pauses with the sim
+  double durationS = 0.0;
+  double frequencyHz = 0.0;
+  double amplitudeM = 0.0;
+  double peakVelocity = 0.0;   // u = 2*pi*f*A, m/s -- peak slosh velocity
+  double specificPower = 0.0;  // epsilon, W/kg -- energy input per unit liquid mass
+  double sauterRadiusM = 0.0;  // Hinze mean droplet radius target, m
+};
+
 struct Simulation {
   Vessel vessel = Vessel::SeparatoryFunnel;
   double vesselVolumeMl = 250.0;
@@ -36,7 +60,8 @@ struct Simulation {
   std::vector<Droplet> droplets;
   // Settled bulk volume still in the layer stack, mL, parallel to `phases`.
   std::vector<double> settledMl;
-  double shakeEnergy = 0.0;  // decays each step; drives dispersion
+  ShakeState shake;
+  double shakeEnergy = 0.0;  // 1 while shaking, decays after; drives churn only
   double elapsed = 0.0;      // seconds since the last reset
   unsigned seed = 1u;
 };
@@ -45,9 +70,11 @@ struct Simulation {
 // stack and clears all droplets.
 void reset(Simulation&);
 
-// Injects mixing energy. `vigour` in [0, 1] -- converts settled volume into
-// droplets whose size falls with vigour and with interfacial tension.
-void shake(Simulation&, double vigour);
+// Starts a shake: derives the slosh velocity u = 2*pi*f*A, the specific power
+// input epsilon = u^2*f/2, and the Hinze Sauter mean droplet radius from the
+// phase interfacial tensions, then disperses settled volume progressively
+// over the shake duration inside `step`. Calling again re-arms the shake.
+void shake(Simulation&, const ShakeParams&);
 
 // Advances the simulation by dt seconds: Stokes rise/fall, drag, coalescence
 // back into the settled stack, emulsion decay.

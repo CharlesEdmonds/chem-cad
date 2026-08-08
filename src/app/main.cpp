@@ -33,6 +33,7 @@ constexpr const char* kWinPlanner = "Reaction Planner";
 constexpr const char* kWinSolubility = "Solubility Suite";
 constexpr const char* kWinExtraction = "Extraction Lab";
 constexpr const char* kWinViewer3D = "3D View";
+constexpr const char* kWinPreview3D = "3D Preview";
 constexpr const char* kWinTools = "Tools";
 constexpr const char* kWinPTable = "Periodic Table";
 constexpr const char* kWinProps = "Properties";
@@ -151,7 +152,12 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
   const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.27f, nullptr, &center);
   ImGuiID rightBottom = right;
   const ImGuiID rightTop =
-      ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.52f, nullptr, &rightBottom);
+      ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.40f, nullptr, &rightBottom);
+  ImGuiID rightProps = rightBottom;
+  // Middle slice of the right column: the always-visible 3D preview, between
+  // the periodic table and the property readouts.
+  const ImGuiID rightMid =
+      ImGui::DockBuilderSplitNode(rightBottom, ImGuiDir_Up, 0.46f, nullptr, &rightProps);
 
   ImGui::DockBuilderDockWindow(kWinTools, left);
   ImGui::DockBuilderDockWindow(kWinSketch, center);
@@ -160,7 +166,8 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
   ImGui::DockBuilderDockWindow(kWinExtraction, center);
   ImGui::DockBuilderDockWindow(kWinViewer3D, center);
   ImGui::DockBuilderDockWindow(kWinPTable, rightTop);
-  ImGui::DockBuilderDockWindow(kWinProps, rightBottom);
+  ImGui::DockBuilderDockWindow(kWinPreview3D, rightMid);
+  ImGui::DockBuilderDockWindow(kWinProps, rightProps);
   ImGui::DockBuilderFinish(dockspaceId);
 }
 
@@ -245,7 +252,7 @@ int main(int, char**) {
 
     chemcad::ui::drawMenuBar(state);
 
-    const ImGuiID dockspaceId = ImGui::GetID("chemcad_dockspace_v2");
+    const ImGuiID dockspaceId = ImGui::GetID("chemcad_dockspace_v3");
     if (!layoutBuilt) {
       layoutBuilt = true;
       if (!ImGui::DockBuilderGetNode(dockspaceId)) buildDefaultLayout(dockspaceId);
@@ -307,6 +314,9 @@ int main(int, char**) {
         state.tab = chemcad::ui::MainTab::Viewer3D;
       chemcad::ui::drawViewer3D(state);
     }
+    ImGui::End();
+
+    if (ImGui::Begin(kWinPreview3D)) chemcad::ui::drawViewer3D(state);
     ImGui::End();
 
     if (ImGui::Begin(kWinPTable)) chemcad::ui::drawPeriodicTable(state);
