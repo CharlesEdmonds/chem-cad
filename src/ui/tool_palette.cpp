@@ -385,12 +385,14 @@ void drawToolGrid(AppState& st, float avail) {
   const float cell = std::min((avail - spacing) * 0.5f, m.iconSize * 3.0f);
   const float gridWidth = cell * 2.0f + spacing;
   const float indent = std::max(0.0f, (avail - gridWidth) * 0.5f);
-  const float startY = ImGui::GetCursorPosY();
 
   for (size_t i = 0; i < kTools.size(); ++i) {
     const ToolEntry& entry = kTools[i];
+    // Indent() is the sanctioned way to shift layout; raw SetCursorPosX here
+    // trips ImGui's "extends parent boundaries" sanity check during the
+    // docked window's hidden measurement frames.
     if (i % 2 == 0) {
-      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indent);
+      ImGui::Indent(indent);
     } else {
       ImGui::SameLine(0.0f, spacing);
     }
@@ -412,9 +414,11 @@ void drawToolGrid(AppState& st, float avail) {
       }
     }
     ImGui::PopID();
+    if (i % 2 == 1) ImGui::Unindent(indent);
   }
-  ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y);
-  (void)startY;
+  // A trailing Dummy keeps the window boundary honest after the grid's
+  // SameLine stride (SetCursorPos alone trips ImGui's boundary check).
+  ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y));
 }
 
 }  // namespace

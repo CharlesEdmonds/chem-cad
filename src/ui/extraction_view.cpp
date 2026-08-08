@@ -615,11 +615,16 @@ void drawSoluteDistribution(const SolubilityState& s) {
   widgets::sectionHeader("Solute distribution");
   ImGui::TextDisabled("%s  ·  logP %.2f", s.solute.name.c_str(), s.solute.logP);
 
-  // Aqueous phase picker: default the LEAST dense phase, which is where
-  // water sits in a normal water/organic pair (halogenated solvents sink).
+  // Aqueous phase picker: default the phase that IS water when one is
+  // present; otherwise the least dense phase, which is where water sits in
+  // a normal water/organic pair (halogenated solvents sink).
   static int aqueousPick = -1;  // -1 = auto
   int autoIndex = 0;
-  for (size_t i = 1; i < count; ++i) {
+  for (size_t i = 0; i < count; ++i) {
+    if (sim.phases[i].label.find("ater") != std::string::npos) {  // "Water"/"water"
+      autoIndex = static_cast<int>(i);
+      break;
+    }
     if (sim.phases[i].density < sim.phases[static_cast<size_t>(autoIndex)].density)
       autoIndex = static_cast<int>(i);
   }

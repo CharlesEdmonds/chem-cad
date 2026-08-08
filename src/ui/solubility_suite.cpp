@@ -737,19 +737,25 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
     dl->AddText(ImVec2(x - tickSize.x * 0.5f, plotMax.y + 4.0f * uiScale()),
                style::u32(style::col::TextDim), buf);
   }
-  // y-axis ticks: interpolated in the mapped (linear or log) space, labelled
-  // back in real units.
+  // y-axis ticks: interpolated in the mapped (linear or log) space. Ticks
+  // carry bare numbers; the unit goes in one caption above the axis, so the
+  // longest labels cannot clip against the rail's child window.
   for (int i = 0; i <= 4; ++i) {
     const float t = static_cast<float>(i) / 4.0f;
     const double mapped = yLo + (yHi - yLo) * (1.0 - t);
     const double value = logY ? std::pow(10.0, mapped) : mapped;
     const float y = plotMin.y + t * (plotMax.y - plotMin.y);
     dl->AddLine(ImVec2(plotMin.x, y), ImVec2(plotMax.x, y), style::u32(style::col::Border, 0.2f));
-    const std::string label = unitLabel(value);
+    const std::string label = formatSolubility(toDisplayUnits(value, molarMass, sb.units));
     const ImVec2 labelSize = ImGui::CalcTextSize(label.c_str());
     dl->AddText(ImVec2(plotMin.x - labelSize.x - 6.0f * uiScale(), y - labelSize.y * 0.5f),
                style::u32(style::col::TextDim), label.c_str());
   }
+  // Unit caption, top-left of the axis.
+  const std::string unitCaption = kUnitLabels[static_cast<size_t>(std::clamp(sb.units, 0, 3))];
+  dl->AddText(ImVec2(plotMin.x - ImGui::CalcTextSize(unitCaption.c_str()).x - 6.0f * uiScale(),
+                     plotMin.y - 16.0f * uiScale()),
+              style::u32(style::col::TextFaint), unitCaption.c_str());
 
   // Axis titles: the pure endpoints of the blend (fracA=0 is 100% b).
   const std::string leftTitle = "100% " + b.name;
