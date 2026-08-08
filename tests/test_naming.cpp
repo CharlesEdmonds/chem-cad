@@ -11,7 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <unistd.h>
+#include <random>
 
 namespace {
 
@@ -20,8 +20,9 @@ using json = nlohmann::json;
 
 fs::path uniqueCachePath(const char* label) {
   const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
+  static std::random_device entropy;
   return fs::temp_directory_path() /
-         ("chemcad-namecache-" + std::string(label) + "-" + std::to_string(::getpid()) + "-" +
+         ("chemcad-namecache-" + std::string(label) + "-" + std::to_string(entropy()) + "-" +
           std::to_string(tick) + ".json");
 }
 

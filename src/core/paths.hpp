@@ -14,7 +14,8 @@ std::filesystem::path dataDir();
 // Compile-time source path, overridable at runtime with $CHEMCAD_ASSETS_DIR.
 std::filesystem::path assetsDir();
 
-// Writable per-user cache (~/.cache/chemcad), created on demand.
+// Writable per-user cache, created on demand: %LOCALAPPDATA%\chemcad on
+// Windows, $XDG_CACHE_HOME/chemcad (or ~/.cache/chemcad) elsewhere.
 std::filesystem::path cacheDir();
 
 }  // namespace chemcad::core

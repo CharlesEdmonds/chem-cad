@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <array>
+#include <string>
+#include <utility>
 
 #include "imgui.h"
 
@@ -28,8 +30,9 @@ constexpr std::array kTools{
               "Click an atom to attach CH3; drag to place or connect carbon. M resets a plain methyl-ready bond"},
     ToolEntry{Tool::Chain, icons::Icon::Chain, "Chain", "K",
               "Drag to draw a zig-zag carbon chain"},
-    ToolEntry{Tool::RingTemplate, icons::Icon::Ring, "Ring template", "R",
-              "Click to stamp the ring chosen below"},
+    // Tool::RingTemplate has no grid button: the Ring drop-down below both
+    // picks the template and arms the tool, so a button would be a second,
+    // redundant way to enter the same mode.
     ToolEntry{Tool::Atom, icons::Icon::Atom, "Atom", "A",
               "Click to place the element picked in the periodic table"},
     ToolEntry{Tool::ChargePlus, icons::Icon::ChargePlus, "Positive charge", "+",
@@ -122,18 +125,45 @@ void drawIconRow(const char* idPrefix, const std::array<T, N>& entries, float av
   }
 }
 
-template <typename T, size_t N>
-void drawEnumCombo(const char* id, const char* preview, T& value,
-                   const std::array<std::pair<T, const char*>, N>& choices) {
+// The ring picker doubles as the ring tool's activator, so it cannot use a
+// plain value-binding combo.
+void drawRingPicker(AppState& st) {
+  constexpr std::array ringKinds{
+      std::pair{RingKind::Cyclopropane, "Cyclopropane"},
+      std::pair{RingKind::Cyclobutane, "Cyclobutane"},
+      std::pair{RingKind::Cyclopentane, "Cyclopentane"},
+      std::pair{RingKind::Cyclohexane, "Cyclohexane"},
+      std::pair{RingKind::Cycloheptane, "Cycloheptane"},
+      std::pair{RingKind::Cyclooctane, "Cyclooctane"},
+      std::pair{RingKind::Benzene, "Benzene"},
+      std::pair{RingKind::Cyclopentadiene, "Cyclopentadiene"},
+      std::pair{RingKind::Naphthalene, "Naphthalene"},
+  };
+  const char* preview = ringKinds.front().second;
+  for (const auto& [value, label] : ringKinds) {
+    if (value == st.currentRing) preview = label;
+  }
+
+  // Armed state gets the same accent border the icon rows use, so the palette
+  // still shows at a glance which mode the canvas is in.
+  const bool armed = st.tool == Tool::RingTemplate;
+  if (armed) ImGui::PushStyleColor(ImGuiCol_Border, style::u32(style::col::Accent));
   ImGui::SetNextItemWidth(-1.0f);
-  if (ImGui::BeginCombo(id, preview)) {
-    for (const auto& [candidate, label] : choices) {
-      const bool selected = value == candidate;
-      if (ImGui::Selectable(label, selected)) value = candidate;
+  if (ImGui::BeginCombo("##ring_kind", preview)) {
+    for (const auto& [value, label] : ringKinds) {
+      const bool selected = value == st.currentRing;
+      if (ImGui::Selectable(label, selected)) {
+        st.currentRing = value;
+        st.tool = Tool::RingTemplate;
+        st.statusMessage = std::string("Ring template: ") + label;
+      }
       if (selected) ImGui::SetItemDefaultFocus();
     }
     ImGui::EndCombo();
   }
+  if (armed) ImGui::PopStyleColor();
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", "Pick a ring to arm the ring tool (R), then click the canvas");
 }
 
 }  // namespace
@@ -157,24 +187,7 @@ void drawToolPalette(AppState& st) {
       &StereoEntry::hint);
 
   widgets::sectionHeader("Ring");
-  constexpr std::array ringKinds{
-      std::pair{RingKind::Cyclopropane, "Cyclopropane"},
-      std::pair{RingKind::Cyclobutane, "Cyclobutane"},
-      std::pair{RingKind::Cyclopentane, "Cyclopentane"},
-      std::pair{RingKind::Cyclohexane, "Cyclohexane"},
-      std::pair{RingKind::Cycloheptane, "Cycloheptane"},
-      std::pair{RingKind::Cyclooctane, "Cyclooctane"},
-      std::pair{RingKind::Benzene, "Benzene"},
-      std::pair{RingKind::Cyclopentadiene, "Cyclopentadiene"},
-      std::pair{RingKind::Naphthalene, "Naphthalene"},
-  };
-  const char* ringPreview = ringKinds.front().second;
-  for (const auto& [value, label] : ringKinds) {
-    if (value == st.currentRing) ringPreview = label;
-  }
-  drawEnumCombo("##ring_kind", ringPreview, st.currentRing, ringKinds);
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("%s", "Ring stamped by the Ring template tool (R)");
+  drawRingPicker(st);
 }
 
 }  // namespace chemcad::ui

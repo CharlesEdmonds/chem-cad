@@ -4,6 +4,17 @@
 #include <cstddef>
 #include <vector>
 
+// <GL/gl.h> on Windows is a bare extension of <windows.h> and does not compile
+// without the WINGDIAPI/APIENTRY macros it defines.
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #include <GL/gl.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION

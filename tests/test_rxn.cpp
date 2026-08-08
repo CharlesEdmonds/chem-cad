@@ -13,12 +13,26 @@
 
 namespace {
 
+// setenv/unsetenv are POSIX; MSVC only has _putenv_s, where an empty value
+// removes the variable outright.
+void setEnvironment(const char* name, const char* value) {
+#ifdef _WIN32
+  _putenv_s(name, value ? value : "");
+#else
+  if (value) {
+    setenv(name, value, 1);
+  } else {
+    unsetenv(name);
+  }
+#endif
+}
+
 struct TestEnvironment {
   TestEnvironment() {
     const std::filesystem::path fixtures =
         std::filesystem::path(__FILE__).parent_path() / "fixtures" / "reactions";
-    setenv("CHEMCAD_REACTIONS_DIR", fixtures.c_str(), 1);
-    unsetenv("CHEMCAD_LLM_API_KEY");
+    setEnvironment("CHEMCAD_REACTIONS_DIR", fixtures.string().c_str());
+    setEnvironment("CHEMCAD_LLM_API_KEY", nullptr);
   }
 };
 
@@ -116,6 +130,6 @@ TEST_CASE("invalid requests return no routes without throwing") {
 }
 
 TEST_CASE("LLM availability follows the API key environment variable") {
-  unsetenv("CHEMCAD_LLM_API_KEY");
+  setEnvironment("CHEMCAD_LLM_API_KEY", nullptr);
   CHECK_FALSE(chemcad::rxn::llmAvailable());
 }

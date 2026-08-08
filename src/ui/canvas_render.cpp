@@ -92,17 +92,18 @@ LabelData makeLabel(AppState& st, Runtime& rt, int molIndex, const core::Molecul
                     const core::Atom& atom) {
   LabelData label;
   const int degree = mol.degree(atom.id);
-  const bool conventionalLabel =
-      atom.atomicNumber != 6 || atom.charge != 0 || atom.isotope != 0 || degree == 0;
-  const bool methylCandidate = st.showTerminalMethylLabels && atom.atomicNumber == 6 &&
-                               atom.charge == 0 && atom.isotope == 0 && degree == 1;
-  if (!conventionalLabel && !methylCandidate) return label;
+  // Skeletal notation: a plain carbon vertex is an unlabelled line end or
+  // corner. Only carbons carrying a charge, an isotope or no bonds at all get
+  // a written symbol; terminal CH3 groups stay implicit like every other
+  // carbon.
+  if (atom.atomicNumber == 6 && atom.charge == 0 && atom.isotope == 0 && degree > 0) {
+    return label;
+  }
 
   int hydrogens = implicitHydrogens(st, rt, molIndex, mol, atom.id);
   if (atom.atomicNumber == 6 && degree == 0 && atom.explicitH < 0 && hydrogens == 0)
     hydrogens = 4;
-  label.visible = conventionalLabel || (methylCandidate && hydrogens == 3);
-  if (!label.visible) return label;
+  label.visible = true;
 
   std::string symbol = "?";
   try {

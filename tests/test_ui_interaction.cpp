@@ -176,7 +176,7 @@ TEST_CASE("bond tool draws and extends a skeleton") {
   CHECK(std::fabs(cross) > 0.1f);
 }
 
-TEST_CASE("M preset attaches a visible methyl-ready terminal carbon") {
+TEST_CASE("M preset attaches a terminal methyl carbon") {
   HeadlessImGui gui;
   ui::AppState st;
   st.tool = ui::Tool::Bond;
@@ -207,20 +207,19 @@ TEST_CASE("M preset attaches a visible methyl-ready terminal carbon") {
   CHECK(st.statusMessage == "Added methyl group (CH3)");
 }
 
-TEST_CASE("terminal methyl labels can be shown or hidden") {
+TEST_CASE("skeletal notation leaves terminal carbons unlabelled") {
   HeadlessImGui gui;
-  ui::AppState st;
-  st.doc.molecules.push_back(chem::fromSmiles("CC"));
-  st.touch();
-
-  st.showTerminalMethylLabels = false;
-  canvasFrame(st);
-  const int skeletalVertices = ImGui::GetDrawData()->TotalVtxCount;
-
-  st.showTerminalMethylLabels = true;
-  canvasFrame(st);
-  const int labelledVertices = ImGui::GetDrawData()->TotalVtxCount;
-  CHECK(labelledVertices > skeletalVertices);
+  auto vertices = [](const char* smiles) {
+    ui::AppState st;
+    st.doc.molecules.push_back(chem::fromSmiles(smiles));
+    st.touch();
+    canvasFrame(st);
+    return ImGui::GetDrawData()->TotalVtxCount;
+  };
+  // Same geometry either way: two atoms, one bond. Ethane is drawn as a bare
+  // line -- no CH3 glyphs at the ends -- while methylamine must spend extra
+  // vertices on the N label, so the counts cannot be equal.
+  CHECK(vertices("CN") > vertices("CC"));
 }
 
 TEST_CASE("hovering an atom and pressing an element key retypes it") {

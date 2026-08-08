@@ -16,14 +16,16 @@ foreach(test_src IN LISTS CHEMCAD_TEST_SOURCES)
     chemcad_chem
     chemcad_naming
     chemcad_rxn
+    chemcad_sol
     chemcad_app
     nlohmann_json::nlohmann_json
     ${CHEMCAD_RDKIT_LIBS})
-  # The headless interaction suite drives the real panels through a null ImGui
-  # backend, so it needs the UI layer; other suites stay lightweight.
-  if(test_name STREQUAL "test_ui_interaction")
+  # The headless panel suites drive the real panels through a null ImGui
+  # backend, so they need the UI layer; other suites stay lightweight.
+  if(test_name STREQUAL "test_ui_interaction" OR test_name STREQUAL "test_solubility_panel")
     target_link_libraries(${test_name} PRIVATE chemcad_ui imgui_lib)
   endif()
   target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  chemcad_copy_runtime_dlls(${test_name})
   add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()

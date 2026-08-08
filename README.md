@@ -7,7 +7,7 @@
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white)](CMakeLists.txt)
 [![Dear ImGui](https://img.shields.io/badge/UI-Dear%20ImGui%20docking-1f425f)](https://github.com/ocornut/imgui)
 [![RDKit](https://img.shields.io/badge/chemistry-RDKit-0b7285)](https://www.rdkit.org/)
-[![Tests](https://img.shields.io/badge/tests-51%20cases%20%2F%208%20suites-2f9e44)](tests)
+[![Tests](https://img.shields.io/badge/tests-65%20cases%20%2F%209%20suites-2f9e44)](tests)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ![ChemCAD sketching caffeine](docs/images/sketch.png)
@@ -161,13 +161,103 @@ sequenceDiagram
 
 ---
 
+## Solubility suite
+
+Predicts solubility, in g/mL, of the sketched (or SMILES-entered) compound
+in a pure solvent or a blend of up to three solvents, at a chosen
+temperature.
+
+```mermaid
+flowchart LR
+    struct["Sketch or<br/>SMILES"] --> desc["McGowan atomic<br/>contributions"]
+    desc --> hansen["van Krevelen /<br/>Hoftyzer group<br/>contributions"]
+    hansen --> blend{{"Blend up to 3<br/>solvents by<br/>volume fraction"}}
+    blend --> ra["Hansen distance<br/>Ra, RED = Ra / R0"]
+    ra --> gamma["Regular-solution<br/>activity coefficient"]
+    gamma --> gml["Solubility<br/>g/mL"]
+
+    classDef n fill:#12161f,stroke:#3b4c63,color:#e6edf3
+    classDef ok fill:#14301f,stroke:#2f9e44,color:#b2f2bb
+    class struct,desc,hansen,blend,ra,gamma n
+    class gml ok
+```
+
+The solute side: molar volume from McGowan atomic contributions, and Hansen
+solubility parameters (`deltaD`, `deltaP`, `deltaH`) from van
+Krevelen/Hoftyzer group contributions on the sketched structure. A blend's
+Hansen parameters and density are volume-fraction weighted means of its
+components. Hansen distance `Ra = sqrt(4*dD^2 + dP^2 + dH^2)` and `RED = Ra
+/ R0` (R0 is the solute's Hansen sphere radius) measure how well solute and
+solvent match. Ideal mole-fraction solubility comes from the melting point
+via the Yalkowsky equation with an entropy of fusion fixed at 56.5 J/(mol
+K); a regular-solution activity coefficient `ln(gamma) = V_solute * Ra^2 /
+(4RT)` then corrects that ideal value for the real solute/solvent
+interaction, and the resulting mole fraction is converted to g/mL through
+the solute and mixture molar volumes.
+
+Melting point defaults to 25 C (the solute is treated as already liquid at
+room temperature) unless overridden; a result with `RED > 1` is flagged as
+extrapolated outside the Hansen sphere, since the model's confidence there
+is untested.
+
+`data/solvents.json` carries 45 common laboratory solvents, each with
+Hansen parameters, density, molar volume, dielectric constant, boiling
+point, refractive index and water miscibility:
+
+```json
+{
+  "id": "water",
+  "name": "Water",
+  "smiles": "O",
+  "family": "water",
+  "molar_mass": 18.02,
+  "density": 0.997,
+  "molar_volume": 18.1,
+  "delta_d": 15.5,
+  "delta_p": 16.0,
+  "delta_h": 42.3,
+  "dielectric": 80.1,
+  "boiling_point": 100.0,
+  "refractive_index": 1.333,
+  "water_miscible": true
+}
+```
+
+Add another solvent by dropping a matching object into the array.
+
+The ratio graph plots the prediction as the blend composition changes: a
+line of g/mL against the volume fraction of solvent A for a two-solvent
+blend, or a shaded ternary diagram for a three-solvent blend, both with a
+hover readout of the exact composition and predicted solubility at the
+cursor.
+
+### Separatory funnel
+
+A 2D cross-section simulation of a separatory funnel, decanting flask or
+graduated cylinder, for working through a liquid-liquid separation before
+doing it on the bench.
+
+Each phase is charged with a volume, density, viscosity, interfacial
+tension, emulsion stability and colour, and the vessel stacks phases
+dense-first. Shaking disperses settled volume into droplets whose Sauter
+radius falls with shaking vigour and rises with interfacial tension; once
+dispersed, droplets rise or fall through the continuous phase at their
+Stokes terminal velocity, coalescing with each other and rejoining the bulk
+layer as they settle. Emulsion stability governs how long the dispersion
+survives: near 0 it breaks in seconds, near 1 it persists far longer.
+
+Volume is conserved exactly at every step, and the simulation is
+deterministic for a given seed.
+
+---
+
 ## Interface
 
 ![Periodic table element tooltip](docs/images/periodic-table.png)
 
 | Area | What it does |
 | --- | --- |
-| Tool column (left) | Select, eraser, bond, chain, ring template, atom, charge tools, plus bond-order / stereo / ring pickers |
+| Tool column (left) | Select, eraser, bond, chain, atom, charge tools, plus bond-order / stereo pickers and a ring drop-down that both picks the template and arms the tool |
 | Sketch tab | The drawing canvas |
 | Reaction Planner tab | Starting-material boxes → product box, route suggestions |
 | Periodic Table (right) | All 118 elements; hover for detail, click to draw with it |
@@ -203,12 +293,11 @@ existing atom to close a ring. Click a bond to cycle single → double → tripl
 
 ### Drawing methyl groups
 
-In skeletal notation an unlabeled terminal line end is a carbon with enough
-implicit hydrogens to satisfy valence — on a single bond, that is `CH3`.
-ChemCAD shows those terminal carbons as `CH3` by default so the structure is
-explicit; disable **View → Show terminal CH3 labels** for traditional compact
-notation. With the Bond tool, click an atom to attach a methyl group or drag to
-choose its direction.
+ChemCAD draws proper skeletal notation: an unlabelled line end is a carbon
+carrying enough implicit hydrogens to satisfy its valence, so a terminal methyl
+is a bare line, never a `CH3` glyph. Only heteroatoms, charged or isotopically
+labelled carbons, and lone atoms get a written symbol. With the Bond tool,
+click an atom to attach a methyl group or drag to choose its direction.
 
 ---
 
@@ -255,6 +344,35 @@ nlohmann/json and doctest are fetched at configure time.
 Without the OPSIN jar the build still succeeds; `name → structure` just falls
 back to PubChem for every lookup.
 
+### Windows
+
+Prerequisites: Visual Studio 2022 Build Tools with the C++ workload, CMake
+>= 3.24, Ninja and Git. (Verified with MSVC 14.44, CMake 3.30.5.)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup_deps.ps1
+```
+
+Then, from an `x64 Native Tools Command Prompt for VS 2022`:
+
+```bat
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%LOCALAPPDATA%\chemcad-deps\rdkit\Library"
+cmake --build build
+build\chemcad.exe
+```
+
+`scripts\win_build.bat` is a one-shot convenience wrapper that runs both of
+those steps.
+
+Windows has no RPATH, so a binary can't be told at link time where to find
+its shared libraries at runtime. `cmake/StageRuntimeDlls.cmake` works around
+that by staging the transitive RDKit/Boost/cairo DLL closure next to each
+built executable, so `build\chemcad.exe` runs standalone without the
+dependency prefix on `PATH`.
+
+The `Tests` section's `ctest --test-dir build --output-on-failure` works
+identically on Windows.
+
 ---
 
 ## Tests
@@ -263,12 +381,14 @@ back to PubChem for every lookup.
 ctest --test-dir build --output-on-failure
 ```
 
-51 cases across 8 suites, all hermetic — no network required.
+65 cases across 9 suites, all hermetic — no network required.
 `test_ui_interaction` drives the real canvas and panel code through a null
 ImGui backend, so sketching gestures, hover tooltips and panel widgets are
 verified without a display. `test_kb` validates every reaction template against
 RDKit, so a malformed SMARTS fails the test run rather than silently never
-matching.
+matching. `test_sol` covers the solubility model (Hansen distance, ideal
+solubility, blending) and the funnel simulation's volume-conservation and
+determinism invariants.
 
 ---
 
@@ -323,7 +443,7 @@ src/rxn/      reaction knowledge base, route search, LLM client
 src/ui/       ImGui panels: canvas, periodic table, properties, planner
 src/app/      entry point, worker pool, project files, PNG capture
 data/         periodic table (118 elements) + 82 reaction templates
-tests/        8 doctest suites, including a headless UI interaction suite
+tests/        9 doctest suites, including a headless UI interaction suite
 ```
 
 ---

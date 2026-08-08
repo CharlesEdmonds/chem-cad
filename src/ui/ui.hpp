@@ -12,6 +12,8 @@ void drawCanvas(AppState&);         // ui/canvas.cpp
 void drawPeriodicTable(AppState&);  // ui/periodic_table.cpp
 void drawPropertiesPanel(AppState&);// ui/properties_panel.cpp
 void drawReactionPlanner(AppState&);// ui/reaction_planner.cpp
+void drawSolubilitySuite(AppState&);// ui/solubility_suite.cpp
+void drawFunnelView(AppState&);     // ui/funnel_view.cpp
 void drawStatusBar(AppState&);      // ui/status_bar.cpp
 
 // Applies the dark theme, sizing and fonts. Called once at startup.

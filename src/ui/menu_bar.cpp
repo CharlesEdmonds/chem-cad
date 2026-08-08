@@ -263,8 +263,6 @@ void drawMenuBar(AppState& st) {
     if (ImGui::BeginMenu("View")) {
       if (ImGui::MenuItem("Fit to window", "Ctrl+F")) st.cam.fit(st.doc, st.canvasSize);
       if (ImGui::MenuItem("Reset zoom", "Ctrl+0")) st.cam.zoom = 1.0f;
-      ImGui::MenuItem("Show terminal CH3 labels", nullptr,
-                      &st.showTerminalMethylLabels);
       ImGui::EndMenu();
     }
 

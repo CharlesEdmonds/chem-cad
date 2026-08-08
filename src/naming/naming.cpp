@@ -1,6 +1,7 @@
 #include "naming/naming.hpp"
 
 #include "core/paths.hpp"
+#include "core/subprocess.hpp"
 
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
@@ -8,22 +9,17 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
-#include <cerrno>
-#include <csignal>
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <poll.h>
 #include <shared_mutex>
 #include <string_view>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <sys/wait.h>
 #include <thread>
-#include <unistd.h>
+#include <vector>
 #include <unordered_map>
 
 namespace chemcad::naming {
@@ -132,43 +128,10 @@ void cacheValue(bool namesToSmiles, const std::string& key, const std::string& v
 fs::path opsinJarPath() { return fs::path(CHEMCAD_OPSIN_JAR); }
 #endif
 
-std::optional<fs::path> javaPath() {
-  const char* pathValue = std::getenv("PATH");
-  if (!pathValue) return std::nullopt;
-
-  std::string_view path(pathValue);
-  std::size_t start = 0;
-  while (start <= path.size()) {
-    const std::size_t end = path.find(':', start);
-    const std::string_view part = path.substr(start, end - start);
-    const fs::path candidate = (part.empty() ? fs::path(".") : fs::path(part)) / "java";
-    std::error_code ec;
-    if (fs::is_regular_file(candidate, ec) && ::access(candidate.c_str(), X_OK) == 0) {
-      return candidate;
-    }
-    if (end == std::string_view::npos) break;
-    start = end + 1;
-  }
-  return std::nullopt;
-}
-
 struct OpsinResult {
   bool attempted = false;
   std::optional<std::string> smiles;
 };
-
-bool sendAllNoSignal(int fd, std::string_view data) {
-  while (!data.empty()) {
-    const ssize_t written = ::send(fd, data.data(), data.size(), MSG_NOSIGNAL);
-    if (written > 0) {
-      data.remove_prefix(static_cast<std::size_t>(written));
-      continue;
-    }
-    if (written < 0 && errno == EINTR) continue;
-    return false;
-  }
-  return true;
-}
 
 OpsinResult runOpsin(const std::string& name) {
 #ifndef CHEMCAD_OPSIN_JAR
@@ -176,109 +139,25 @@ OpsinResult runOpsin(const std::string& name) {
   return {};
 #else
   const fs::path jar = opsinJarPath();
-  const auto java = javaPath();
+  const auto java = core::findExecutable("java");
   std::error_code ec;
   if (!java || !fs::is_regular_file(jar, ec)) return {};
 
-  int inputSockets[2] = {-1, -1};
-  int outputPipe[2] = {-1, -1};
-  if (::socketpair(AF_UNIX, SOCK_STREAM, 0, inputSockets) != 0) return {};
-  if (::pipe(outputPipe) != 0) {
-    ::close(inputSockets[0]);
-    ::close(inputSockets[1]);
-    return {};
-  }
-
-  const std::string javaString = java->string();
-  const std::string jarString = jar.string();
-  const pid_t child = ::fork();
-  if (child == 0) {
-    ::dup2(inputSockets[1], STDIN_FILENO);
-    ::dup2(outputPipe[1], STDOUT_FILENO);
-    ::close(inputSockets[0]);
-    ::close(inputSockets[1]);
-    ::close(outputPipe[0]);
-    ::close(outputPipe[1]);
-    ::execl(javaString.c_str(), javaString.c_str(), "-jar", jarString.c_str(), "-o", "smi",
-            static_cast<char*>(nullptr));
-    ::_exit(127);
-  }
-
-  ::close(inputSockets[1]);
-  ::close(outputPipe[1]);
-  if (child < 0) {
-    ::close(inputSockets[0]);
-    ::close(outputPipe[0]);
-    return {};
-  }
+  const core::ProcessResult process = core::runCaptured(
+      *java, {"-jar", jar.string(), "-o", "smi"}, name + '\n', std::chrono::seconds(10));
+  if (!process.launched) return {};
 
   OpsinResult result;
   result.attempted = true;
-  const std::string input = name + '\n';
-  sendAllNoSignal(inputSockets[0], input);
-  ::close(inputSockets[0]);
+  if (process.timedOut || process.exitCode != 0) return result;
 
-  std::string output;
-  bool pipeOpen = true;
-  bool childDone = false;
-  bool timedOut = false;
-  int status = 0;
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-
-  while (pipeOpen || !childDone) {
-    if (!childDone) {
-      pid_t waited;
-      do {
-        waited = ::waitpid(child, &status, WNOHANG);
-      } while (waited < 0 && errno == EINTR);
-      childDone = waited == child || (waited < 0 && errno == ECHILD);
-    }
-
-    if (pipeOpen) {
-      pollfd descriptor{outputPipe[0], POLLIN | POLLHUP, 0};
-      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-          deadline - std::chrono::steady_clock::now());
-      const int waitMs = static_cast<int>(std::clamp<long long>(remaining.count(), 0, 100));
-      int ready;
-      do {
-        ready = ::poll(&descriptor, 1, waitMs);
-      } while (ready < 0 && errno == EINTR);
-
-      if (ready > 0 && (descriptor.revents & (POLLIN | POLLHUP | POLLERR))) {
-        char buffer[4096];
-        const ssize_t count = ::read(outputPipe[0], buffer, sizeof(buffer));
-        if (count > 0) {
-          output.append(buffer, static_cast<std::size_t>(count));
-        } else if (count == 0 || (count < 0 && errno != EINTR)) {
-          ::close(outputPipe[0]);
-          pipeOpen = false;
-        }
-      }
-    } else if (!childDone) {
-      ::poll(nullptr, 0, 10);
-    }
-
-    if (std::chrono::steady_clock::now() >= deadline && (!childDone || pipeOpen)) {
-      timedOut = true;
-      break;
-    }
-  }
-
-  if (pipeOpen) ::close(outputPipe[0]);
-  if (!childDone) {
-    if (timedOut) ::kill(child, SIGKILL);
-    pid_t waited;
-    do {
-      waited = ::waitpid(child, &status, 0);
-    } while (waited < 0 && errno == EINTR);
-  }
-
-  if (timedOut || !WIFEXITED(status) || WEXITSTATUS(status) != 0) return result;
-
+  // OPSIN echoes a banner on stderr and the SMILES on stdout; take the first
+  // non-empty line.
   std::size_t lineStart = 0;
-  while (lineStart <= output.size()) {
-    const std::size_t lineEnd = output.find('\n', lineStart);
-    const std::string line = trim(std::string_view(output).substr(lineStart, lineEnd - lineStart));
+  while (lineStart <= process.output.size()) {
+    const std::size_t lineEnd = process.output.find('\n', lineStart);
+    const std::string line =
+        trim(std::string_view(process.output).substr(lineStart, lineEnd - lineStart));
     if (!line.empty()) {
       result.smiles = line;
       break;
@@ -490,7 +369,7 @@ std::string cachePath() {
 bool opsinAvailable() {
 #ifdef CHEMCAD_OPSIN_JAR
   std::error_code ec;
-  return fs::is_regular_file(opsinJarPath(), ec) && javaPath().has_value();
+  return fs::is_regular_file(opsinJarPath(), ec) && core::findExecutable("java").has_value();
 #else
   return false;
 #endif

@@ -30,6 +30,7 @@ using chemcad::ui::AppState;
 
 constexpr const char* kWinSketch = "Sketch";
 constexpr const char* kWinPlanner = "Reaction Planner";
+constexpr const char* kWinSolubility = "Solubility Suite";
 constexpr const char* kWinTools = "Tools";
 constexpr const char* kWinPTable = "Periodic Table";
 constexpr const char* kWinProps = "Properties";
@@ -152,6 +153,7 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
   ImGui::DockBuilderDockWindow(kWinTools, left);
   ImGui::DockBuilderDockWindow(kWinSketch, center);
   ImGui::DockBuilderDockWindow(kWinPlanner, center);
+  ImGui::DockBuilderDockWindow(kWinSolubility, center);
   ImGui::DockBuilderDockWindow(kWinPTable, rightTop);
   ImGui::DockBuilderDockWindow(kWinProps, rightBottom);
   ImGui::DockBuilderFinish(dockspaceId);
@@ -268,6 +270,13 @@ int main(int, char**) {
       if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
         state.tab = chemcad::ui::MainTab::Planner;
       chemcad::ui::drawReactionPlanner(state);
+    }
+    ImGui::End();
+
+    if (ImGui::Begin(kWinSolubility)) {
+      if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+        state.tab = chemcad::ui::MainTab::Solubility;
+      chemcad::ui::drawSolubilitySuite(state);
     }
     ImGui::End();
 

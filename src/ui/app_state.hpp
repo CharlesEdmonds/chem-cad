@@ -13,6 +13,7 @@
 #include "core/model.hpp"
 #include "rxn/engine.hpp"
 #include "ui/camera.hpp"
+#include "ui/solubility_state.hpp"
 
 namespace chemcad::ui {
 
@@ -112,7 +113,7 @@ struct PlannerState {
   int maxRoutes = 5;
 };
 
-enum class MainTab { Sketch, Planner };
+enum class MainTab { Sketch, Planner, Solubility };
 
 // ---------------------------------------------------------------- app state
 struct AppState {
@@ -160,9 +161,9 @@ struct AppState {
   // the buffer swap, which is the only moment the canvas pixels exist.
   std::optional<std::string> pendingPngExport;
 
-  // Display terminal single-bonded carbons as CH3 instead of relying entirely
-  // on skeletal-notation line ends. View menu can restore the compact form.
-  bool showTerminalMethylLabels = true;
+  // Solubility Suite: solvent selection, prediction cache and the separatory
+  // funnel simulation. Owned here so the panel survives a tab switch.
+  SolubilityState solubility;
 
   void touch() {
     ++docRevision;

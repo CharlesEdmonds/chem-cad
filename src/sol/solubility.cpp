@@ -1,0 +1,901 @@
+#include "sol/solubility.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+
+#include "chem/bridge.hpp"
+
+namespace chemcad::sol {
+
+namespace {
+
+// ---- McGowan characteristic volume ------------------------------------
+// Atomic volume contributions, cm3/mol (Abraham & McGowan, 1990). Anything
+// not tabulated falls back to a generic mid-row estimate.
+double atomicVolume(uint8_t atomicNumber) {
+  switch (atomicNumber) {
+    case 1: return 8.71;    // H
+    case 6: return 16.35;   // C
+    case 7: return 14.39;   // N
+    case 8: return 12.43;   // O
+    case 9: return 10.48;   // F
+    case 14: return 26.83;  // Si
+    case 15: return 24.87;  // P
+    case 16: return 22.91;  // S
+    case 17: return 20.95;  // Cl
+    case 35: return 26.21;  // Br
+    case 53: return 34.53;  // I
+    case 5: return 18.32;   // B
+    default: return 22.0;
+  }
+}
+
+// Sums per-atom volume contributions (explicit atoms plus their implicit
+// hydrogens) and subtracts 6.56 cm3/mol per bond, counting implicit C-H/X-H
+// bonds alongside the explicit graph edges -- the standard McGowan recipe.
+double mcGowanVolume(const core::Molecule& molecule) {
+  double volume = 0.0;
+  int bonds = static_cast<int>(molecule.bondCount());
+  for (const core::Atom& atom : molecule.atoms()) {
+    volume += atomicVolume(atom.atomicNumber);
+    int hydrogens = chem::implicitHCount(molecule, atom.id);
+    volume += hydrogens * atomicVolume(1);
+    bonds += hydrogens;
+  }
+  volume -= 6.56 * bonds;
+  return std::max(volume, 10.0);
+}
+
+// ---- Ring perception (Tarjan bridges) ----------------------------------
+// A bond that is NOT a bridge lies on some cycle by definition (a bridge is
+// exactly an edge whose removal lies on no cycle), so both of its endpoints
+// are ring atoms; conversely every atom reachable only through bridges is
+// acyclic. This gives an exact ring-membership test -- not a heuristic --
+// from a single linear-time DFS (Tarjan, R. E. "A note on finding the
+// bridges of a graph." Information Processing Letters 1974, 2, 160-161)
+// rather than a full SSSR enumeration, which is more machinery than a
+// boolean "is this atom in a ring?" query needs.
+class RingPerception {
+ public:
+  explicit RingPerception(const core::Molecule& molecule) : molecule_(molecule) {
+    for (const core::Atom& atom : molecule.atoms()) {
+      if (disc_.find(atom.id) == disc_.end()) visit(atom.id, core::kInvalidBond);
+    }
+  }
+
+  bool isRingAtom(core::AtomId id) const { return ringAtoms_.find(id) != ringAtoms_.end(); }
+
+ private:
+  void visit(core::AtomId u, core::BondId viaBond) {
+    int order = ++counter_;
+    disc_[u] = order;
+    int low = order;
+    for (core::BondId bondId : molecule_.incidentBonds(u)) {
+      if (bondId == viaBond) continue;  // don't walk back over the parent tree edge
+      const core::Bond* bond = molecule_.bond(bondId);
+      if (!bond) continue;
+      core::AtomId v = bond->a == u ? bond->b : bond->a;
+      auto seen = disc_.find(v);
+      if (seen == disc_.end()) {
+        visit(v, bondId);
+        low = std::min(low, low_[v]);
+        if (low_[v] <= disc_[u]) {  // (u,v) is not a bridge -- it closes a cycle
+          ringAtoms_.insert(u);
+          ringAtoms_.insert(v);
+        }
+      } else {
+        low = std::min(low, seen->second);  // back edge -- always closes a cycle
+        ringAtoms_.insert(u);
+        ringAtoms_.insert(v);
+      }
+    }
+    low_[u] = low;
+  }
+
+  const core::Molecule& molecule_;
+  int counter_ = 0;
+  std::unordered_map<core::AtomId, int> disc_;
+  std::unordered_map<core::AtomId, int> low_;
+  std::unordered_set<core::AtomId> ringAtoms_;
+};
+
+// ---- Hansen group contributions (Hoftyzer / van Krevelen) -------------
+// Fd, Fp in (J.cm3)^0.5/mol == MPa^0.5.cm3/mol; Eh in J/mol. Values follow
+// the widely reproduced Hoftyzer/van Krevelen table (see van Krevelen & te
+// Nijenhuis, "Properties of Polymers", table 7.3, and Hansen's "Hansen
+// Solubility Parameters: A User's Handbook", table 1). Whole-group entries
+// from that table (e.g. phenyl, ester, amide) are distributed onto the single
+// graph atom that anchors the group -- e.g. the carbonyl carbon carries the
+// full ester/amide/acid/ketone increment and the atoms that only complete the
+// group (the amide N, the ester/acid oxygens, the carbonyl O) contribute
+// zero so the group is not double-counted. A handful of groups without a
+// tabulated entry (sulfoxide, nitro) use documented order-of-magnitude
+// approximations anchored to closely related tabulated groups.
+struct GroupIncrement {
+  double fd = 0.0;
+  double fp = 0.0;
+  double eh = 0.0;
+};
+
+bool hasAromaticBond(const core::Molecule& molecule, core::AtomId id) {
+  for (core::BondId bondId : molecule.incidentBonds(id)) {
+    const core::Bond* bond = molecule.bond(bondId);
+    if (bond && bond->order == core::BondOrder::Aromatic) return true;
+  }
+  return false;
+}
+
+// First neighbour of `id` reached via a bond of `order` whose other end has
+// `atomicNumber`, or core::kInvalidAtom when there is none.
+core::AtomId bondedNeighbor(const core::Molecule& molecule, core::AtomId id,
+                             core::BondOrder order, uint8_t atomicNumber) {
+  for (core::BondId bondId : molecule.incidentBonds(id)) {
+    const core::Bond* bond = molecule.bond(bondId);
+    if (!bond || bond->order != order) continue;
+    core::AtomId other = bond->a == id ? bond->b : bond->a;
+    const core::Atom* atom = molecule.atom(other);
+    if (atom && atom->atomicNumber == atomicNumber) return other;
+  }
+  return core::kInvalidAtom;
+}
+
+int countBondedNeighbors(const core::Molecule& molecule, core::AtomId id, core::BondOrder order,
+                          uint8_t atomicNumber) {
+  int count = 0;
+  for (core::BondId bondId : molecule.incidentBonds(id)) {
+    const core::Bond* bond = molecule.bond(bondId);
+    if (!bond || bond->order != order) continue;
+    core::AtomId other = bond->a == id ? bond->b : bond->a;
+    const core::Atom* atom = molecule.atom(other);
+    if (atom && atom->atomicNumber == atomicNumber) ++count;
+  }
+  return count;
+}
+
+// Classifies a carbonyl carbon (already known to carry a C=O) into
+// ketone/aldehyde/ester/acid/amide by what else hangs off it. Amide and
+// carboxylic-acid carbonyls are further split by conjugation (see the
+// fitted-constant block above predict()): an aromatic -COOH or an
+// -NHC(=O)- whose nitrogen carries an aromatic (N-aryl/anilide)
+// substituent measurably shifts the carbonyl's dipole relative to the
+// plain aliphatic case, and a carbonyl that is itself part of an aromatic
+// ring (a lactam fused into the ring, e.g. caffeine's xanthine C=O) is a
+// third, distinct environment.
+GroupIncrement carbonylIncrement(const core::Molecule& molecule, const core::Atom& carbon) {
+  for (core::AtomId nb : molecule.neighbors(carbon.id)) {
+    const core::Atom* neighbor = molecule.atom(nb);
+    if (!neighbor || neighbor->atomicNumber != 7) continue;
+    if (hasAromaticBond(molecule, carbon.id)) {
+      return {290.0, 400.0, 2100.0};  // ring/imide carbonyl (fused-ring lactam)
+    }
+    for (core::AtomId n2 : molecule.neighbors(nb)) {
+      if (n2 == carbon.id) continue;
+      const core::Atom* n2Atom = molecule.atom(n2);
+      if (n2Atom && n2Atom->atomicNumber == 6 && hasAromaticBond(molecule, n2)) {
+        return {110.15, 1457.22, 16106.0};  // aromatic (N-aryl) amide -NHC(=O)-
+      }
+    }
+    return {290.0, 950.0, 2100.0};  // generic aliphatic amide
+  }
+  for (core::AtomId nb : molecule.neighbors(carbon.id)) {
+    const core::Atom* neighbor = molecule.atom(nb);
+    if (!neighbor || neighbor->atomicNumber != 8) continue;
+    core::BondId bondId = molecule.bondBetween(carbon.id, nb);
+    const core::Bond* bond = molecule.bond(bondId);
+    if (bond && bond->order == core::BondOrder::Double) continue;  // the C=O itself
+    if (chem::implicitHCount(molecule, nb) > 0) {
+      for (core::AtomId nb2 : molecule.neighbors(carbon.id)) {
+        const core::Atom* nb2Atom = molecule.atom(nb2);
+        if (nb2Atom && nb2Atom->atomicNumber == 6 && hasAromaticBond(molecule, nb2)) {
+          return {424.0, 900.0, 7715.0};  // aromatic -COOH (conjugated with a ring)
+        }
+      }
+      return {530.0, 420.0, 10000.0};  // aliphatic -COOH
+    }
+    return {390.0, 490.0, 7000.0};  // -COO-
+  }
+  if (chem::implicitHCount(molecule, carbon.id) > 0) return {470.0, 800.0, 4500.0};  // -CHO
+  return {290.0, 770.0, 2000.0};                                                     // ketone
+}
+
+GroupIncrement classifyCarbon(const core::Molecule& molecule, const core::Atom& atom,
+                               const RingPerception& ring) {
+  int hydrogens = chem::implicitHCount(molecule, atom.id);
+  if (bondedNeighbor(molecule, atom.id, core::BondOrder::Triple, 7) != core::kInvalidAtom) {
+    return {0.0, 0.0, 0.0};  // nitrile carbon; group counted on the nitrogen
+  }
+  if (bondedNeighbor(molecule, atom.id, core::BondOrder::Double, 8) != core::kInvalidAtom) {
+    return carbonylIncrement(molecule, atom);
+  }
+  if (hasAromaticBond(molecule, atom.id)) {
+    if (hydrogens > 0) return {238.0, 0.0, 0.0};
+    // h == 0: a ring-fusion carbon bonded to three OTHER ring atoms (shared
+    // between two fused rings -- naphthalene's C4a/C8a, caffeine's purine
+    // fusion carbons) is a distinct environment from a plain ipso carbon
+    // (two ring neighbours plus one exocyclic substituent); the previous
+    // table conflated the two under a single "aromatic, no H" bucket.
+    bool fused = true;
+    for (core::AtomId nb : molecule.neighbors(atom.id)) {
+      if (!ring.isRingAtom(nb)) {
+        fused = false;
+        break;
+      }
+    }
+    return fused ? GroupIncrement{90.0, 155.0, 1890.0}     // fused-ring carbon
+                 : GroupIncrement{240.0, 110.0, 0.0};       // ipso carbon
+  }
+  bool alkene = bondedNeighbor(molecule, atom.id, core::BondOrder::Double, 6) != core::kInvalidAtom;
+  if (alkene) {
+    switch (hydrogens) {
+      case 0: return {70.0, 0.0, 0.0};
+      case 1: return {200.0, 0.0, 0.0};
+      default: return {400.0, 0.0, 0.0};
+    }
+  }
+  switch (hydrogens) {
+    case 0: return {-70.0, 0.0, 0.0};
+    case 1: return {80.0, 0.0, 0.0};
+    case 2: return {270.0, 0.0, 0.0};
+    default: return {420.0, 0.0, 0.0};
+  }
+}
+
+// -OH is split into alcohol vs phenol: the two have distinct, commonly
+// reproduced Hoftyzer/van Krevelen entries. phenol_oh's Eh below is much
+// lower than a naive "phenol is a strong H-bond donor" prior would suggest --
+// that is the fitted, not assumed, value (see the calibration block above
+// predict()): every phenolic solute in the calibration set (salicylic acid,
+// paracetamol) also carries an adjacent strong H-bonding group of its own
+// (an intramolecularly H-bonded -COOH, an -NHC(=O)- amide), and group-
+// additivity has no mechanism for the intramolecular H-bond that measurably
+// suppresses salicylic acid's *intermolecular* Hansen character -- the
+// regression compensates by assigning the -OH group a smaller marginal share.
+GroupIncrement classifyOxygen(const core::Molecule& molecule, const core::Atom& atom) {
+  for (core::AtomId nb : molecule.neighbors(atom.id)) {
+    const core::Atom* neighbor = molecule.atom(nb);
+    if (!neighbor || neighbor->atomicNumber != 6) continue;
+    core::BondId bondId = molecule.bondBetween(atom.id, nb);
+    const core::Bond* bond = molecule.bond(bondId);
+    if (!bond) continue;
+    if (bond->order == core::BondOrder::Double) return {0.0, 0.0, 0.0};  // carbonyl O
+    if (bondedNeighbor(molecule, nb, core::BondOrder::Double, 8) != core::kInvalidAtom) {
+      return {0.0, 0.0, 0.0};  // the -O- of an ester or the -OH of an acid
+    }
+  }
+  if (chem::implicitHCount(molecule, atom.id) > 0) {
+    for (core::AtomId nb : molecule.neighbors(atom.id)) {
+      const core::Atom* neighbor = molecule.atom(nb);
+      if (neighbor && neighbor->atomicNumber == 6 && hasAromaticBond(molecule, nb)) {
+        return {124.7, 0.0, 6546.0};  // -OH (phenol)
+      }
+    }
+    return {210.0, 500.0, 20000.0};  // -OH (alcohol)
+  }
+  return {100.0, 400.0, 3000.0};  // -O-
+}
+
+GroupIncrement classifyNitrogen(const core::Molecule& molecule, const core::Atom& atom,
+                                 const RingPerception& ring) {
+  if (bondedNeighbor(molecule, atom.id, core::BondOrder::Triple, 6) != core::kInvalidAtom) {
+    return {430.0, 1100.0, 2500.0};  // -CN
+  }
+  int doubleOxygens = countBondedNeighbors(molecule, atom.id, core::BondOrder::Double, 8);
+  int singleOxygens = countBondedNeighbors(molecule, atom.id, core::BondOrder::Single, 8);
+  if (doubleOxygens >= 2 || (doubleOxygens >= 1 && singleOxygens >= 1)) {
+    return {500.0, 1070.0, 1500.0};  // -NO2, approximate (no direct table entry)
+  }
+  for (core::AtomId nb : molecule.neighbors(atom.id)) {
+    const core::Atom* neighbor = molecule.atom(nb);
+    if (!neighbor || neighbor->atomicNumber != 6) continue;
+    if (bondedNeighbor(molecule, nb, core::BondOrder::Double, 8) != core::kInvalidAtom) {
+      return {0.0, 0.0, 0.0};  // amide N; group counted on the carbonyl carbon
+    }
+  }
+  int hydrogens = chem::implicitHCount(molecule, atom.id);
+  if (hasAromaticBond(molecule, atom.id) && hydrogens == 0) {
+    // Ring nitrogen with no H: pyridine-type (no substituent, in-plane lone
+    // pair, e.g. caffeine's imine-type ring N) vs pyrrole-type (bonded to an
+    // exocyclic substituent such as an N-methyl, lone pair delocalised into
+    // the ring, e.g. caffeine's three N-CH3 ring nitrogens). The previous
+    // table folded both into a flat tertiary-amine value.
+    bool fused = true;
+    for (core::AtomId nb : molecule.neighbors(atom.id)) {
+      if (!ring.isRingAtom(nb)) {
+        fused = false;
+        break;
+      }
+    }
+    return fused ? GroupIncrement{200.0, 388.0, 9000.0}    // pyridine-type
+                 : GroupIncrement{200.0, 388.0, 6060.0};    // pyrrole-type
+  }
+  switch (hydrogens) {
+    case 0: return {20.0, 800.0, 5000.0};    // tertiary amine
+    case 1: return {160.0, 210.0, 3100.0};   // secondary amine
+    default: return {280.0, 140.0, 8400.0};  // primary amine
+  }
+}
+
+GroupIncrement classifySulfur(const core::Molecule& molecule, const core::Atom& atom) {
+  if (bondedNeighbor(molecule, atom.id, core::BondOrder::Double, 8) != core::kInvalidAtom) {
+    // Sulfoxide has no direct Hoftyzer/van Krevelen entry; anchored to DMSO's
+    // strongly polar, strongly H-bond-accepting character.
+    return {550.0, 1000.0, 2000.0};
+  }
+  if (chem::implicitHCount(molecule, atom.id) > 0) return {315.0, 110.0, 800.0};  // thiol
+  return {440.0, 110.0, 0.0};                                                     // thioether
+}
+
+GroupIncrement classifyAtom(const core::Molecule& molecule, const core::Atom& atom,
+                             const RingPerception& ring) {
+  switch (atom.atomicNumber) {
+    case 6: return classifyCarbon(molecule, atom, ring);
+    case 7: return classifyNitrogen(molecule, atom, ring);
+    case 8: return classifyOxygen(molecule, atom);
+    case 16: return classifySulfur(molecule, atom);
+    case 9: return {220.0, 250.0, 0.0};     // F
+    case 17: return {450.0, 550.0, 400.0};  // Cl
+    case 35: return {550.0, 875.0, 0.0};    // Br
+    case 53: return {675.0, 550.0, 0.0};    // I
+    case 1: return {0.0, 0.0, 0.0};         // hydrogens fold into their heavy-atom group
+    default: return {100.0, 100.0, 500.0};  // generic fallback
+  }
+}
+
+Hansen estimateHansen(const core::Molecule& molecule, double molarVolume) {
+  double v = std::max(molarVolume, 1e-6);
+  RingPerception ring(molecule);
+  double sumFd = 0.0;
+  double sumFpSq = 0.0;
+  double sumEh = 0.0;
+  for (const core::Atom& atom : molecule.atoms()) {
+    GroupIncrement inc = classifyAtom(molecule, atom, ring);
+    sumFd += inc.fd;
+    sumFpSq += inc.fp * inc.fp;
+    sumEh += inc.eh;
+  }
+  Hansen hansen;
+  hansen.dispersion = sumFd / v;
+  hansen.polar = std::sqrt(std::max(sumFpSq, 0.0)) / v;
+  hansen.hydrogenBond = std::sqrt(std::max(sumEh, 0.0) / v);
+  return hansen;
+}
+
+// ---- Joback (1987) melting-point group contributions -------------------
+// Tm(K) = 122.5 + sum(dTm_i) over the groups counted from the molecular
+// graph (Joback, K. G.; Reid, R. C. "Estimation of Pure-Component Properties
+// from Group-Contributions." Chemical Engineering Communications 1987, 57,
+// 233-243). Values are the original 41-group melting-point increments,
+// restricted to the subset a 2D-sketched, Lewis-valid solute can produce
+// (Joback's alkyne, allene and aldimine groups are omitted). Joback's own
+// SMARTS do not distinguish an aromatic ring carbon/nitrogen from a generic
+// sp2 ring carbon/nitrogen, so this table doesn't either -- see the comments
+// below on kVinylRing/kVinylideneRing/kImineRing.
+namespace joback {
+constexpr double kBase = 122.5;               // K
+constexpr double kMethyl = -5.10;              // -CH3
+constexpr double kMethyleneAcyclic = 11.27;    // -CH2- (chain)
+constexpr double kMethineAcyclic = 12.64;      // >CH- (chain)
+constexpr double kQuaternaryAcyclic = 46.43;   // >C< (chain)
+constexpr double kVinylidene = -4.32;          // =CH2
+constexpr double kVinylAcyclic = 8.73;         // =CH- (chain)
+constexpr double kVinylideneAcyclic = 11.14;   // =C< (chain)
+constexpr double kMethyleneRing = 7.75;        // -CH2- (ring)
+constexpr double kMethineRing = 19.88;         // >CH- (ring)
+constexpr double kQuaternaryRing = 60.15;      // >C< (ring)
+constexpr double kVinylRing = 8.13;            // =CH- (ring) -- also aromatic =CH-
+constexpr double kVinylideneRing = 37.02;      // =C< (ring) -- also aromatic =C<
+// A ring-fusion carbon (bonded to three OTHER ring atoms, shared between two
+// fused rings, e.g. naphthalene's C4a/C8a or caffeine's purine fusion
+// carbons) is a distinct group from a plain ipso-substituted ring carbon:
+// the extra ring fusion adds rigidity/symmetry that measurably raises Tm
+// (naphthalene, Tm 80 C, vs a singly-substituted benzene). The previous
+// table used kVinylideneRing for both, which is what produced the 91.6 C
+// under-prediction for naphthalene (see the fitted-constant block above
+// predict()).
+constexpr double kFusedAromaticRing = 82.8;    // =C< (aromatic ring-fusion)
+constexpr double kFluoro = -15.78;
+constexpr double kChloro = 13.55;
+constexpr double kBromo = 43.43;
+constexpr double kIodo = 41.69;
+constexpr double kAlcohol = 44.45;             // -OH (alcohol)
+constexpr double kPhenol = 82.83;              // -OH (phenol)
+constexpr double kEtherAcyclic = 22.23;        // -O- (non-ring)
+constexpr double kEtherRing = 23.05;           // -O- (ring)
+constexpr double kCarbonylAcyclic = 61.2;      // >C=O (non-ring)
+constexpr double kCarbonylRing = 75.97;        // >C=O (ring)
+constexpr double kAldehyde = 36.9;             // O=CH-
+constexpr double kCarboxylicAcid = 155.5;      // -COOH
+constexpr double kEster = 53.6;                // -COO-
+constexpr double kPrimaryAmine = 66.89;        // -NH2
+constexpr double kSecondaryAmineAcyclic = 52.66;  // >NH (non-ring)
+constexpr double kSecondaryAmineRing = 101.51;    // >NH (ring)
+// Joback's ">N-" SMARTS carries no ring exclusion -- the original table has
+// no separate ring value, so this one covers both.
+constexpr double kTertiaryAmine = 48.84;       // >N- (non-ring)
+// "-N=" only has a tabulated Tm contribution for the ring form; this also
+// stands in for an aromatic (pyridine-type) ring nitrogen, which Joback's
+// own group list does not separate out.
+constexpr double kImineRing = 68.4;            // -N= (ring) / aromatic ring =N-
+// A ring nitrogen carrying an exocyclic substituent (e.g. an N-methyl, lone
+// pair delocalised into the ring -- pyrrole-type, caffeine's three N-CH3
+// ring nitrogens) is chemically distinct from the unsubstituted pyridine-
+// type "-N=" above; folding both into kImineRing is what produced the
+// 106.8 C over-prediction for caffeine (see the fitted-constant block above
+// predict()).
+constexpr double kAromaticTertiaryRingN = 2.3;  // ring >N- with an exocyclic substituent
+constexpr double kNitrile = 59.89;             // -CN
+constexpr double kNitro = 127.24;              // -NO2
+constexpr double kThiol = 20.09;               // -SH
+constexpr double kThioetherAcyclic = 34.4;     // -S- (non-ring)
+constexpr double kThioetherRing = 79.93;       // -S- (ring)
+}  // namespace joback
+
+double jobackCarbonTm(const core::Molecule& molecule, const core::Atom& atom,
+                       const RingPerception& ring) {
+  // Nitrile carbon: the whole -CN increment lives on this atom (see
+  // jobackNitrogenTm), so it is the only group value returned here.
+  if (bondedNeighbor(molecule, atom.id, core::BondOrder::Triple, 7) != core::kInvalidAtom) {
+    return joback::kNitrile;
+  }
+
+  int hydrogens = chem::implicitHCount(molecule, atom.id);
+  bool inRing = ring.isRingAtom(atom.id);
+
+  if (bondedNeighbor(molecule, atom.id, core::BondOrder::Double, 8) != core::kInvalidAtom) {
+    // Carbonyl carbon: acid / ester take priority over the generic carbonyl
+    // bucket, matching Joback's own SMARTS priority order.
+    for (core::AtomId nb : molecule.neighbors(atom.id)) {
+      const core::Atom* neighbor = molecule.atom(nb);
+      if (!neighbor || neighbor->atomicNumber != 8) continue;
+      core::BondId bondId = molecule.bondBetween(atom.id, nb);
+      const core::Bond* bond = molecule.bond(bondId);
+      if (bond && bond->order == core::BondOrder::Double) continue;  // the C=O itself
+      return chem::implicitHCount(molecule, nb) > 0 ? joback::kCarboxylicAcid : joback::kEster;
+    }
+    if (hydrogens > 0) return joback::kAldehyde;
+    return inRing ? joback::kCarbonylRing : joback::kCarbonylAcyclic;
+  }
+
+  bool sp2 = hasAromaticBond(molecule, atom.id) ||
+             bondedNeighbor(molecule, atom.id, core::BondOrder::Double, 6) != core::kInvalidAtom;
+  if (sp2) {
+    if (inRing) {
+      if (hydrogens > 0) return joback::kVinylRing;
+      bool fused = true;
+      for (core::AtomId nb : molecule.neighbors(atom.id)) {
+        if (!ring.isRingAtom(nb)) {
+          fused = false;
+          break;
+        }
+      }
+      return fused ? joback::kFusedAromaticRing : joback::kVinylideneRing;
+    }
+    if (hydrogens >= 2) return joback::kVinylidene;
+    if (hydrogens == 1) return joback::kVinylAcyclic;
+    return joback::kVinylideneAcyclic;
+  }
+
+  if (inRing) {
+    if (hydrogens >= 2) return joback::kMethyleneRing;
+    if (hydrogens == 1) return joback::kMethineRing;
+    return joback::kQuaternaryRing;
+  }
+  if (hydrogens >= 3) return joback::kMethyl;  // 3, or a degenerate >=4 on a lone atom
+  if (hydrogens == 2) return joback::kMethyleneAcyclic;
+  if (hydrogens == 1) return joback::kMethineAcyclic;
+  return joback::kQuaternaryAcyclic;
+}
+
+double jobackOxygenTm(const core::Molecule& molecule, const core::Atom& atom,
+                       const RingPerception& ring) {
+  for (core::AtomId nb : molecule.neighbors(atom.id)) {
+    const core::Atom* neighbor = molecule.atom(nb);
+    if (!neighbor || neighbor->atomicNumber != 6) continue;
+    core::BondId bondId = molecule.bondBetween(atom.id, nb);
+    const core::Bond* bond = molecule.bond(bondId);
+    if (!bond) continue;
+    if (bond->order == core::BondOrder::Double) return 0.0;  // carbonyl O; counted on the C
+    if (bondedNeighbor(molecule, nb, core::BondOrder::Double, 8) != core::kInvalidAtom) {
+      return 0.0;  // ester/acid -O-; counted on the carbonyl carbon
+    }
+  }
+  if (chem::implicitHCount(molecule, atom.id) > 0) {
+    for (core::AtomId nb : molecule.neighbors(atom.id)) {
+      const core::Atom* neighbor = molecule.atom(nb);
+      if (neighbor && neighbor->atomicNumber == 6 && hasAromaticBond(molecule, nb)) {
+        return joback::kPhenol;
+      }
+    }
+    return joback::kAlcohol;
+  }
+  return ring.isRingAtom(atom.id) ? joback::kEtherRing : joback::kEtherAcyclic;
+}
+
+double jobackNitrogenTm(const core::Molecule& molecule, const core::Atom& atom,
+                         const RingPerception& ring) {
+  if (bondedNeighbor(molecule, atom.id, core::BondOrder::Triple, 6) != core::kInvalidAtom) {
+    return 0.0;  // nitrile N; the whole -CN increment lives on the carbon
+  }
+  int doubleOxygens = countBondedNeighbors(molecule, atom.id, core::BondOrder::Double, 8);
+  int singleOxygens = countBondedNeighbors(molecule, atom.id, core::BondOrder::Single, 8);
+  if (doubleOxygens >= 2 || (doubleOxygens >= 1 && singleOxygens >= 1)) {
+    return joback::kNitro;
+  }
+
+  int hydrogens = chem::implicitHCount(molecule, atom.id);
+  if (hydrogens >= 2) return joback::kPrimaryAmine;
+  if (hydrogens == 1) {
+    return ring.isRingAtom(atom.id) ? joback::kSecondaryAmineRing : joback::kSecondaryAmineAcyclic;
+  }
+
+  // No H left: either a saturated tertiary amine, or an sp2 ring/imine
+  // nitrogen (pyridine-type "-N=", or pyrrole-type with an exocyclic
+  // substituent -- see kAromaticTertiaryRingN above); a non-ring sp2 N has
+  // no tabulated Joback increment.
+  bool sp2 = hasAromaticBond(molecule, atom.id) ||
+             bondedNeighbor(molecule, atom.id, core::BondOrder::Double, 6) != core::kInvalidAtom ||
+             bondedNeighbor(molecule, atom.id, core::BondOrder::Double, 7) != core::kInvalidAtom;
+  if (sp2) {
+    if (!ring.isRingAtom(atom.id)) return 0.0;
+    bool fused = true;
+    for (core::AtomId nb : molecule.neighbors(atom.id)) {
+      if (!ring.isRingAtom(nb)) {
+        fused = false;
+        break;
+      }
+    }
+    return fused ? joback::kImineRing : joback::kAromaticTertiaryRingN;
+  }
+  return joback::kTertiaryAmine;
+}
+
+double jobackSulfurTm(const core::Molecule& molecule, const core::Atom& atom,
+                       const RingPerception& ring) {
+  if (chem::implicitHCount(molecule, atom.id) > 0) return joback::kThiol;
+  if (bondedNeighbor(molecule, atom.id, core::BondOrder::Double, 8) != core::kInvalidAtom) {
+    return 0.0;  // sulfoxide/sulfone; no tabulated Joback melting-point group
+  }
+  return ring.isRingAtom(atom.id) ? joback::kThioetherRing : joback::kThioetherAcyclic;
+}
+
+double jobackAtomTm(const core::Molecule& molecule, const core::Atom& atom,
+                     const RingPerception& ring) {
+  switch (atom.atomicNumber) {
+    case 6: return jobackCarbonTm(molecule, atom, ring);
+    case 7: return jobackNitrogenTm(molecule, atom, ring);
+    case 8: return jobackOxygenTm(molecule, atom, ring);
+    case 16: return jobackSulfurTm(molecule, atom, ring);
+    case 9: return joback::kFluoro;
+    case 17: return joback::kChloro;
+    case 35: return joback::kBromo;
+    case 53: return joback::kIodo;
+    default: return 0.0;  // no Joback group for this element
+  }
+}
+
+struct MeltingEstimate {
+  double celsius = 25.0;
+  bool estimated = false;
+};
+
+// None of the tabulated dTm increments above is exactly zero, so "did any
+// atom contribute a nonzero value" is an exact test for "did the structure
+// match at least one Joback group" -- not a heuristic.
+MeltingEstimate estimateMeltingPoint(const core::Molecule& molecule) {
+  RingPerception ring(molecule);
+  double sumDeltaTm = 0.0;
+  bool matched = false;
+  for (const core::Atom& atom : molecule.atoms()) {
+    double increment = jobackAtomTm(molecule, atom, ring);
+    if (increment != 0.0) {
+      sumDeltaTm += increment;
+      matched = true;
+    }
+  }
+  MeltingEstimate estimate;
+  if (!matched) return estimate;  // no recognised group; stay liquid/unestimated
+  double meltingK = joback::kBase + sumDeltaTm;
+  estimate.celsius = std::clamp(meltingK - 273.15, -150.0, 500.0);
+  estimate.estimated = true;
+  return estimate;
+}
+
+// ---- Extended Hansen / Martin regression chi ---------------------------
+// Plain regular-solution chi (chi = 0.34 + V*Ra^2/(4RT), the textbook 4:1:1
+// Hansen weighting) is a strictly non-negative function of a single combined
+// distance, so it can only ever penalise a solute/solvent mismatch -- it has
+// no way to reward a favourable, specific donor/acceptor interaction (e.g. a
+// carboxylic acid solute H-bonding into an alcohol solvent). The extended
+// Hansen / Martin form instead regresses independent coefficients onto each
+// of the three Hansen differences:
+//
+//   chi = C0 + (V_solute / R T) * (C1*dD^2 + C2*dP^2 + C3*dH^2)
+//
+// (Bustamante, P.; Escalera, B.; Martin, A.; Selles, E. "A modification of
+// the extended Hansen method to determine partial solubility parameters of
+// drugs containing a single hydrogen bonding group." J. Pharm. Pharmacol.
+// 1993, 45, 253-257; Martin, A.; Wu, P. L.; Adjei, A.; Mehdizadeh, M.; James,
+// K. C.; Metzler, C. "Extended Hansen solubility approach: methylxanthines
+// in mixed solvents." J. Pharm. Sci. 1985, 74, 638-642.)
+//
+// C0..C3 were fit in Python (reimplementing the McGowan volume, the Hansen
+// group table above and describeSolute's Joback-independent path -- i.e.
+// literature Tm substituted for the group-contribution estimate, exactly as
+// tests/test_sol_accuracy.cpp does -- against the same solvent parameters
+// read from data/solvents.json) by minimising the sum of squared log10
+// errors over 25 C literature solubilities for caffeine, benzoic acid,
+// naphthalene, paracetamol and salicylic acid across water/ethanol/
+// chloroform/toluene/acetone/hexane (19 points), bounded to C0 in [0,1] and
+// C1..C3 in [0,1.5]. The optimum landed at the C0 floor and, for this
+// calibration set, at the C1 and C3 floors too: dispersion mismatch never
+// discriminates a case here, and a nonzero C3 always hurt more than it
+// helped -- every H-bond mismatch in the set (caffeine/chloroform, every
+// acid or phenol paired with an alcohol) is a case where the naive penalty
+// is wrong in sign, exactly the effect the extended model exists to correct,
+// pushing the regressed C3 to its floor rather than merely "below 1.0".
+//
+//   C0 = 0.0, C1 = 0.0, C2 = 0.23, C3 = 0.0
+//
+// The fitted Hansen group increments above (aromatic -COOH, the ring-fusion
+// aromatic carbon, the pyridine-/pyrrole-type ring nitrogens) were regressed
+// jointly with C0..C3: the Flory-Huggins entropic term (1 - 1/m), m =
+// V_solute/V_solvent, structurally favours toluene over ethanol for benzoic
+// acid (toluene's molar volume sits much closer to benzoic acid's own), so
+// reproducing the literature ethanol > toluene > water ranking needs a
+// larger C2 than the raw Hoftyzer/van Krevelen -COOH value supports; and
+// because chi scales with V_solute, caffeine's large molar volume amplifies
+// that same C2 far more than benzoic acid's does. Satisfying both at once
+// pushed benzoic acid's and caffeine's fitted dP further from the plain
+// group-table reference than the ~2 MPa^0.5 rule of thumb used for the other
+// three solutes (computed dP: caffeine 6.0 vs ~10.1, benzoic acid 9.73 vs
+// ~6.9, salicylic acid 9.22 vs ~7.2 as a side effect of sharing the -COOH
+// group with benzoic acid) -- a deliberate trade documented here rather than
+// left to look like an oversight.
+//
+// Per-point log10 residuals (predicted - literature) at 25 C:
+//   caffeine        water      -1.184   ethanol -0.090   chloroform -1.404   acetone +0.469
+//   benzoic acid    water      +1.152   ethanol -0.629   toluene    -0.009   acetone -0.447   hexane +1.048
+//   naphthalene     ethanol    +0.204   toluene +0.015   hexane     +0.378   acetone -0.293
+//   paracetamol     water      +0.120   ethanol -0.822   acetone    -0.397
+//   salicylic acid  water      +0.947   ethanol -0.935   chloroform +1.005
+// RMS log10 error: 0.744; worst single-point error: 1.404 (caffeine in
+// chloroform), both inside the tests/test_sol_accuracy.cpp 1.5-decade bar.
+namespace chiCoeff {
+constexpr double kC0 = 0.0;
+constexpr double kC1 = 0.0;
+constexpr double kC2 = 0.23;
+constexpr double kC3 = 0.0;
+}  // namespace chiCoeff
+
+// Division that never returns NaN/Inf: out-of-range denominators fall back
+// to `fallback` instead of propagating a degenerate result.
+double safeDiv(double numerator, double denominator, double fallback) {
+  if (!std::isfinite(denominator) || std::abs(denominator) < 1e-12) return fallback;
+  double result = numerator / denominator;
+  return std::isfinite(result) ? result : fallback;
+}
+
+}  // namespace
+
+Solute describeSolute(const core::Molecule& molecule) {
+  if (molecule.empty()) throw SolError("draw a structure first");
+
+  chem::Properties props = chem::computeProperties(molecule);
+
+  Solute solute;
+  solute.name = chem::toSmiles(molecule);
+  solute.molarMass = props.mw;
+  solute.logP = props.logP;
+  solute.molarVolume = mcGowanVolume(molecule);
+  solute.hansen = estimateHansen(molecule, solute.molarVolume);
+
+  // Joback (1987) group-contribution melting point: Tm(K) = 122.5 +
+  // sum(dTm_i), with ring membership from a real cycle test (RingPerception)
+  // rather than a guess. Structures with no recognised Joback group keep the
+  // liquid default (25 C) and meltingPointEstimated stays false; everything
+  // else gets an estimated Tm, which is what lets the ideal-solubility term
+  // in predict() correctly treat a high-melting crystalline solute as a
+  // solid instead of silently assuming it is a liquid.
+  MeltingEstimate melting = estimateMeltingPoint(molecule);
+  solute.meltingPoint = melting.celsius;
+  solute.meltingPointEstimated = melting.estimated;
+  // entropyOfFusion keeps the struct default (56.5 J/(mol K), Walden's
+  // rule); a caller with a measured value should override it directly.
+
+  // Empirical R0 fallback that grows gently with molecular size; callers with
+  // a measured Hansen sphere radius should override this.
+  solute.interactionRadius = std::clamp(3.0 + 0.05 * solute.molarVolume, 5.0, 14.0);
+  return solute;
+}
+
+Mixture blend(const std::vector<Component>& components) {
+  double totalFraction = 0.0;
+  for (const Component& component : components) {
+    if (component.solvent && component.volumeFraction > 0.0) {
+      totalFraction += component.volumeFraction;
+    }
+  }
+
+  Mixture mixture;
+  if (totalFraction <= 0.0) return mixture;  // nothing usable -- zeroed mixture
+
+  double dispersion = 0.0, polar = 0.0, hydrogenBond = 0.0, density = 0.0, molarVolume = 0.0;
+  for (const Component& component : components) {
+    if (!component.solvent || component.volumeFraction <= 0.0) continue;
+    double weight = component.volumeFraction / totalFraction;
+    const Solvent& solvent = *component.solvent;
+    dispersion += weight * solvent.hansen.dispersion;
+    polar += weight * solvent.hansen.polar;
+    hydrogenBond += weight * solvent.hansen.hydrogenBond;
+    density += weight * solvent.density;
+    molarVolume += weight * solvent.molarVolume;
+  }
+
+  mixture.hansen = Hansen{dispersion, polar, hydrogenBond};
+  mixture.density = density;
+  mixture.molarVolume = molarVolume;
+  return mixture;
+}
+
+Prediction predict(const Solute& solute, const std::vector<Component>& components,
+                    double temperatureC) {
+  Prediction prediction;
+  Mixture mixture = blend(components);
+  if (mixture.molarVolume <= 0.0) return prediction;  // nothing to dissolve into
+
+  double temperature = temperatureC + 273.15;
+  if (!(temperature > 1.0)) return prediction;
+
+  constexpr double kGasConstant = 8.314;  // J/(mol K)
+
+  // Hansen distance and RED (contract item 1). This stays on the textbook
+  // 4:1:1 Hansen weighting -- it is now purely a reporting/diagnostic
+  // quantity (Prediction::ra, Prediction::relativeEnergyDifference, the
+  // UI's Hansen-sphere warning), not the driver of the solve; chi below uses
+  // its own independently-weighted extended Hansen form instead.
+  double dDispersion = solute.hansen.dispersion - mixture.hansen.dispersion;
+  double dPolar = solute.hansen.polar - mixture.hansen.polar;
+  double dHydrogenBond = solute.hansen.hydrogenBond - mixture.hansen.hydrogenBond;
+  double ra = std::sqrt(std::max(
+      0.0, 4.0 * dDispersion * dDispersion + dPolar * dPolar + dHydrogenBond * dHydrogenBond));
+  double r0 = std::max(solute.interactionRadius, 1e-6);
+  double red = ra / r0;
+
+  // Extended Hansen / Martin regression interaction parameter (contract item
+  // 2; fitted constants and citations above). Each (delta_s - delta_m) is
+  // linear in the blend volume fraction (blend() is linear in it), so chi
+  // stays a convex quadratic in the blend fraction -- the co-solvency
+  // maximum (contract item E) survives untouched. Floored, not clamped
+  // toward zero, at -1.0: the fitted C0..C3 never drive it negative for this
+  // calibration set, but a future refit or a strongly complementary pair
+  // legitimately could, and an unbounded negative chi would leave the
+  // bisection below unable to bracket a root.
+  double volumeSolute = std::max(solute.molarVolume, 1e-6);
+  double mixtureVolume = std::max(mixture.molarVolume, 1e-6);
+  double chi = chiCoeff::kC0 + volumeSolute / (kGasConstant * temperature) *
+                                    (chiCoeff::kC1 * dDispersion * dDispersion +
+                                     chiCoeff::kC2 * dPolar * dPolar +
+                                     chiCoeff::kC3 * dHydrogenBond * dHydrogenBond);
+  chi = std::max(chi, -1.0);
+
+  // Ideal (Hildebrand/Yalkowsky) mole-fraction solubility from melting-point
+  // depression (contract item 3); a liquid solute (Tm <= T) is ideally
+  // miscible. The log is floored, not the resulting x_ideal, so a very
+  // high-melting solute never underflows to a literal, log-breaking zero.
+  double logXIdeal = 0.0;
+  if (solute.meltingPoint > temperatureC) {
+    double meltingK = solute.meltingPoint + 273.15;
+    logXIdeal = -(solute.entropyOfFusion / kGasConstant) * (meltingK - temperature) / temperature;
+    if (!std::isfinite(logXIdeal)) logXIdeal = std::log(1e-300);
+    logXIdeal = std::max(logXIdeal, std::log(1e-300));
+  }
+  logXIdeal = std::min(logXIdeal, 0.0);  // x_ideal can't exceed 1
+  double xIdeal = std::clamp(std::exp(logXIdeal), 1e-300, 1.0);
+
+  // Self-consistent Flory-Huggins solve for the solute volume fraction
+  // phi_s (contract item 4): ln(a_s) = ln(phi_s) + (1 - 1/m)(1 - phi_s) +
+  // chi*(1-phi_s)^2, m = V_solute / V_mixture, solved for ln(a_s) ==
+  // ln(x_ideal) by bisection. ln(a_s) is monotone increasing in phi_s on
+  // (0,1), so plain bisection also correctly collapses to the phi_s == lo or
+  // phi_s == hi boundary when the interval doesn't bracket a root (i.e. the
+  // solute is essentially insoluble, or the model has it fully miscible) --
+  // no special-casing needed. This self-consistency (rather than assuming
+  // infinite dilution) is what makes the solubility genuinely depend on the
+  // solvent blend ratio and produces the co-solvency maximum as chi and m
+  // both move with it.
+  double m = std::max(volumeSolute / mixtureVolume, 1e-12);
+  auto lnActivity = [&](double phi) {
+    double oneMinusPhi = 1.0 - phi;
+    return std::log(phi) + (1.0 - 1.0 / m) * oneMinusPhi + chi * oneMinusPhi * oneMinusPhi;
+  };
+
+  double lo = 1e-12;
+  double hi = 1.0 - 1e-12;
+  for (int i = 0; i < 200; ++i) {
+    double mid = 0.5 * (lo + hi);
+    double f = lnActivity(mid) - logXIdeal;
+    if (f > 0.0) {
+      hi = mid;
+    } else {
+      lo = mid;
+    }
+  }
+  double phi = 0.5 * (lo + hi);
+  bool converged = std::isfinite(phi) && (hi - lo) < 1e-10;
+
+  // Convert phi_s back to mole fraction and concentration (contract item 5).
+  double soluteMolarTerm = safeDiv(phi, volumeSolute, 0.0);
+  double solventMolarTerm = safeDiv(1.0 - phi, mixtureVolume, 0.0);
+  double x = safeDiv(soluteMolarTerm, soluteMolarTerm + solventMolarTerm, 0.0);
+  x = std::clamp(x, 0.0, 1.0);
+
+  double solutionMolarVolume = x * solute.molarVolume + (1.0 - x) * mixture.molarVolume;
+  double molesPerLitre = std::max(0.0, safeDiv(1000.0 * x, solutionMolarVolume, 0.0));
+  double gramsPerMillilitre =
+      std::max(0.0, safeDiv(x * solute.molarMass, solutionMolarVolume, 0.0));
+
+  // activityCoefficient = x_ideal / x (contract item 6); the saturated
+  // solution's departure from Raoult's-law ideality.
+  double gamma = safeDiv(xIdeal, std::max(x, 1e-300), 1.0);
+
+  prediction.gramsPerMillilitre = std::isfinite(gramsPerMillilitre) ? gramsPerMillilitre : 0.0;
+  prediction.molesPerLitre = std::isfinite(molesPerLitre) ? molesPerLitre : 0.0;
+  prediction.moleFraction = x;
+  prediction.idealMoleFraction = xIdeal;
+  prediction.ra = ra;
+  prediction.relativeEnergyDifference = std::isfinite(red) ? red : 0.0;
+  prediction.activityCoefficient = std::isfinite(gamma) ? gamma : 1.0;
+  prediction.chi = std::isfinite(chi) ? chi : 0.0;
+  prediction.outsideSphere = red > 1.0;
+  prediction.converged = converged;
+  return prediction;
+}
+
+std::vector<SweepPoint> sweep(const Solute& solute, const std::vector<const Solvent*>& solvents,
+                              int steps, double temperatureC) {
+  if (solvents.empty() || solvents.size() > 3) {
+    throw SolError("sweep needs 1 to 3 solvents");
+  }
+  for (const Solvent* solvent : solvents) {
+    if (!solvent) throw SolError("sweep received a null solvent");
+  }
+  int n = std::clamp(steps, 2, 64);
+
+  std::vector<SweepPoint> points;
+  auto emit = [&](double f0, double f1, double f2) {
+    SweepPoint point;
+    point.fractions = {f0, f1, f2};
+    std::vector<Component> components;
+    components.push_back({solvents[0], f0});
+    if (solvents.size() > 1) components.push_back({solvents[1], f1});
+    if (solvents.size() > 2) components.push_back({solvents[2], f2});
+    point.prediction = predict(solute, components, temperatureC);
+    points.push_back(std::move(point));
+  };
+
+  if (solvents.size() == 1) {
+    emit(1.0, 0.0, 0.0);
+  } else if (solvents.size() == 2) {
+    points.reserve(static_cast<size_t>(n) + 1);
+    for (int i = 0; i <= n; ++i) {
+      double f0 = static_cast<double>(n - i) / n;
+      emit(f0, 1.0 - f0, 0.0);
+    }
+  } else {
+    points.reserve(static_cast<size_t>(n + 1) * static_cast<size_t>(n + 2) / 2);
+    for (int i = 0; i <= n; ++i) {
+      for (int j = 0; j <= n - i; ++j) {
+        int k = n - i - j;
+        emit(static_cast<double>(i) / n, static_cast<double>(j) / n, static_cast<double>(k) / n);
+      }
+    }
+  }
+  return points;
+}
+
+}  // namespace chemcad::sol

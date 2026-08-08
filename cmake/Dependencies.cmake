@@ -11,40 +11,89 @@ find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
 
 # ------------------------------------------------------------------ RDKit
-set(CHEMCAD_DEPS_PREFIX "$ENV{HOME}/.local/share/chemcad-deps" CACHE PATH
-    "Prefix where scripts/setup_deps.sh installed RDKit and OPSIN")
+if(WIN32)
+  set(CHEMCAD_DEPS_PREFIX "$ENV{LOCALAPPDATA}/chemcad-deps" CACHE PATH
+      "Prefix where scripts/setup_deps.ps1 installed RDKit and OPSIN")
+else()
+  set(CHEMCAD_DEPS_PREFIX "$ENV{HOME}/.local/share/chemcad-deps" CACHE PATH
+      "Prefix where scripts/setup_deps.sh installed RDKit and OPSIN")
+endif()
 
-# Debian/Ubuntu ship librdkit-dev, whose rdkit-targets.cmake names Cairo::Cairo
-# in MolDraw2D's link interface without exporting a find_package for it. Define
-# the target from pkg-config first so the config file resolves.
+# Every packaged RDKit (Debian's librdkit-dev, conda-forge's librdkit-dev) names
+# Cairo::Cairo in MolDraw2D's link interface without exporting a find_package
+# for it, so rdkit-targets.cmake hard-errors unless the target already exists.
 if(NOT TARGET Cairo::Cairo)
   find_package(PkgConfig QUIET)
   if(PkgConfig_FOUND)
     pkg_check_modules(CHEMCAD_CAIRO QUIET IMPORTED_TARGET cairo)
-    if(CHEMCAD_CAIRO_FOUND)
-      add_library(Cairo::Cairo ALIAS PkgConfig::CHEMCAD_CAIRO)
+  endif()
+  if(CHEMCAD_CAIRO_FOUND)
+    add_library(Cairo::Cairo ALIAS PkgConfig::CHEMCAD_CAIRO)
+  else()
+    find_path(CHEMCAD_CAIRO_INCLUDE_DIR cairo.h PATH_SUFFIXES cairo)
+    find_library(CHEMCAD_CAIRO_LIBRARY NAMES cairo)
+    if(CHEMCAD_CAIRO_INCLUDE_DIR AND CHEMCAD_CAIRO_LIBRARY)
+      add_library(Cairo::Cairo UNKNOWN IMPORTED)
+      set_target_properties(Cairo::Cairo PROPERTIES
+        IMPORTED_LOCATION "${CHEMCAD_CAIRO_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${CHEMCAD_CAIRO_INCLUDE_DIR}")
     endif()
   endif()
 endif()
 
 find_package(RDKit CONFIG QUIET
-  HINTS "${CHEMCAD_DEPS_PREFIX}/rdkit"
-  PATH_SUFFIXES lib64/cmake/rdkit lib/cmake/rdkit share/RDKit/cmake)
+  HINTS "${CHEMCAD_DEPS_PREFIX}/rdkit" "${CHEMCAD_DEPS_PREFIX}"
+  PATH_SUFFIXES lib64/cmake/rdkit lib/cmake/rdkit share/RDKit/cmake
+                Library/lib/cmake/rdkit)
 if(NOT RDKit_FOUND)
-  message(FATAL_ERROR
-    "RDKit not found. Run ./scripts/setup_deps.sh first "
-    "(or pass -DCHEMCAD_DEPS_PREFIX=/path/to/prefix).")
+  if(WIN32)
+    message(FATAL_ERROR
+      "RDKit not found. Run scripts/setup_deps.ps1 first, then configure with "
+      "-DCMAKE_PREFIX_PATH=<prefix>/rdkit/Library "
+      "(or pass -DCHEMCAD_DEPS_PREFIX=<prefix>).")
+  else()
+    message(FATAL_ERROR
+      "RDKit not found. Run ./scripts/setup_deps.sh first "
+      "(or pass -DCHEMCAD_DEPS_PREFIX=/path/to/prefix).")
+  endif()
 endif()
 message(STATUS "Found RDKit: ${RDKit_DIR}")
 
 # RDKit's shared libraries pull in siblings (libexpatpp, libcoordgen, ...) via
 # plain DT_NEEDED entries, so the loader needs the RDKit lib dir on the RPATH.
+# Windows has no RPATH; chemcad_copy_runtime_dlls() below stages the DLLs next
+# to each executable instead.
 get_filename_component(CHEMCAD_RDKIT_LIBDIR "${RDKit_DIR}/../.." ABSOLUTE)
-list(APPEND CMAKE_BUILD_RPATH "${CHEMCAD_RDKIT_LIBDIR}")
-set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+if(UNIX)
+  list(APPEND CMAKE_BUILD_RPATH "${CHEMCAD_RDKIT_LIBDIR}")
+  set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+endif()
 
-# RDKit's exported targets are namespaced RDKit::<Component>.
-set(CHEMCAD_RDKIT_LIBS
+# Packaged RDKit keeps its import libraries in lib/ and its DLLs in the sibling
+# bin/, and pulls in Boost, cairo, freetype and friends through plain PE
+# imports that no CMake target models.
+get_filename_component(CHEMCAD_RUNTIME_BINDIR "${CHEMCAD_RDKIT_LIBDIR}/../bin" ABSOLUTE)
+
+# Stages the transitive DLL closure of an executable into its output directory.
+# A no-op on platforms with a real runtime loader search path.
+function(chemcad_copy_runtime_dlls target)
+  if(NOT WIN32)
+    return()
+  endif()
+  add_custom_command(TARGET ${target} POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+            -D "EXE=$<TARGET_FILE:${target}>"
+            -D "DEST=$<TARGET_FILE_DIR:${target}>"
+            -D "SEARCH=${CHEMCAD_RUNTIME_BINDIR}"
+            -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/StageRuntimeDlls.cmake"
+    VERBATIM)
+endfunction()
+
+# RDKit's exported targets are namespaced RDKit::<Component>. They are wrapped
+# in one INTERFACE target so the consumer-side compile definitions travel with
+# the link line.
+add_library(chemcad_rdkit INTERFACE)
+target_link_libraries(chemcad_rdkit INTERFACE
   RDKit::GraphMol
   RDKit::SmilesParse
   RDKit::FileParsers
@@ -55,6 +104,13 @@ set(CHEMCAD_RDKIT_LIBS
   RDKit::SubstructMatch
   RDKit::RDGeneral
   RDKit::DataStructs)
+if(WIN32)
+  # RDKit ships DLLs here. Without RDKIT_DYN_LINK its headers declare exported
+  # data (rdErrorLog, RDDepict::preferCoordGen) with no __declspec(dllimport),
+  # and MSVC cannot auto-import data symbols the way it can functions.
+  target_compile_definitions(chemcad_rdkit INTERFACE RDKIT_DYN_LINK)
+endif()
+set(CHEMCAD_RDKIT_LIBS chemcad_rdkit)
 
 # ------------------------------------------------------------------ OPSIN
 set(CHEMCAD_OPSIN_JAR "${CHEMCAD_DEPS_PREFIX}/share/opsin/opsin.jar"
@@ -74,8 +130,10 @@ set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
-set(GLFW_BUILD_WAYLAND  ON  CACHE BOOL "" FORCE)
-set(GLFW_BUILD_X11      ON  CACHE BOOL "" FORCE)
+if(UNIX AND NOT APPLE)
+  set(GLFW_BUILD_WAYLAND ON CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_X11     ON CACHE BOOL "" FORCE)
+endif()
 FetchContent_MakeAvailable(glfw)
 
 # ------------------------------------------------------------------ JSON

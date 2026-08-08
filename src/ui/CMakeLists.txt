@@ -5,5 +5,5 @@ file(GLOB CHEMCAD_UI_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cp
 add_library(chemcad_ui STATIC ${CHEMCAD_UI_SOURCES})
 target_include_directories(chemcad_ui PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(chemcad_ui
-  PUBLIC chemcad_core chemcad_app imgui_lib
+  PUBLIC chemcad_core chemcad_app chemcad_sol imgui_lib
   PRIVATE chemcad_chem chemcad_naming chemcad_rxn nlohmann_json::nlohmann_json)
