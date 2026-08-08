@@ -144,10 +144,11 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
   ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
 
   ImGuiID center = dockspaceId;
-  // The tool column holds bond-order/stereo/ring combos, and the right dock has
-  // to fit all 18 periodic-table groups, so neither can be a thin strip.
-  const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.105f, nullptr, &center);
-  const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.30f, nullptr, &center);
+  // The labelled structure-tool rail needs enough width for command names,
+  // current variants, shortcuts and split-menu affordances. The versioned
+  // dockspace below migrates older two-column layouts into this safer default.
+  const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.16f, nullptr, &center);
+  const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.27f, nullptr, &center);
   ImGuiID rightBottom = right;
   const ImGuiID rightTop =
       ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.52f, nullptr, &rightBottom);
@@ -244,7 +245,7 @@ int main(int, char**) {
 
     chemcad::ui::drawMenuBar(state);
 
-    const ImGuiID dockspaceId = ImGui::GetID("chemcad_dockspace");
+    const ImGuiID dockspaceId = ImGui::GetID("chemcad_dockspace_v2");
     if (!layoutBuilt) {
       layoutBuilt = true;
       if (!ImGui::DockBuilderGetNode(dockspaceId)) buildDefaultLayout(dockspaceId);

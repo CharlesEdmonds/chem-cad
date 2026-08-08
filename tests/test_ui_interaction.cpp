@@ -378,20 +378,18 @@ TEST_CASE("properties panel reports formula and mass for the sketch") {
   CHECK(chem::canonicalize(st.props.smiles) == chem::canonicalize("CCO"));
 }
 
-TEST_CASE("tool palette icon grid switches the active tool") {
+TEST_CASE("tool command rail switches the active tool") {
   HeadlessImGui gui;
   ui::AppState st;
   st.tool = ui::Tool::Select;
-  // The 2-column grid starts at the window's content origin (8,8); cells are
-  // 66px squares (cap = 3 * iconSize at default scale), rows stride 66+4.
   panelFrame(st, &ui::drawToolPalette, "Tools");
 
-  // Eraser is row 0, column 1: grid is centred in the 700px window.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 387.0f, 41.0f);
+  // The active-tool card comes first; Navigate contains full-width Select and
+  // Eraser rows, followed by the Build section.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 100.0f, 185.0f);
   CHECK(st.tool == ui::Tool::Eraser);
 
-  // Bond is row 1, column 0.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 313.0f, 111.0f);
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 100.0f, 270.0f);
   CHECK(st.tool == ui::Tool::Bond);
 }
 
@@ -401,13 +399,10 @@ TEST_CASE("bond gallery switches the bond order") {
   panelFrame(st, &ui::drawToolPalette, "Tools");
   REQUIRE(st.currentOrder == core::BondOrder::Single);
 
-  // The Bond cell is row 1, column 0; its caret (bottom-right corner) opens
-  // the gallery popup.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 330.0f, 135.0f);
-
-  // "Double bond" is tile 1 of the four-column order grid that opens below
-  // the cell: caption line, then the tile row.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 435.0f, 203.0f);
+  // Bond is the first Build command. Its right-hand menu affordance opens a
+  // side flyout; Double bond is the second tile in the first section.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 680.0f, 270.0f);
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 866.0f, 363.0f);
   CHECK(st.currentOrder == core::BondOrder::Double);
   CHECK(st.tool == ui::Tool::Bond);
 }
@@ -418,11 +413,10 @@ TEST_CASE("bond gallery switches stereochemistry") {
   panelFrame(st, &ui::drawToolPalette, "Tools");
   REQUIRE(st.currentStereo == core::BondStereo::None);
 
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 330.0f, 135.0f);
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 680.0f, 270.0f);
 
-  // The stereo grid starts one gallery section below the order grid: order
-  // tiles (~60px), a caption, then the stereo row. "Wavy" is tile 3.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 616.0f, 300.0f);
+  // Wavy is the fourth tile in the stereochemistry section.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 922.0f, 461.0f);
   CHECK(st.currentStereo == core::BondStereo::Wavy);
   CHECK(st.tool == ui::Tool::Bond);
 }
@@ -433,11 +427,10 @@ TEST_CASE("atom gallery quick-picks a common element") {
   panelFrame(st, &ui::drawToolPalette, "Tools");
   REQUIRE(st.currentElement == 6);
 
-  // The Atom cell is row 2, column 1; its caret opens the element gallery.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 400.0f, 205.0f);
-
-  // "Oxygen" is tile 3 of the first row.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 642.0f, 273.0f);
+  // Atom is the fourth Build command. Oxygen is the fourth tile in the first
+  // row of its side flyout.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 680.0f, 438.0f);
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 1014.0f, 530.0f);
   CHECK(st.currentElement == 8);
   CHECK(st.tool == ui::Tool::Atom);
 }
@@ -457,9 +450,9 @@ TEST_CASE("clicking a periodic table tile arms the atom tool with that element")
 TEST_CASE("hovering a tool button fires its tooltip after the hover delay") {
   HeadlessImGui gui;
   ui::AppState st;
-  // Park the cursor over the eraser cell and let the hover/stationary delays
-  // elapse (0.40s + 0.15s at 1/60s per frame), then look for the tooltip.
-  mouseTo(387.0f, 41.0f);
+  // Park the cursor over the Eraser command and let ImGui's hover/stationary
+  // delays elapse before looking for the tooltip window.
+  mouseTo(100.0f, 185.0f);
   for (int i = 0; i < 60; ++i) panelFrame(st, &ui::drawToolPalette, "Tools");
 
   bool tooltipActive = false;
