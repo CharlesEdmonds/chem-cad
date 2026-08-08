@@ -136,4 +136,14 @@ const Solvent* findSolvent(std::string_view id) {
   return nullptr;
 }
 
+bool miscibleWith(const Solvent& a, const Solvent& b) {
+  // The database records water miscibility only, so the rule is deliberately
+  // simple: water against a water-immiscible partner separates; any other
+  // pairing is treated as mixable. Water+water takes the first branch and is
+  // true because water is waterMiscible.
+  if (a.family == "water") return b.waterMiscible;
+  if (b.family == "water") return a.waterMiscible;
+  return true;
+}
+
 }  // namespace chemcad::sol

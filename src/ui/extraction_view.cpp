@@ -1,6 +1,6 @@
 // 2D cross-section renderer and controls for the liquid-liquid separation
-// simulation (sol::Simulation). Renders inside an already-open panel; never
-// owns a top-level ImGui window.
+// simulation (sol::Simulation): the Extraction Lab. Renders inside an
+// already-open panel; never owns a top-level ImGui window.
 
 #include "imgui.h"
 
@@ -13,6 +13,7 @@
 
 #include "core/model.hpp"
 #include "sol/funnel.hpp"
+#include "sol/solubility.hpp"
 #include "ui/app_state.hpp"
 #include "ui/solubility_state.hpp"
 #include "ui/theme.hpp"
@@ -22,7 +23,7 @@ namespace chemcad::ui {
 
 // Redundant forward declaration: the app shell (ui.hpp) declares the public
 // signature this file implements.
-void drawFunnelView(AppState&);
+void drawExtractionLab(AppState&);
 
 namespace {
 
@@ -547,15 +548,160 @@ void stepSimulation(SolubilityState& s) {
   sol::step(s.funnel, static_cast<double>(dt));
 }
 
+// -------------------------------------------------------- suite hand-off
+// UI-only mass for the solute distribution panel, in mg. Seeded from the
+// Solubility Suite's import payload; the slider owns it afterwards.
+float soluteMassMgUi = 100.0f;
+
+void colourForFamily(const std::string& family, float out[4]) {
+  // Muted lab-liquid tints per solvent family; alpha stays low enough that
+  // the vessel wall and interface lines still read through the layer.
+  if (family == "water" || family == "alcohol") {
+    out[0] = 0.42f; out[1] = 0.70f; out[2] = 0.88f;
+  } else if (family == "halogenated") {
+    out[0] = 0.52f; out[1] = 0.84f; out[2] = 0.58f;
+  } else if (family == "alkane" || family == "aromatic") {
+    out[0] = 0.88f; out[1] = 0.68f; out[2] = 0.32f;
+  } else {
+    out[0] = 0.70f; out[1] = 0.60f; out[2] = 0.88f;
+  }
+  out[3] = 0.55f;
+}
+
+sol::Phase makeImportedPhase(const sol::Solvent* solvent, double volumeMl) {
+  sol::Phase phase;
+  phase.label = solvent->name;
+  phase.volumeMl = std::max(volumeMl, 1.0);
+  phase.density = solvent->density;
+  // The DB carries no viscosities; water is 0.89 mPa.s, everything else gets
+  // a light-organic default close to the stock DCM phase.
+  phase.viscosity = solvent->family == "water" ? 0.89 : 0.60;
+  phase.interfacialTension = 30.0;
+  phase.emulsionStability = 0.35;
+  colourForFamily(solvent->family, phase.colour);
+  return phase;
+}
+
+// The suite's "Send to Extraction Lab" button stages solvent ids + volumes;
+// applied here, exactly once, on the frame after it arrives.
+void consumeExtractionImport(SolubilityState& s) {
+  ExtractionImport& imp = s.extractionImport;
+  if (!imp.pending) return;
+  imp.pending = false;  // consume-once, even when the payload is unusable
+
+  const sol::Solvent* a = sol::findSolvent(imp.solventIdA);
+  const sol::Solvent* b = sol::findSolvent(imp.solventIdB);
+  if (!a || !b) {
+    s.statusMessage = "Extraction import failed: unknown solvent id";
+    return;
+  }
+
+  s.funnel.phases = {makeImportedPhase(a, imp.volumeMlA), makeImportedPhase(b, imp.volumeMlB)};
+  sol::reset(s.funnel);
+  s.funnelRunning = false;
+  soluteMassMgUi = static_cast<float>(imp.soluteMassMg);
+  s.statusMessage = "Imported " + a->name + " + " + b->name + " from the Solubility Suite";
+}
+
+// ------------------------------------------------------ solute distribution
+// Predicts how the suite's solute splits between the aqueous and organic
+// layers from logP, so the extraction is quantitative rather than just
+// visual.
+void drawSoluteDistribution(const SolubilityState& s) {
+  if (!s.soluteValid || s.funnel.phases.size() < 2) return;
+  const sol::Simulation& sim = s.funnel;
+  const size_t count = sim.phases.size();
+
+  widgets::sectionHeader("Solute distribution");
+  ImGui::TextDisabled("%s  ·  logP %.2f", s.solute.name.c_str(), s.solute.logP);
+
+  // Aqueous phase picker: default the LEAST dense phase, which is where
+  // water sits in a normal water/organic pair (halogenated solvents sink).
+  static int aqueousPick = -1;  // -1 = auto
+  int autoIndex = 0;
+  for (size_t i = 1; i < count; ++i) {
+    if (sim.phases[i].density < sim.phases[static_cast<size_t>(autoIndex)].density)
+      autoIndex = static_cast<int>(i);
+  }
+  const int aq = (aqueousPick >= 0 && static_cast<size_t>(aqueousPick) < count)
+                     ? aqueousPick
+                     : autoIndex;
+
+  ImGui::SetNextItemWidth(200.0f);
+  if (ImGui::BeginCombo("Aqueous phase", sim.phases[static_cast<size_t>(aq)].label.c_str())) {
+    for (size_t i = 0; i < count; ++i) {
+      const bool selected = static_cast<int>(i) == aq;
+      if (ImGui::Selectable(sim.phases[i].label.c_str(), selected))
+        aqueousPick = static_cast<int>(i);
+      if (selected) ImGui::SetItemDefaultFocus();
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SliderFloat("Solute mass", &soluteMassMgUi, 1.0f, 1000.0f, "%.0f mg");
+
+  // Everything that is not the aqueous phase counts as the organic side; in
+  // the common two-phase case this is exactly the partner layer.
+  double volAq = sim.phases[static_cast<size_t>(aq)].volumeMl;
+  double volOrg = 0.0;
+  std::string organicLabel;
+  for (size_t i = 0; i < count; ++i) {
+    if (static_cast<int>(i) == aq) continue;
+    volOrg += sim.phases[i].volumeMl;
+    if (organicLabel.empty()) organicLabel = sim.phases[i].label;
+  }
+
+  const sol::Partition p =
+      sol::partition(static_cast<double>(soluteMassMgUi), s.solute.logP, volAq, volOrg);
+
+  // Stacked bar: aqueous share teal, organic share amber.
+  const float avail = std::max(ImGui::GetContentRegionAvail().x, 60.0f);
+  const float barH = ImGui::GetFontSize() * 1.5f;
+  const ImVec2 min = ImGui::GetCursorScreenPos();
+  ImGui::Dummy(ImVec2(avail, barH));
+  const ImVec2 max(min.x + avail, min.y + barH);
+  const float fracAq = static_cast<float>(p.mgAqueous / std::max(p.mgAqueous + p.mgOrganic, 1e-12));
+  const float splitX = min.x + avail * fracAq;
+  const style::Metrics& m = style::metrics();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(min, ImVec2(splitX, max.y), style::u32(style::col::Teal, 0.85f), m.radiusSm,
+                    ImDrawFlags_RoundCornersLeft);
+  dl->AddRectFilled(ImVec2(splitX, min.y), max, style::u32(style::col::Accent, 0.85f), m.radiusSm,
+                    ImDrawFlags_RoundCornersRight);
+  dl->AddRect(min, max, style::u32(style::col::BorderStrong), m.radiusSm, 0, m.hairline);
+
+  const ImU32 onBar = style::u32(style::col::OnAccent);
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%.3g mg", p.mgAqueous);
+  ImVec2 textSize = ImGui::CalcTextSize(buf);
+  if (fracAq * avail > textSize.x + 8.0f) {
+    dl->AddText(ImVec2(min.x + 6.0f, min.y + (barH - textSize.y) * 0.5f), onBar, buf);
+  }
+  std::snprintf(buf, sizeof(buf), "%.3g mg", p.mgOrganic);
+  textSize = ImGui::CalcTextSize(buf);
+  if ((1.0f - fracAq) * avail > textSize.x + 8.0f) {
+    dl->AddText(ImVec2(max.x - textSize.x - 6.0f, min.y + (barH - textSize.y) * 0.5f), onBar,
+                buf);
+  }
+
+  ImGui::TextDisabled("%.1f%% extracted into %s · Neutral-species logP approximation (no pH "
+                      "correction)",
+                      p.fractionOrganic * 100.0, organicLabel.c_str());
+}
+
 }  // namespace
 
-void drawFunnelView(AppState& st) {
+void drawExtractionLab(AppState& st) {
   SolubilityState& s = st.solubility;
+  consumeExtractionImport(s);
   seedDefaultPhases(s.funnel);
 
   drawControls(s);
   ImGui::Spacing();
   drawPhaseEditor(s);
+  ImGui::Spacing();
+  drawSoluteDistribution(s);
   ImGui::Spacing();
 
   stepSimulation(s);

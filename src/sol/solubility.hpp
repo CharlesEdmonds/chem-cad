@@ -69,4 +69,31 @@ struct SweepPoint {
 std::vector<SweepPoint> sweep(const Solute&, const std::vector<const Solvent*>&, int steps,
                               double temperatureC = 25.0);
 
+// One row of the solvent screen: predicted solubility in a pure solvent.
+struct ScreenRow {
+  const Solvent* solvent = nullptr;
+  Prediction prediction;
+};
+
+// Predicts solubility in every pure solvent in the database, sorted best
+// (highest g/mL) first. This backs the solvent-selection table: tens of
+// predictions, cheap enough to recompute whenever the solute or temperature
+// changes. Throws SolError only when the database itself fails to load.
+std::vector<ScreenRow> screen(const Solute&, double temperatureC = 25.0);
+
+// Distribution of a neutral solute between water and a water-immiscible
+// organic phase, using logP as the octanol/water partition proxy.
+struct Partition {
+  double mgAqueous = 0.0;
+  double mgOrganic = 0.0;
+  double fractionOrganic = 0.0;  // mgOrganic / total, 0..1
+};
+
+// Splits `massMg` between the two phases at equilibrium:
+//   D = 10^logP,  organic share = D*Vorg / (D*Vorg + Vaq).
+// The textbook neutral-species approximation -- no pH or ionisation
+// correction, and logP stands in for the actual solvent pair's log D.
+Partition partition(double massMg, double logP, double volumeAqueousMl,
+                    double volumeOrganicMl);
+
 }  // namespace chemcad::sol

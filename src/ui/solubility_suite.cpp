@@ -1,3 +1,8 @@
+// Solubility Suite: solute + solvent inputs on the left rail, the prediction
+// and the solubility-vs-composition graph dominant on the right. Pure
+// solvents are screened in a ranked table; a chosen blend can be handed to
+// the Extraction Lab. Renders inside an already-open window; never owns one.
+
 #include "imgui.h"
 
 #include <algorithm>
@@ -13,6 +18,8 @@
 #include "chem/bridge.hpp"
 #include "core/model.hpp"
 #include "sol/solubility.hpp"
+#include "sol/solvent.hpp"
+#include "ui/app_state.hpp"
 #include "ui/solubility_state.hpp"
 #include "ui/theme.hpp"
 #include "ui/ui.hpp"
@@ -51,7 +58,7 @@ bool containsCaseInsensitive(const std::string& haystack, const std::string& nee
   return it != haystack.end();
 }
 
-// Formats a g/mL value across the many orders of magnitude a solubility
+// Formats a bare value across the many orders of magnitude a solubility
 // prediction can span: scientific notation below 1e-3, fixed otherwise.
 std::string formatSolubility(double value) {
   char buf[64];
@@ -66,6 +73,27 @@ std::string formatSolubility(double value) {
     std::snprintf(buf, sizeof(buf), "%.4g", value);
   }
   return buf;
+}
+
+// ------------------------------------------------------------------- units
+// Predictions are computed in g/mL; every readout in the panel (hero card,
+// axes, tooltips, screening table) goes through these two helpers so the
+// units combo is honoured everywhere at once.
+const std::array<const char*, 4> kUnitLabels = {"g/mL", "mg/mL", "g/100 mL", "mol/L"};
+
+double toDisplayUnits(double gramsPerMillilitre, double molarMass, int units) {
+  switch (units) {
+    case 1: return gramsPerMillilitre * 1000.0;             // mg/mL
+    case 2: return gramsPerMillilitre * 100.0;              // g/100 mL
+    case 3: return molarMass > 1e-9 ? gramsPerMillilitre / molarMass * 1000.0 : 0.0;
+    default: return gramsPerMillilitre;
+  }
+}
+
+std::string formatUnits(double gramsPerMillilitre, double molarMass, int units) {
+  const int clamped = std::clamp(units, 0, 3);
+  return formatSolubility(toDisplayUnits(gramsPerMillilitre, molarMass, clamped)) + " " +
+         kUnitLabels[static_cast<size_t>(clamped)];
 }
 
 // A small perceptually-ordered ramp (violet -> blue -> teal -> green ->
@@ -89,6 +117,16 @@ ImVec4 colorRampF(float t) {
                c0.z + (c1.z - c0.z) * frac, 1.0f);
 }
 ImU32 colorRamp(float t) { return style::u32(colorRampF(t)); }
+
+// Slot identity colours: the mixer rows, the plot markers and the ternary
+// corners all use these so a solvent keeps its colour across the panel.
+ImVec4 slotColor(int index) {
+  switch (index) {
+    case 0: return style::col::Teal;
+    case 1: return style::col::Accent;
+    default: return style::col::Violet;
+  }
+}
 
 // -------------------------------------------------------------- solute cache
 
@@ -150,7 +188,8 @@ void recomputeSoluteFromSmiles(AppState& st) {
 
 // -------------------------------------------------------------- sweep cache
 
-void recomputeSweepIfNeeded(SolubilityState& sb, const std::vector<const sol::Solvent*>& chosen) {
+void recomputeSweepIfNeeded(SolubilityState& sb,
+                            const std::vector<const sol::Solvent*>& chosen) {
   std::string signature;
   signature.reserve(64);
   for (const sol::Solvent* solvent : chosen) {
@@ -184,6 +223,27 @@ void recomputeSweepIfNeeded(SolubilityState& sb, const std::vector<const sol::So
   }
 }
 
+// ---------------------------------------------------------- screening cache
+
+void recomputeScreeningIfNeeded(SolubilityState& sb) {
+  if (!sb.soluteValid) {
+    sb.screening.clear();
+    sb.screeningSignature.clear();
+    return;
+  }
+  std::string signature = std::to_string(sb.soluteVersion);
+  signature += '|';
+  signature += std::to_string(static_cast<int>(sb.temperatureC * 100.0f));
+  if (signature == sb.screeningSignature) return;
+  sb.screeningSignature = signature;
+  try {
+    sb.screening = sol::screen(sb.solute, static_cast<double>(sb.temperatureC));
+  } catch (const std::exception& err) {
+    sb.screening.clear();
+    sb.statusMessage = std::string("Solvent screen failed: ") + err.what();
+  }
+}
+
 // ------------------------------------------------------------------ widgets
 
 // Minimum height for widgets::statCard's stacked "value above caption"
@@ -200,7 +260,7 @@ float statCardHeight() {
   return pad * 2.0f + valueLineH + labelLineH + m.gap * 0.5f;  // + a visible gap between lines
 }
 
-// Minimum height for drawHeadlineReadout's stacked "big value / sub-value* /
+// Minimum height for drawHeadlineReadout's stacked "big value / sub-value /
 // caption" layout. Same reasoning as statCardHeight above.
 float headlineCardHeight(int subLines) {
   const style::Metrics& m = style::metrics();
@@ -243,23 +303,266 @@ void drawHeadlineReadout(const char* label, const std::string& value,
              style::u32(style::col::TextFaint), label);
 }
 
-void drawResultCard(SolubilityState& sb) {
+// ------------------------------------------------------------ left rail
+void drawSoluteCard(AppState& st) {
+  SolubilityState& sb = st.solubility;
+  static bool prevUseSketch = sb.useSketch;
+  static bool prevOverride = sb.overrideSolute;
+
+  if (ImGui::RadioButton("From sketch", sb.useSketch)) sb.useSketch = true;
+  ImGui::SameLine();
+  if (ImGui::RadioButton("From SMILES", !sb.useSketch)) sb.useSketch = false;
+
+  const bool modeToggled = sb.useSketch != prevUseSketch;
+  prevUseSketch = sb.useSketch;
+
+  if (sb.useSketch) {
+    if (modeToggled || st.docRevision != sb.sourceRevision) recomputeSoluteFromSketch(st);
+  } else {
+    if (modeToggled) {
+      sb.soluteValid = false;
+      sb.soluteError.clear();
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    const bool enter = stringInputWithHint("##solute_smiles", "SMILES, e.g. CC(=O)Oc1ccccc1C(=O)O",
+                                           sb.manualSmiles, ImGuiInputTextFlags_EnterReturnsTrue,
+                                           true);
+    if (enter || ImGui::IsItemDeactivatedAfterEdit()) recomputeSoluteFromSmiles(st);
+  }
+
+  if (!sb.soluteError.empty()) {
+    ImGui::TextColored(style::col::Danger, "%s", sb.soluteError.c_str());
+    return;
+  }
+  if (!sb.soluteValid) {
+    ImGui::TextDisabled("%s", sb.useSketch ? "Draw a structure to describe the solute."
+                                           : "Enter a SMILES string and press Enter.");
+    return;
+  }
+
+  // Two-column property grid fits the narrow rail better than five cards
+  // squeezed onto one row.
+  const float avail = ImGui::GetContentRegionAvail().x;
+  const float spacing = ImGui::GetStyle().ItemSpacing.x;
+  const float cardW = (avail - spacing) * 0.5f;
+  const float cardH = statCardHeight();
+  char mw[32];
+  std::snprintf(mw, sizeof(mw), "%.1f", sb.solute.molarMass);
+  char mv[32];
+  std::snprintf(mv, sizeof(mv), "%.1f", sb.solute.molarVolume);
+  char logp[32];
+  std::snprintf(logp, sizeof(logp), "%.2f", sb.solute.logP);
+  char hansen[64];
+  std::snprintf(hansen, sizeof(hansen), "%.1f / %.1f / %.1f", sb.solute.hansen.dispersion,
+               sb.solute.hansen.polar, sb.solute.hansen.hydrogenBond);
+  char meltPt[32];
+  if (sb.solute.meltingPointEstimated) {
+    std::snprintf(meltPt, sizeof(meltPt), "%.0f (est)", sb.solute.meltingPoint);
+  } else {
+    std::snprintf(meltPt, sizeof(meltPt), "%.0f", sb.solute.meltingPoint);
+  }
+  widgets::statCard("MW g/mol", mw, ImVec2(cardW, cardH));
+  ImGui::SameLine(0.0f, spacing);
+  widgets::statCard("LOGP", logp, ImVec2(cardW, cardH));
+  widgets::statCard("MOLAR VOL cm3/mol", mv, ImVec2(cardW, cardH));
+  ImGui::SameLine(0.0f, spacing);
+  widgets::statCard("dD / dP / dH", hansen, ImVec2(cardW, cardH));
+  widgets::statCard("MELTING PT C", meltPt, ImVec2(cardW, cardH));
+  ImGui::SameLine(0.0f, spacing);
+  if (sb.solute.meltingPointEstimated) {
+    widgets::statCard("CONFIDENCE", "Tm est.", ImVec2(cardW, cardH));
+  } else {
+    widgets::statCard("CONFIDENCE", "Tm lit.", ImVec2(cardW, cardH));
+  }
+
+  if (sb.solute.meltingPointEstimated && !sb.overrideSolute) {
+    // An estimated Tm is the single biggest source of error in the
+    // prediction (a Joback group-contribution guess vs. a literature value
+    // can be tens of degrees off) -- make the fix impossible to miss.
+    ImGui::TextColored(style::col::Violet,
+                       "Melting point is a Joback estimate (%.0f C), not a measured value -- "
+                       "override it below for an accurate prediction.",
+                       sb.solute.meltingPoint);
+  }
+
+  const bool overrideClicked =
+      ImGui::Checkbox("Override melting point / Hansen radius R0", &sb.overrideSolute);
+  if (overrideClicked && sb.overrideSolute && !prevOverride && sb.soluteValid) {
+    sb.meltingPointC = static_cast<float>(sb.solute.meltingPoint);
+    sb.interactionRadius = static_cast<float>(sb.solute.interactionRadius);
+  }
+  prevOverride = sb.overrideSolute;
+  if (sb.overrideSolute) {
+    bool changed = false;
+    ImGui::SetNextItemWidth(-1.0f);
+    changed |= ImGui::SliderFloat("Melting point (C)", &sb.meltingPointC, -50.0f, 300.0f, "%.1f");
+    ImGui::SetNextItemWidth(-1.0f);
+    changed |= ImGui::SliderFloat("Hansen radius R0", &sb.interactionRadius, 1.0f, 30.0f, "%.1f");
+    if (sb.soluteValid) {
+      applySoluteOverrides(sb);
+      if (changed) ++sb.soluteVersion;
+    }
+  }
+}
+
+void drawSolventSlot(SolubilityState& sb, const std::vector<sol::Solvent>& all, int index,
+                     std::string& filter) {
+  static const char* kSlotLabel[3] = {"Solvent A", "Solvent B", "Solvent C"};
+  std::string& id = sb.solventIds[static_cast<size_t>(index)];
+  const sol::Solvent* current = sol::findSolvent(id);
+
+  // Colour chip ties the row to the plot markers and ternary corners.
+  const ImVec2 chipMin = ImGui::GetCursorScreenPos();
+  const float chip = ImGui::GetFontSize() * 0.9f;
+  ImGui::Dummy(ImVec2(chip, chip));
+  ImGui::GetWindowDrawList()->AddRectFilled(chipMin, ImVec2(chipMin.x + chip, chipMin.y + chip),
+                                            style::u32(slotColor(index)), chip * 0.25f);
+  ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+  ImGui::TextUnformatted(kSlotLabel[index]);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(-1.0f);
+  if (ImGui::BeginCombo("##solvent_pick", current ? current->name.c_str() : "Select solvent...")) {
+    ImGui::SetNextItemWidth(-1.0f);
+    stringInputWithHint("##filter", "Search...", filter, 0);
+    ImGui::Separator();
+    for (const sol::Solvent& sv : all) {
+      if (!containsCaseInsensitive(sv.name, filter)) continue;
+      const bool selected = sv.id == id;
+      if (ImGui::Selectable(sv.name.c_str(), selected)) id = sv.id;
+      if (selected) ImGui::SetItemDefaultFocus();
+    }
+    ImGui::EndCombo();
+  }
+
+  ImGui::SetNextItemWidth(-1.0f);
+  ImGui::SliderFloat("##ratio", &sb.ratios[static_cast<size_t>(index)], 0.0f, 10.0f,
+                     "%.2f parts");
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", "Relative volume parts of this solvent in the blend");
+}
+
+// Returns the resolved slots; outComponents holds the normalised blend for
+// prediction. Slots that fail to resolve come back nullptr.
+std::vector<const sol::Solvent*> drawSolventMixer(SolubilityState& sb,
+                                                  std::vector<sol::Component>& outComponents) {
+  static std::array<std::string, 3> filterBuf;
+  static const char* kCountItems[] = {"1  (pure solvent)", "2  (binary blend)",
+                                      "3  (ternary blend)"};
+  int countIdx = sb.solventCount - 1;
+  ImGui::SetNextItemWidth(-1.0f);
+  if (ImGui::Combo("Number of solvents", &countIdx, kCountItems, 3)) {
+    sb.solventCount = countIdx + 1;
+  }
+
+  std::vector<const sol::Solvent*> chosen(static_cast<size_t>(sb.solventCount), nullptr);
+  const std::vector<sol::Solvent>& all = sol::solvents();  // throws only on DB load failure
+  for (int i = 0; i < sb.solventCount; ++i) {
+    ImGui::PushID(i);
+    drawSolventSlot(sb, all, i, filterBuf[static_cast<size_t>(i)]);
+    ImGui::PopID();
+    chosen[static_cast<size_t>(i)] = sol::findSolvent(sb.solventIds[static_cast<size_t>(i)]);
+    const sol::Solvent* found = chosen[static_cast<size_t>(i)];
+    if (found && sb.ratios[static_cast<size_t>(i)] > 0.0f) {
+      outComponents.push_back({found, static_cast<double>(sb.ratios[static_cast<size_t>(i)])});
+    }
+  }
+
+  if (!outComponents.empty()) {
+    const sol::Mixture mixture = sol::blend(outComponents);
+    ImGui::TextColored(style::col::TextDim,
+                       "Blend Hansen: dD %.1f  dP %.1f  dH %.1f MPa^0.5   density %.3f g/mL",
+                       mixture.hansen.dispersion, mixture.hansen.polar, mixture.hansen.hydrogenBond,
+                       mixture.density);
+  } else {
+    ImGui::TextDisabled("Select at least one solvent.");
+  }
+
+  // A blend prediction assumes one homogeneous phase; flag the pairs where
+  // that assumption is physically wrong (water + a water-immiscible partner).
+  for (size_t i = 0; i < chosen.size(); ++i) {
+    for (size_t j = i + 1; j < chosen.size(); ++j) {
+      if (!chosen[i] || !chosen[j]) continue;
+      if (!sol::miscibleWith(*chosen[i], *chosen[j])) {
+        ImGui::TextColored(style::col::Danger,
+                           "%s and %s are immiscible -- the blend forms two phases; the "
+                           "prediction assumes a homogeneous mixture.",
+                           chosen[i]->name.c_str(), chosen[j]->name.c_str());
+      }
+    }
+  }
+  return chosen;
+}
+
+void drawScreeningTable(SolubilityState& sb) {
+  recomputeScreeningIfNeeded(sb);
+  if (!sb.soluteValid) {
+    ImGui::TextDisabled("Pick a solute to rank every pure solvent.");
+    return;
+  }
+  if (sb.screening.empty()) {
+    ImGui::TextDisabled("No solvents to rank.");
+    return;
+  }
+
+  ImGui::TextDisabled("Every pure solvent ranked for this solute -- click a row to load it as "
+                      "Solvent A.");
+  const float height = 240.0f * uiScale();
+  constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                    ImGuiTableFlags_ScrollY | ImGuiTableFlags_NoSavedSettings;
+  if (!ImGui::BeginTable("##screen_table", 4, flags, ImVec2(0.0f, height))) return;
+  ImGui::TableSetupScrollFreeze(0, 1);
+  ImGui::TableSetupColumn("Solvent", ImGuiTableColumnFlags_WidthStretch, 0.40f);
+  ImGui::TableSetupColumn("Family", ImGuiTableColumnFlags_WidthStretch, 0.24f);
+  ImGui::TableSetupColumn("Solubility", ImGuiTableColumnFlags_WidthStretch, 0.24f);
+  ImGui::TableSetupColumn("RED", ImGuiTableColumnFlags_WidthStretch, 0.12f);
+  ImGui::TableHeadersRow();
+
+  for (const sol::ScreenRow& row : sb.screening) {
+    ImGui::PushID(row.solvent->id.c_str());
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    if (ImGui::Selectable(row.solvent->name.c_str(), false,
+                          ImGuiSelectableFlags_SpanAllColumns |
+                              ImGuiSelectableFlags_AllowOverlap)) {
+      sb.solventIds[0] = row.solvent->id;
+      sb.statusMessage = "Solvent A := " + row.solvent->name;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("%s", "Load as Solvent A");
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(row.solvent->family.c_str());
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(
+        formatUnits(row.prediction.gramsPerMillilitre, sb.solute.molarMass, sb.units).c_str());
+    ImGui::TableNextColumn();
+    char red[16];
+    std::snprintf(red, sizeof(red), "%.2f", row.prediction.relativeEnergyDifference);
+    ImGui::TextUnformatted(red);
+    ImGui::PopID();
+  }
+  ImGui::EndTable();
+}
+
+// ---------------------------------------------------------- hero + results
+
+void drawResultHero(SolubilityState& sb) {
   const sol::Prediction& p = sb.prediction;
   const float avail = ImGui::GetContentRegionAvail().x;
   const float spacing = ImGui::GetStyle().ItemSpacing.x;
-  const float headlineW = std::min(300.0f * uiScale(), avail * 0.42f);
+  const float headlineW = std::min(300.0f * uiScale(), avail * 0.40f);
 
-  // Size both the headline card and the stat grid from font metrics -- not
-  // a hand-picked multiple of font size -- so the two rows of stat cards
-  // always have room for a value line, a gap, and a caption line.
   const float statH = statCardHeight();
   const float rowGap = ImGui::GetStyle().ItemSpacing.y;
   const float statGridH = statH * 2.0f + rowGap;
   const float headlineH = std::max(headlineCardHeight(1), statGridH);
 
-  const std::string headline = formatSolubility(p.gramsPerMillilitre) + " g/mL";
-  const std::string molar = formatSolubility(p.molesPerLitre) + " mol/L";
-  drawHeadlineReadout("SOLUBILITY", headline, molar, style::col::Accent,
+  const double gPerMl = p.gramsPerMillilitre;
+  const std::string headline = formatUnits(gPerMl, sb.solute.molarMass, sb.units);
+  // The sub-line always carries the "other" common unit so both are visible.
+  const std::string sub = sb.units == 3
+                              ? formatUnits(gPerMl, sb.solute.molarMass, 0)
+                              : formatUnits(gPerMl, sb.solute.molarMass, 3);
+  drawHeadlineReadout("PREDICTED SOLUBILITY", headline, sub, style::col::Accent,
                       ImVec2(headlineW, headlineH));
 
   ImGui::SameLine(0.0f, spacing);
@@ -289,6 +592,16 @@ void drawResultCard(SolubilityState& sb) {
   widgets::statCard("CHI (F-H)", chi, ImVec2(statW, statH));
   ImGui::EndGroup();
 
+  ImGui::SameLine(0.0f, spacing);
+  ImGui::BeginGroup();
+  ImGui::SetNextItemWidth(120.0f * uiScale());
+  ImGui::Combo("Units", &sb.units, kUnitLabels.data(), 4);
+  ImGui::Checkbox("Log y-axis", &sb.logScale);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", "Plot solubility on a log10 scale -- useful when the curve spans "
+                            "orders of magnitude");
+  ImGui::EndGroup();
+
   if (p.outsideSphere) {
     ImGui::TextColored(style::col::Danger,
                        "Outside the Hansen sphere (RED %.2f > 1) -- result is extrapolated.",
@@ -301,43 +614,10 @@ void drawResultCard(SolubilityState& sb) {
   }
 }
 
-void drawSolventSlot(SolubilityState& sb, const std::vector<sol::Solvent>& all, int index,
-                     std::string& filter) {
-  static const char* kSlotLabel[3] = {"Solvent A", "Solvent B", "Solvent C"};
-  std::string& id = sb.solventIds[static_cast<size_t>(index)];
-  const sol::Solvent* current = sol::findSolvent(id);
-
-  ImGui::TextUnformatted(kSlotLabel[index]);
-  ImGui::SameLine(110.0f * uiScale());
-  ImGui::SetNextItemWidth(220.0f * uiScale());
-  if (ImGui::BeginCombo("##solvent_pick", current ? current->name.c_str() : "Select solvent...")) {
-    ImGui::SetNextItemWidth(-1.0f);
-    stringInputWithHint("##filter", "Search...", filter, 0);
-    ImGui::Separator();
-    for (const sol::Solvent& sv : all) {
-      if (!containsCaseInsensitive(sv.name, filter)) continue;
-      const bool selected = sv.id == id;
-      if (ImGui::Selectable(sv.name.c_str(), selected)) id = sv.id;
-      if (selected) ImGui::SetItemDefaultFocus();
-    }
-    ImGui::EndCombo();
-  }
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(150.0f * uiScale());
-  ImGui::SliderFloat("##ratio", &sb.ratios[static_cast<size_t>(index)], 0.0f, 10.0f,
-                     "%.2f parts");
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("%s", "Relative volume parts of this solvent in the blend");
-}
-
 // ------------------------------------------------------- binary ratio plot
 
-// The ratio graph is the headline feature: give it real screen room at any
-// CHEMCAD_UI_SCALE, and reserve the same height for the ternary plot below
-// so switching solvent count doesn't jump the layout around.
-constexpr float kPlotMinHeight = 260.0f;
-
-void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::Solvent& b) {
+void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::Solvent& b,
+                         ImVec2 canvasSize) {
   if (sb.sweep.empty()) {
     ImGui::TextDisabled("Not enough data for a ratio plot.");
     return;
@@ -356,19 +636,44 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
     lo = std::min(lo, sp->prediction.gramsPerMillilitre);
     hi = std::max(hi, sp->prediction.gramsPerMillilitre);
   }
-  // A flat curve (or an all-zero one) would divide by zero below; fall back
-  // to a small sensible span around the value so the frame still renders.
   if (hi - lo < 1e-12) hi = lo + std::max(1e-9, std::fabs(lo) * 0.1 + 1e-9);
+
+  // Log mode maps through log10 with a floor six orders under the max so a
+  // zero-valued endpoint cannot blow the axis up.
+  const bool logY = sb.logScale && hi > 0.0;
+  double yLo = lo, yHi = hi;
+  if (logY) {
+    const double floorV = std::max(hi * 1e-6, 1e-12);
+    yLo = std::log10(std::max(lo, floorV));
+    yHi = std::log10(hi);
+    if (yHi - yLo < 1e-9) yHi = yLo + 1.0;
+  }
+  const auto mapValue = [&](double v) {
+    if (!logY) return v;
+    const double floorV = std::max(hi * 1e-6, 1e-12);
+    return std::log10(std::max(v, floorV));
+  };
 
   const sol::SweepPoint* peak =
       (sb.sweepPeakIndex >= 0 && static_cast<size_t>(sb.sweepPeakIndex) < sb.sweep.size())
           ? &sb.sweep[static_cast<size_t>(sb.sweepPeakIndex)]
           : nullptr;
 
-  const ImVec2 canvasSize(ImGui::GetContentRegionAvail().x, kPlotMinHeight * uiScale());
   const ImVec2 origin = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("##binary_plot", canvasSize);
   const bool hovered = ImGui::IsItemHovered();
+
+  // Click sets the working ratio directly from the x position.
+  if (ImGui::IsItemClicked()) {
+    const float padLClick = 62.0f * uiScale();
+    const float padRClick = 20.0f * uiScale();
+    float t = (ImGui::GetMousePos().x - (origin.x + padLClick)) /
+              std::max(1.0f, canvasSize.x - padLClick - padRClick);
+    t = std::clamp(t, 0.0f, 1.0f);
+    sb.ratios[0] = t;
+    sb.ratios[1] = 1.0f - t;
+  }
+
   ImDrawList* dl = ImGui::GetWindowDrawList();
   dl->AddRectFilled(origin, ImVec2(origin.x + canvasSize.x, origin.y + canvasSize.y),
                     style::u32(style::col::BgSurface), style::metrics().radiusMd);
@@ -384,10 +689,12 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
 
   const auto toScreen = [&](double fracA, double value) {
     const float x = plotMin.x + static_cast<float>(fracA) * (plotMax.x - plotMin.x);
-    const float t = static_cast<float>((value - lo) / (hi - lo));
+    const float t = static_cast<float>((mapValue(value) - yLo) / (yHi - yLo));
     const float y = plotMax.y - t * (plotMax.y - plotMin.y);
     return ImVec2(x, y);
   };
+  const double molarMass = sb.solute.molarMass;
+  const auto unitLabel = [&](double v) { return formatUnits(v, molarMass, sb.units); };
 
   // x-axis ticks: volume % of solvent A, 0/25/50/75/100.
   for (int i = 0; i <= 4; ++i) {
@@ -400,21 +707,21 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
     dl->AddText(ImVec2(x - tickSize.x * 0.5f, plotMax.y + 4.0f * uiScale()),
                style::u32(style::col::TextDim), buf);
   }
-  // y-axis ticks: g/mL across [lo, hi], scientific notation below 1e-3 (via
-  // formatSolubility).
+  // y-axis ticks: interpolated in the mapped (linear or log) space, labelled
+  // back in real units.
   for (int i = 0; i <= 4; ++i) {
     const float t = static_cast<float>(i) / 4.0f;
-    const double value = lo + (hi - lo) * (1.0 - t);
+    const double mapped = yLo + (yHi - yLo) * (1.0 - t);
+    const double value = logY ? std::pow(10.0, mapped) : mapped;
     const float y = plotMin.y + t * (plotMax.y - plotMin.y);
     dl->AddLine(ImVec2(plotMin.x, y), ImVec2(plotMax.x, y), style::u32(style::col::Border, 0.2f));
-    const std::string label = formatSolubility(value);
+    const std::string label = unitLabel(value);
     const ImVec2 labelSize = ImGui::CalcTextSize(label.c_str());
     dl->AddText(ImVec2(plotMin.x - labelSize.x - 6.0f * uiScale(), y - labelSize.y * 0.5f),
                style::u32(style::col::TextDim), label.c_str());
   }
 
-  // Axis titles: the pure endpoints of the blend (fracA=0 is 100% b, the
-  // opposite of the x-axis's "% of solvent a" ticks).
+  // Axis titles: the pure endpoints of the blend (fracA=0 is 100% b).
   const std::string leftTitle = "100% " + b.name;
   const std::string rightTitle = "100% " + a.name;
   const ImVec2 rightTitleSize = ImGui::CalcTextSize(rightTitle.c_str());
@@ -439,11 +746,12 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
   points.reserve(sorted.size());
   for (const sol::SweepPoint* sp : sorted)
     points.push_back(toScreen(sp->fractions[0], sp->prediction.gramsPerMillilitre));
-  if (points.size() >= 2)
+  if (points.size() >= 2) {
     dl->AddPolyline(points.data(), static_cast<int>(points.size()), style::u32(style::col::Teal),
                     0, 2.4f);
-  else if (points.size() == 1)
+  } else if (points.size() == 1) {
     dl->AddCircleFilled(points.front(), 3.5f, style::u32(style::col::Teal));
+  }
 
   // Mark the co-solvency maximum: drop-line, filled marker, and a
   // composition + value label.
@@ -453,19 +761,18 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
     dl->AddCircleFilled(peakPt, 5.5f, style::u32(style::col::Accent));
     dl->AddCircle(peakPt, 8.5f, style::u32(style::col::Accent), 0, 1.5f);
 
-    char peakLabel[96];
-    std::snprintf(peakLabel, sizeof(peakLabel), "peak %s g/mL at %.0f%% %s",
-                 formatSolubility(peak->prediction.gramsPerMillilitre).c_str(),
-                 peak->fractions[0] * 100.0, a.name.c_str());
-    const ImVec2 peakLabelSize = ImGui::CalcTextSize(peakLabel);
-    const float lxRaw = peakPt.x - peakLabelSize.x * 0.5f;
-    float lx = std::clamp(lxRaw, plotMin.x, plotMax.x - peakLabelSize.x);
+    const std::string peakLabel =
+        "peak " + unitLabel(peak->prediction.gramsPerMillilitre) + " at " +
+        std::to_string(static_cast<int>(std::lround(peak->fractions[0] * 100.0))) + "% " + a.name;
+    const ImVec2 peakLabelSize = ImGui::CalcTextSize(peakLabel.c_str());
+    float lx = std::clamp(peakPt.x - peakLabelSize.x * 0.5f, plotMin.x,
+                          plotMax.x - peakLabelSize.x);
     float ly = peakPt.y - peakLabelSize.y - 10.0f * uiScale();
     if (ly < plotMin.y) ly = peakPt.y + 10.0f * uiScale();
     dl->AddRectFilled(ImVec2(lx - 4.0f, ly - 2.0f),
                       ImVec2(lx + peakLabelSize.x + 4.0f, ly + peakLabelSize.y + 2.0f),
                       style::u32(style::col::BgRaised, 0.9f), 3.0f);
-    dl->AddText(ImVec2(lx, ly), style::u32(style::col::Accent), peakLabel);
+    dl->AddText(ImVec2(lx, ly), style::u32(style::col::Accent), peakLabel.c_str());
   }
 
   // Mark the current working ratio -- a distinct colour from the peak so
@@ -497,16 +804,17 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
     const sol::SweepPoint& sp = *sorted[nearest];
     dl->AddLine(ImVec2(mouse.x, plotMin.y), ImVec2(mouse.x, plotMax.y),
                style::u32(style::col::TextFaint, 0.5f));
-    char tip[128];
-    std::snprintf(tip, sizeof(tip), "%s %.0f%%  /  %s %.0f%%   ->   %s g/mL", a.name.c_str(),
-                  sp.fractions[0] * 100.0, b.name.c_str(), sp.fractions[1] * 100.0,
-                  formatSolubility(sp.prediction.gramsPerMillilitre).c_str());
-    ImGui::SetTooltip("%s", tip);
+    const std::string tip = a.name + " " +
+                            std::to_string(static_cast<int>(std::lround(sp.fractions[0] * 100.0))) +
+                            "%  /  " + b.name + " " +
+                            std::to_string(static_cast<int>(std::lround(sp.fractions[1] * 100.0))) +
+                            "%   ->   " + unitLabel(sp.prediction.gramsPerMillilitre);
+    ImGui::SetTooltip("%s", tip.c_str());
   }
 
   if (peak) {
-    ImGui::Text("Co-solvency peak: %s g/mL at %.0f%% %s (%.0f%% %s).",
-               formatSolubility(peak->prediction.gramsPerMillilitre).c_str(),
+    ImGui::Text("Co-solvency peak: %s at %.0f%% %s (%.0f%% %s).",
+               unitLabel(peak->prediction.gramsPerMillilitre).c_str(),
                peak->fractions[0] * 100.0, a.name.c_str(), peak->fractions[1] * 100.0,
                b.name.c_str());
     ImGui::SameLine();
@@ -514,6 +822,8 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
       sb.ratios[0] = static_cast<float>(peak->fractions[0]);
       sb.ratios[1] = static_cast<float>(peak->fractions[1]);
     }
+    ImGui::SameLine();
+    ImGui::TextDisabled("Click the plot to set the working ratio.");
   }
 }
 
@@ -543,7 +853,7 @@ const sol::SweepPoint* gridAt(const TernaryGrid& grid, int i, int j) {
 }
 
 void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::Solvent& b,
-                          const sol::Solvent& c) {
+                          const sol::Solvent& c, ImVec2 canvasSize) {
   if (sb.sweep.size() < 3) {
     ImGui::TextDisabled("Not enough data for a ternary plot.");
     return;
@@ -559,13 +869,9 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol:
   const bool degenerate = range < 1e-12;
 
   const float side =
-      std::clamp(ImGui::GetContentRegionAvail().x - 170.0f * uiScale(), 140.0f * uiScale(),
-                340.0f * uiScale());
+      std::clamp(canvasSize.x - 170.0f * uiScale(), 140.0f * uiScale(),
+                 std::max(340.0f * uiScale(), canvasSize.y * 0.8660f));
   const float height = side * 0.8660254f;  // sqrt(3)/2
-  // Reserve at least as much vertical room as the binary plot so switching
-  // between 2- and 3-solvent blends doesn't jump the layout around.
-  const float canvasH = std::max(kPlotMinHeight * uiScale(), height + 60.0f * uiScale());
-  const ImVec2 canvasSize(side + 190.0f * uiScale(), canvasH);
   const ImVec2 origin = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("##ternary_plot", canvasSize);
   const bool hovered = ImGui::IsItemHovered();
@@ -574,8 +880,8 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol:
                     style::u32(style::col::BgSurface), style::metrics().radiusMd);
 
   const float cx = origin.x + side * 0.5f + 24.0f * uiScale();
-  const float top = origin.y + std::max(24.0f * uiScale(), (canvasH - height) * 0.5f);
-  const ImVec2 vA(cx, top);                            // 100% solvent A (top)
+  const float top = origin.y + std::max(24.0f * uiScale(), (canvasSize.y - height) * 0.5f);
+  const ImVec2 vA(cx, top);                             // 100% solvent A (top)
   const ImVec2 vB(cx - side * 0.5f, top + height);      // 100% solvent B (bottom-left)
   const ImVec2 vC(cx + side * 0.5f, top + height);      // 100% solvent C (bottom-right)
 
@@ -589,6 +895,32 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol:
     const float t = degenerate ? 0.5f : static_cast<float>((v - lo) / range);
     return colorRamp(t);
   };
+  const double molarMass = sb.solute.molarMass;
+  const auto unitLabel = [&](double v) { return formatUnits(v, molarMass, sb.units); };
+
+  // Barycentric weights of the mouse, shared by hover and click.
+  const auto barycentric = [&](ImVec2 mouse, float& wa, float& wb, float& wc) {
+    const float denom = (vB.y - vC.y) * (vA.x - vC.x) + (vC.x - vB.x) * (vA.y - vC.y);
+    if (std::fabs(denom) < 1e-6f) return false;
+    wa = ((vB.y - vC.y) * (mouse.x - vC.x) + (vC.x - vB.x) * (mouse.y - vC.y)) / denom;
+    wb = ((vC.y - vA.y) * (mouse.x - vC.x) + (vA.x - vC.x) * (mouse.y - vC.y)) / denom;
+    wc = 1.0f - wa - wb;
+    return wa >= -0.02f && wb >= -0.02f && wc >= -0.02f;
+  };
+
+  // Click sets all three working ratios from the barycentric position.
+  if (ImGui::IsItemClicked()) {
+    float wa = 0.0f, wb = 0.0f, wc = 0.0f;
+    if (barycentric(ImGui::GetMousePos(), wa, wb, wc)) {
+      wa = std::clamp(wa, 0.0f, 1.0f);
+      wb = std::clamp(wb, 0.0f, 1.0f);
+      wc = std::clamp(wc, 0.0f, 1.0f);
+      const float sum = std::max(wa + wb + wc, 1e-6f);
+      sb.ratios[0] = wa / sum;
+      sb.ratios[1] = wb / sum;
+      sb.ratios[2] = wc / sum;
+    }
+  }
 
   const int steps = sb.sweepSteps;
   const TernaryGrid grid = buildTernaryGrid(sb.sweep, steps);
@@ -625,11 +957,11 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol:
 
   const ImVec2 aLabel = ImGui::CalcTextSize(a.name.c_str());
   dl->AddText(ImVec2(vA.x - aLabel.x * 0.5f, vA.y - 18.0f * uiScale()),
-             style::u32(style::col::Text), a.name.c_str());
+             style::u32(slotColor(0)), a.name.c_str());
   const ImVec2 bLabel = ImGui::CalcTextSize(b.name.c_str());
-  dl->AddText(ImVec2(vB.x - bLabel.x - 4.0f, vB.y + 4.0f), style::u32(style::col::Text),
+  dl->AddText(ImVec2(vB.x - bLabel.x - 4.0f, vB.y + 4.0f), style::u32(slotColor(1)),
              b.name.c_str());
-  dl->AddText(ImVec2(vC.x + 4.0f, vC.y + 4.0f), style::u32(style::col::Text), c.name.c_str());
+  dl->AddText(ImVec2(vC.x + 4.0f, vC.y + 4.0f), style::u32(slotColor(2)), c.name.c_str());
 
   const double totalRatio = static_cast<double>(sb.ratios[0]) + static_cast<double>(sb.ratios[1]) +
                             static_cast<double>(sb.ratios[2]);
@@ -655,40 +987,34 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol:
   dl->AddRect(ImVec2(legendX, top), ImVec2(legendX + legendW, top + height),
              style::u32(style::col::Border));
   dl->AddText(ImVec2(legendX + legendW + 6.0f, top - 2.0f), style::u32(style::col::TextDim),
-             formatSolubility(hi).c_str());
+             unitLabel(hi).c_str());
   dl->AddText(ImVec2(legendX + legendW + 6.0f, top + height - 12.0f),
-             style::u32(style::col::TextDim), formatSolubility(lo).c_str());
-  dl->AddText(ImVec2(legendX, top + height + 6.0f), style::u32(style::col::TextFaint), "g/mL");
+             style::u32(style::col::TextDim), unitLabel(lo).c_str());
+  dl->AddText(ImVec2(legendX, top + height + 6.0f), style::u32(style::col::TextFaint), "%s",
+             kUnitLabels[static_cast<size_t>(std::clamp(sb.units, 0, 3))]);
 
   if (hovered) {
-    const ImVec2 mouse = ImGui::GetMousePos();
-    const float denom = (vB.y - vC.y) * (vA.x - vC.x) + (vC.x - vB.x) * (vA.y - vC.y);
-    if (std::fabs(denom) > 1e-6f) {
-      const float wa =
-          ((vB.y - vC.y) * (mouse.x - vC.x) + (vC.x - vB.x) * (mouse.y - vC.y)) / denom;
-      const float wb =
-          ((vC.y - vA.y) * (mouse.x - vC.x) + (vA.x - vC.x) * (mouse.y - vC.y)) / denom;
-      const float wc = 1.0f - wa - wb;
-      if (wa >= -0.02f && wb >= -0.02f && wc >= -0.02f) {
-        const sol::SweepPoint* nearest = nullptr;
-        double best = 1e18;
-        for (const sol::SweepPoint& sp : sb.sweep) {
-          const double d = std::fabs(sp.fractions[0] - wa) + std::fabs(sp.fractions[1] - wb) +
-                           std::fabs(sp.fractions[2] - wc);
-          if (d < best) {
-            best = d;
-            nearest = &sp;
-          }
+    float wa = 0.0f, wb = 0.0f, wc = 0.0f;
+    if (barycentric(ImGui::GetMousePos(), wa, wb, wc)) {
+      const sol::SweepPoint* nearest = nullptr;
+      double best = 1e18;
+      for (const sol::SweepPoint& sp : sb.sweep) {
+        const double d = std::fabs(sp.fractions[0] - wa) + std::fabs(sp.fractions[1] - wb) +
+                         std::fabs(sp.fractions[2] - wc);
+        if (d < best) {
+          best = d;
+          nearest = &sp;
         }
-        if (nearest) {
-          char tip[192];
-          std::snprintf(tip, sizeof(tip), "%s %.0f%%  /  %s %.0f%%  /  %s %.0f%%   ->   %s g/mL",
-                        a.name.c_str(), nearest->fractions[0] * 100.0, b.name.c_str(),
-                        nearest->fractions[1] * 100.0, c.name.c_str(),
-                        nearest->fractions[2] * 100.0,
-                        formatSolubility(nearest->prediction.gramsPerMillilitre).c_str());
-          ImGui::SetTooltip("%s", tip);
-        }
+      }
+      if (nearest) {
+        const std::string tip =
+            a.name + " " + std::to_string(static_cast<int>(std::lround(nearest->fractions[0] * 100.0))) +
+            "%  /  " + b.name + " " +
+            std::to_string(static_cast<int>(std::lround(nearest->fractions[1] * 100.0))) +
+            "%  /  " + c.name + " " +
+            std::to_string(static_cast<int>(std::lround(nearest->fractions[2] * 100.0))) +
+            "%   ->   " + unitLabel(nearest->prediction.gramsPerMillilitre);
+        ImGui::SetTooltip("%s", tip.c_str());
       }
     }
   }
@@ -698,194 +1024,108 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol:
 
 void drawSolubilitySuite(AppState& st) {
   SolubilityState& sb = st.solubility;
-  static bool prevUseSketch = sb.useSketch;
-  static bool prevOverride = sb.overrideSolute;
-  static std::array<std::string, 3> filterBuf;
 
-  // ------------------------------------------------------------- solute ---
+  const float totalAvail = ImGui::GetContentRegionAvail().x;
+  const float railW = std::min(380.0f * uiScale(), totalAvail * 0.5f);
+
+  // ----------------------------------------------------- left input rail --
+  ImGui::BeginChild("##suite_rail", ImVec2(railW, 0.0f), ImGuiChildFlags_Borders);
   widgets::sectionHeader("Solute");
-  if (ImGui::RadioButton("From sketch", sb.useSketch)) sb.useSketch = true;
-  ImGui::SameLine();
-  if (ImGui::RadioButton("From SMILES", !sb.useSketch)) sb.useSketch = false;
-
-  const bool modeToggled = sb.useSketch != prevUseSketch;
-  prevUseSketch = sb.useSketch;
-
-  if (sb.useSketch) {
-    if (modeToggled || st.docRevision != sb.sourceRevision) recomputeSoluteFromSketch(st);
-  } else {
-    if (modeToggled) {
-      sb.soluteValid = false;
-      sb.soluteError.clear();
-    }
-    ImGui::SetNextItemWidth(-1.0f);
-    const bool enter = stringInputWithHint("##solute_smiles", "SMILES, e.g. CC(=O)Oc1ccccc1C(=O)O",
-                                           sb.manualSmiles, ImGuiInputTextFlags_EnterReturnsTrue,
-                                           true);
-    if (enter || ImGui::IsItemDeactivatedAfterEdit()) recomputeSoluteFromSmiles(st);
-  }
-
-  if (!sb.soluteError.empty()) {
-    ImGui::TextColored(style::col::Danger, "%s", sb.soluteError.c_str());
-  } else if (!sb.soluteValid) {
-    ImGui::TextDisabled("%s", sb.useSketch ? "Draw a structure to describe the solute."
-                                           : "Enter a SMILES string and press Enter.");
-  } else {
-    const float avail = ImGui::GetContentRegionAvail().x;
-    const float spacing = ImGui::GetStyle().ItemSpacing.x;
-    const float cardW = (avail - spacing * 4.0f) / 5.0f;
-    const float cardH = statCardHeight();
-    char mw[32];
-    std::snprintf(mw, sizeof(mw), "%.1f", sb.solute.molarMass);
-    char mv[32];
-    std::snprintf(mv, sizeof(mv), "%.1f", sb.solute.molarVolume);
-    char logp[32];
-    std::snprintf(logp, sizeof(logp), "%.2f", sb.solute.logP);
-    char hansen[64];
-    std::snprintf(hansen, sizeof(hansen), "%.1f / %.1f / %.1f", sb.solute.hansen.dispersion,
-                 sb.solute.hansen.polar, sb.solute.hansen.hydrogenBond);
-    char meltPt[32];
-    if (sb.solute.meltingPointEstimated) {
-      std::snprintf(meltPt, sizeof(meltPt), "%.0f (est)", sb.solute.meltingPoint);
-    } else {
-      std::snprintf(meltPt, sizeof(meltPt), "%.0f", sb.solute.meltingPoint);
-    }
-    widgets::statCard("MW g/mol", mw, ImVec2(cardW, cardH));
-    ImGui::SameLine(0.0f, spacing);
-    widgets::statCard("MOLAR VOL cm3/mol", mv, ImVec2(cardW, cardH));
-    ImGui::SameLine(0.0f, spacing);
-    widgets::statCard("LOGP", logp, ImVec2(cardW, cardH));
-    ImGui::SameLine(0.0f, spacing);
-    widgets::statCard("dD / dP / dH", hansen, ImVec2(cardW, cardH));
-    ImGui::SameLine(0.0f, spacing);
-    widgets::statCard("MELTING PT C", meltPt, ImVec2(cardW, cardH));
-    if (sb.solute.meltingPointEstimated) {
-      ImGui::SameLine();
-      widgets::badge("Tm ESTIMATED", style::col::Violet);
-    }
-  }
-
-  if (sb.soluteValid && sb.solute.meltingPointEstimated && !sb.overrideSolute) {
-    // An estimated Tm is the single biggest source of error in the
-    // prediction (a Joback group-contribution guess vs. a literature value
-    // can be tens of degrees off) -- make the fix impossible to miss.
-    ImGui::TextColored(style::col::Violet,
-                       "Melting point is a Joback group-contribution estimate (%.0f C), not a "
-                       "measured value -- override it below for an accurate prediction.",
-                       sb.solute.meltingPoint);
-  }
-
-  const bool overrideClicked = ImGui::Checkbox("Override melting point / Hansen radius R0",
-                                               &sb.overrideSolute);
-  if (overrideClicked && sb.overrideSolute && !prevOverride && sb.soluteValid) {
-    sb.meltingPointC = static_cast<float>(sb.solute.meltingPoint);
-    sb.interactionRadius = static_cast<float>(sb.solute.interactionRadius);
-  }
-  prevOverride = sb.overrideSolute;
-  if (sb.overrideSolute) {
-    bool changed = false;
-    ImGui::SetNextItemWidth(220.0f * uiScale());
-    changed |= ImGui::SliderFloat("Melting point (C)", &sb.meltingPointC, -50.0f, 300.0f, "%.1f");
-    ImGui::SetNextItemWidth(220.0f * uiScale());
-    changed |= ImGui::SliderFloat("Hansen radius R0", &sb.interactionRadius, 1.0f, 30.0f, "%.1f");
-    if (sb.soluteValid) {
-      applySoluteOverrides(sb);
-      if (changed) ++sb.soluteVersion;
-    }
-  }
-
+  drawSoluteCard(st);
   ImGui::Spacing();
 
-  // ------------------------------------------------------------ solvents --
-  widgets::sectionHeader("Solvents");
-  static const char* kCountItems[] = {"1  (pure solvent)", "2  (binary blend)",
-                                      "3  (ternary blend)"};
-  int countIdx = sb.solventCount - 1;
-  ImGui::SetNextItemWidth(220.0f * uiScale());
-  if (ImGui::Combo("Number of solvents", &countIdx, kCountItems, 3)) sb.solventCount = countIdx + 1;
-
-  bool solventsOk = false;
-  std::vector<const sol::Solvent*> chosenAll(static_cast<size_t>(sb.solventCount), nullptr);
+  widgets::sectionHeader("Solvent blend");
   std::vector<sol::Component> components;
+  std::vector<const sol::Solvent*> chosen;
+  bool solventsOk = true;
   try {
-    const std::vector<sol::Solvent>& all = sol::solvents();
-    for (int i = 0; i < sb.solventCount; ++i) {
-      ImGui::PushID(i);
-      drawSolventSlot(sb, all, i, filterBuf[static_cast<size_t>(i)]);
-      ImGui::PopID();
-      chosenAll[static_cast<size_t>(i)] = sol::findSolvent(sb.solventIds[static_cast<size_t>(i)]);
-    }
-    solventsOk = true;
-    for (int i = 0; i < sb.solventCount; ++i) {
-      const sol::Solvent* found = chosenAll[static_cast<size_t>(i)];
-      if (found && sb.ratios[static_cast<size_t>(i)] > 0.0f)
-        components.push_back({found, static_cast<double>(sb.ratios[static_cast<size_t>(i)])});
-    }
+    chosen = drawSolventMixer(sb, components);
   } catch (const sol::SolError& err) {
+    solventsOk = false;
     ImGui::TextColored(style::col::Danger, "%s", err.what());
     sb.statusMessage = std::string("Solvent database error: ") + err.what();
   }
 
-  sol::Mixture mixture;
-  if (solventsOk && !components.empty()) {
-    mixture = sol::blend(components);
-    ImGui::TextColored(style::col::TextDim,
-                       "Blend Hansen: dD %.1f  dP %.1f  dH %.1f MPa^0.5   density %.3f g/mL",
-                       mixture.hansen.dispersion, mixture.hansen.polar, mixture.hansen.hydrogenBond,
-                       mixture.density);
-  } else if (solventsOk) {
-    ImGui::TextDisabled("Select at least one solvent.");
-  }
-
   ImGui::Spacing();
-  ImGui::SetNextItemWidth(260.0f * uiScale());
+  ImGui::SetNextItemWidth(-1.0f);
   ImGui::SliderFloat("Temperature (C)", &sb.temperatureC, -20.0f, 150.0f, "%.1f");
-
   ImGui::Spacing();
 
-  // ------------------------------------------------------------- result ---
-  widgets::sectionHeader("Predicted solubility");
+  // Hand the binary blend to the funnel simulation. Volumes are a fixed
+  // 100 mL bench charge split by the working ratio.
+  const bool canSend = sb.soluteValid && solventsOk && chosen.size() >= 2 && chosen[0] &&
+                       chosen[1];
+  if (!canSend) ImGui::BeginDisabled();
+  if (widgets::primaryButton("Send to Extraction Lab", ImVec2(-1.0f, 0.0f))) {
+    const double r0 = std::max(0.0, static_cast<double>(sb.ratios[0]));
+    const double r1 = std::max(0.0, static_cast<double>(sb.ratios[1]));
+    const double sum = std::max(r0 + r1, 1e-9);
+    ExtractionImport& imp = sb.extractionImport;
+    imp.pending = true;
+    imp.solventIdA = chosen[0]->id;
+    imp.solventIdB = chosen[1]->id;
+    imp.volumeMlA = 100.0 * r0 / sum;
+    imp.volumeMlB = 100.0 * r1 / sum;
+    imp.soluteMassMg = 100.0;
+    st.tab = MainTab::Extraction;
+    st.tabChangeRequested = true;
+    sb.statusMessage = "Blend sent to the Extraction Lab";
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", "Load this blend into the separatory-funnel simulation");
+  if (!canSend) ImGui::EndDisabled();
+
+  ImGui::Spacing();
+  widgets::sectionHeader("Solvent screen");
+  drawScreeningTable(sb);
+  ImGui::EndChild();
+
+  ImGui::SameLine(0.0f, 0.0f);
+
+  // ------------------------------------------------- right results area --
+  ImGui::BeginChild("##suite_results", ImVec2(0.0f, 0.0f));
   const bool canPredict = sb.soluteValid && solventsOk && !components.empty();
   if (canPredict) {
     sb.prediction = sol::predict(sb.solute, components, static_cast<double>(sb.temperatureC));
-    drawResultCard(sb);
-    sb.statusMessage = "Predicted " + formatSolubility(sb.prediction.gramsPerMillilitre) + " g/mL.";
+    drawResultHero(sb);
+    sb.statusMessage = "Predicted " + formatUnits(sb.prediction.gramsPerMillilitre,
+                                                  sb.solute.molarMass, sb.units) +
+                       ".";
   } else {
     sb.prediction = sol::Prediction{};
     ImGui::TextDisabled("Provide a valid solute and at least one solvent to see a prediction.");
   }
 
-  // -------------------------------------------------------- ratio graph ---
   const bool haveAllSlots =
       solventsOk &&
-      std::all_of(chosenAll.begin(), chosenAll.end(),
-                 [](const sol::Solvent* s) { return s != nullptr; });
+      std::all_of(chosen.begin(), chosen.end(), [](const sol::Solvent* s) { return s != nullptr; });
   if (sb.solventCount >= 2) {
-    widgets::sectionHeader("Solubility vs. ratio");
+    ImGui::Spacing();
     ImGui::SetNextItemWidth(220.0f * uiScale());
     ImGui::SliderInt("Grid resolution", &sb.sweepSteps, 2, 64);
 
     if (sb.soluteValid && haveAllSlots) {
-      recomputeSweepIfNeeded(sb, chosenAll);
+      recomputeSweepIfNeeded(sb, chosen);
+      // The graph is the point of the panel: give it everything left over.
+      const float calloutReserve = ImGui::GetFontSize() * 2.4f;
+      ImVec2 avail = ImGui::GetContentRegionAvail();
+      const float plotH = std::max(240.0f * uiScale(), avail.y - calloutReserve);
+      const ImVec2 plotSize(std::max(avail.x, 60.0f), plotH);
       if (sb.solventCount == 2) {
-        drawBinarySweepPlot(sb, *chosenAll[0], *chosenAll[1]);
+        drawBinarySweepPlot(sb, *chosen[0], *chosen[1], plotSize);
       } else {
-        drawTernarySweepPlot(sb, *chosenAll[0], *chosenAll[1], *chosenAll[2]);
+        drawTernarySweepPlot(sb, *chosen[0], *chosen[1], *chosen[2], plotSize);
       }
     } else {
       sb.sweep.clear();
       sb.sweepSignature.clear();
       ImGui::TextDisabled("Choose a solute and every solvent slot to see the ratio plot.");
     }
-    ImGui::Spacing();
   } else {
     sb.sweep.clear();
     sb.sweepSignature.clear();
   }
-
-  // ------------------------------------------------------------- funnel ---
-  widgets::sectionHeader("Separatory funnel");
-  drawFunnelView(st);
+  ImGui::EndChild();
 }
 
 }  // namespace chemcad::ui

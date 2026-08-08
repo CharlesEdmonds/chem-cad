@@ -113,7 +113,7 @@ struct PlannerState {
   int maxRoutes = 5;
 };
 
-enum class MainTab { Sketch, Planner, Solubility };
+enum class MainTab { Sketch, Planner, Solubility, Extraction };
 
 // ---------------------------------------------------------------- app state
 struct AppState {

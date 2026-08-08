@@ -39,13 +39,42 @@ void polyline(ImDrawList* dl, ImVec2 c, float h, const ImVec2* pts, int count,
   dl->AddPolyline(scaled, count, col, closed ? ImDrawFlags_Closed : 0, t);
 }
 
-void hexagon(ImDrawList* dl, ImVec2 c, float radius, ImU32 col, float t) {
-  ImVec2 pts[6];
-  for (int i = 0; i < 6; ++i) {
-    const float angle = (-90.0f + 60.0f * static_cast<float>(i)) * 3.14159265f / 180.0f;
-    pts[i] = ImVec2(c.x + radius * std::cos(angle), c.y + radius * std::sin(angle));
+// Regular polygon with a vertex straight up, matching the orientation
+// ChemDraw uses for ring templates.
+void polygonVerts(ImVec2 c, float radius, int sides, ImVec2* out) {
+  for (int i = 0; i < sides; ++i) {
+    const float angle =
+        (-90.0f + 360.0f / static_cast<float>(sides) * static_cast<float>(i)) *
+        3.14159265f / 180.0f;
+    out[i] = ImVec2(c.x + radius * std::cos(angle), c.y + radius * std::sin(angle));
   }
-  dl->AddPolyline(pts, 6, col, ImDrawFlags_Closed, t);
+}
+
+void regularPolygon(ImDrawList* dl, ImVec2 c, float radius, int sides, ImU32 col, float t) {
+  ImVec2 pts[8];
+  polygonVerts(c, radius, sides, pts);
+  dl->AddPolyline(pts, sides, col, ImDrawFlags_Closed, t);
+}
+
+void hexagon(ImDrawList* dl, ImVec2 c, float radius, ImU32 col, float t) {
+  regularPolygon(dl, c, radius, 6, col, t);
+}
+
+// Short stroke parallel to edge (a,b), pulled towards the ring centre: the
+// inner line of a double bond in a ring glyph.
+void innerBondLine(ImDrawList* dl, ImVec2 c, ImVec2 a, ImVec2 b, float offset, ImU32 col,
+                   float t) {
+  const ImVec2 mid((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+  float nx = c.x - mid.x;
+  float ny = c.y - mid.y;
+  const float len = std::sqrt(nx * nx + ny * ny);
+  if (len < 1e-4f) return;
+  nx = nx / len * offset;
+  ny = ny / len * offset;
+  const float sx = (b.x - a.x) * 0.5f * 0.64f;
+  const float sy = (b.y - a.y) * 0.5f * 0.64f;
+  dl->AddLine(ImVec2(mid.x + nx - sx, mid.y + ny - sy), ImVec2(mid.x + nx + sx, mid.y + ny + sy),
+              col, t);
 }
 
 }  // namespace
@@ -85,9 +114,48 @@ void draw(ImDrawList* dl, Icon icon, ImVec2 centre, float size, ImU32 color,
       polyline(dl, centre, h, pts, 4, color, t * 1.1f, false);
       return;
     }
-    case Icon::Ring:
-      hexagon(dl, centre, h * 0.44f, color, t);
+    case Icon::RingCyclopropane:
+      regularPolygon(dl, centre, h * 0.42f, 3, color, t);
       return;
+    case Icon::RingCyclobutane:
+      regularPolygon(dl, centre, h * 0.42f, 4, color, t);
+      return;
+    case Icon::RingCyclopentane:
+      regularPolygon(dl, centre, h * 0.42f, 5, color, t);
+      return;
+    case Icon::RingCyclohexane:
+      regularPolygon(dl, centre, h * 0.42f, 6, color, t);
+      return;
+    case Icon::RingCycloheptane:
+      regularPolygon(dl, centre, h * 0.42f, 7, color, t);
+      return;
+    case Icon::RingCyclooctane:
+      regularPolygon(dl, centre, h * 0.42f, 8, color, t);
+      return;
+    case Icon::RingBenzene:
+      regularPolygon(dl, centre, h * 0.42f, 6, color, t);
+      dl->AddCircle(centre, h * 0.20f, color, 24, t * 0.9f);
+      return;
+    case Icon::RingCyclopentadiene: {
+      // Apex is the sp3 CH2; the two double bonds flank the bottom edge.
+      ImVec2 v[5];
+      polygonVerts(centre, h * 0.42f, 5, v);
+      dl->AddPolyline(v, 5, color, ImDrawFlags_Closed, t);
+      innerBondLine(dl, centre, v[1], v[2], h * 0.10f, color, t * 0.9f);
+      innerBondLine(dl, centre, v[3], v[4], h * 0.10f, color, t * 0.9f);
+      return;
+    }
+    case Icon::RingNaphthalene: {
+      // Two hexagons fused along the vertical centre edge, one aromatic
+      // circle per ring.
+      const float r = h * 0.22f;
+      const float dx = r * 0.8660254f;  // apothem: shared edge lands on x = cx
+      regularPolygon(dl, ImVec2(centre.x - dx, centre.y), r, 6, color, t * 0.95f);
+      regularPolygon(dl, ImVec2(centre.x + dx, centre.y), r, 6, color, t * 0.95f);
+      dl->AddCircle(ImVec2(centre.x - dx, centre.y), r * 0.44f, color, 20, t * 0.85f);
+      dl->AddCircle(ImVec2(centre.x + dx, centre.y), r * 0.44f, color, 20, t * 0.85f);
+      return;
+    }
     case Icon::Atom:
       dl->AddCircle(centre, h * 0.40f, color, 24, t);
       dl->AddCircleFilled(centre, h * 0.11f, color, 12);

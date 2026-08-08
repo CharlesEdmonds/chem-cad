@@ -1,6 +1,8 @@
 // Headless render test for the Solubility Suite panel. Drives the real
-// drawSolubilitySuite() through a null ImGui backend, so the ratio plot and the
-// funnel cross-section are proven to emit geometry without a display.
+// drawSolubilitySuite() through a null ImGui backend, so the ratio plot and
+// the solvent screen are proven to emit geometry without a display. The
+// separatory funnel lives in the Extraction Lab now -- see
+// test_extraction_panel.cpp for its coverage.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
@@ -52,8 +54,9 @@ int panelFrame(ui::AppState& st) {
   return ImGui::GetDrawData()->TotalVtxCount;
 }
 
-// Two frames: the panel caches its solute and sweep on the first one, so the
-// second frame is the one that actually has a curve to draw.
+// Two frames: the panel caches its solute, sweep and screening on the first
+// one, so the second frame is the one that actually has curves and tables to
+// draw.
 int settledVertexCount(ui::AppState& st) {
   panelFrame(st);
   return panelFrame(st);
@@ -64,11 +67,20 @@ void loadSolute(ui::AppState& st, const char* smiles) {
   st.touch();
 }
 
+void loadBinaryBlend(ui::AppState& st) {
+  loadSolute(st, "OC(=O)c1ccccc1");
+  st.solubility.solventIds[0] = "water";
+  st.solubility.solventIds[1] = "ethanol";
+  st.solubility.ratios[0] = 1.0f;
+  st.solubility.ratios[1] = 1.0f;
+}
+
 }  // namespace
 
 TEST_CASE("the panel opens on a binary blend so the ratio plot is reachable") {
   ui::AppState st;
   CHECK(st.solubility.solventCount == 2);
+  CHECK(st.solubility.extractionImport.pending == false);
 }
 
 TEST_CASE("the ratio plot draws geometry once a solute and two solvents exist") {
@@ -80,13 +92,7 @@ TEST_CASE("the ratio plot draws geometry once a solute and two solvents exist") 
   const int bareVertices = settledVertexCount(bare);
 
   ui::AppState plotted;
-  loadSolute(plotted, "OC(=O)c1ccccc1");
-  REQUIRE(sol::findSolvent("water") != nullptr);
-  REQUIRE(sol::findSolvent("ethanol") != nullptr);
-  plotted.solubility.solventIds[0] = "water";
-  plotted.solubility.solventIds[1] = "ethanol";
-  plotted.solubility.ratios[0] = 1.0f;
-  plotted.solubility.ratios[1] = 1.0f;
+  loadBinaryBlend(plotted);
   const int plottedVertices = settledVertexCount(plotted);
 
   // The curve, its shaded area, the axis frame, the tick labels and the peak
@@ -99,22 +105,13 @@ TEST_CASE("a ternary blend draws more than a binary one") {
   HeadlessImGui gui;
 
   ui::AppState binary;
-  loadSolute(binary, "OC(=O)c1ccccc1");
-  binary.solubility.solventCount = 2;
-  binary.solubility.solventIds[0] = "water";
-  binary.solubility.solventIds[1] = "ethanol";
-  binary.solubility.ratios[0] = 1.0f;
-  binary.solubility.ratios[1] = 1.0f;
+  loadBinaryBlend(binary);
   const int binaryVertices = settledVertexCount(binary);
 
   ui::AppState ternary;
-  loadSolute(ternary, "OC(=O)c1ccccc1");
+  loadBinaryBlend(ternary);
   ternary.solubility.solventCount = 3;
-  ternary.solubility.solventIds[0] = "water";
-  ternary.solubility.solventIds[1] = "ethanol";
   ternary.solubility.solventIds[2] = "toluene";
-  ternary.solubility.ratios[0] = 1.0f;
-  ternary.solubility.ratios[1] = 1.0f;
   ternary.solubility.ratios[2] = 1.0f;
   const int ternaryVertices = settledVertexCount(ternary);
 
@@ -122,20 +119,24 @@ TEST_CASE("a ternary blend draws more than a binary one") {
   CHECK(ternaryVertices > binaryVertices);
 }
 
-TEST_CASE("the funnel cross-section draws and responds to shaking") {
+TEST_CASE("the solvent screen fills and stays sorted for a valid solute") {
   HeadlessImGui gui;
   ui::AppState st;
-  loadSolute(st, "OC(=O)c1ccccc1");
-  const int settled = settledVertexCount(st);
+  loadBinaryBlend(st);
+  settledVertexCount(st);
 
-  // The phase editor seeds two phases on the first frame; shaking fills the
-  // column with droplets, every one of which is an extra filled circle.
-  REQUIRE(st.solubility.funnel.phases.size() == 2);
-  sol::shake(st.solubility.funnel, 1.0);
-  REQUIRE(sol::emulsifiedFraction(st.solubility.funnel) > 0.2);
-  const int shaken = settledVertexCount(st);
+  const std::vector<sol::ScreenRow>& rows = st.solubility.screening;
+  REQUIRE(rows.size() == sol::solvents().size());
+  for (size_t i = 1; i < rows.size(); ++i) {
+    CHECK(rows[i - 1].prediction.gramsPerMillilitre >=
+          rows[i].prediction.gramsPerMillilitre);
+  }
 
-  CHECK(shaken > settled);
+  // The screen invalidates when the temperature moves.
+  st.solubility.temperatureC = 60.0f;
+  settledVertexCount(st);
+  CHECK(st.solubility.screeningSignature !=
+        std::string(""));
 }
 
 TEST_CASE("the panel survives a missing solvent id and an unparseable solute") {

@@ -31,6 +31,7 @@ using chemcad::ui::AppState;
 constexpr const char* kWinSketch = "Sketch";
 constexpr const char* kWinPlanner = "Reaction Planner";
 constexpr const char* kWinSolubility = "Solubility Suite";
+constexpr const char* kWinExtraction = "Extraction Lab";
 constexpr const char* kWinTools = "Tools";
 constexpr const char* kWinPTable = "Periodic Table";
 constexpr const char* kWinProps = "Properties";
@@ -154,6 +155,7 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
   ImGui::DockBuilderDockWindow(kWinSketch, center);
   ImGui::DockBuilderDockWindow(kWinPlanner, center);
   ImGui::DockBuilderDockWindow(kWinSolubility, center);
+  ImGui::DockBuilderDockWindow(kWinExtraction, center);
   ImGui::DockBuilderDockWindow(kWinPTable, rightTop);
   ImGui::DockBuilderDockWindow(kWinProps, rightBottom);
   ImGui::DockBuilderFinish(dockspaceId);
@@ -252,10 +254,16 @@ int main(int, char**) {
     if (ImGui::Begin(kWinTools)) chemcad::ui::drawToolPalette(state);
     ImGui::End();
 
-    if (state.tabChangeRequested) {
-      ImGui::SetNextWindowFocus();
-      state.tabChangeRequested = false;
-    }
+    // A panel asking for a tab switch sets `tab` + `tabChangeRequested`;
+    // focus whichever window that tab lives in.
+    const auto focusTabIfRequested = [&state](chemcad::ui::MainTab t) {
+      if (state.tabChangeRequested && state.tab == t) {
+        ImGui::SetNextWindowFocus();
+        state.tabChangeRequested = false;
+      }
+    };
+
+    focusTabIfRequested(chemcad::ui::MainTab::Sketch);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     const bool sketchOpen = ImGui::Begin(kWinSketch);
     ImGui::PopStyleVar();
@@ -266,6 +274,7 @@ int main(int, char**) {
     }
     ImGui::End();
 
+    focusTabIfRequested(chemcad::ui::MainTab::Planner);
     if (ImGui::Begin(kWinPlanner)) {
       if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
         state.tab = chemcad::ui::MainTab::Planner;
@@ -273,10 +282,19 @@ int main(int, char**) {
     }
     ImGui::End();
 
+    focusTabIfRequested(chemcad::ui::MainTab::Solubility);
     if (ImGui::Begin(kWinSolubility)) {
       if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
         state.tab = chemcad::ui::MainTab::Solubility;
       chemcad::ui::drawSolubilitySuite(state);
+    }
+    ImGui::End();
+
+    focusTabIfRequested(chemcad::ui::MainTab::Extraction);
+    if (ImGui::Begin(kWinExtraction)) {
+      if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+        state.tab = chemcad::ui::MainTab::Extraction;
+      chemcad::ui::drawExtractionLab(state);
     }
     ImGui::End();
 

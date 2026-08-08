@@ -14,6 +14,18 @@
 
 namespace chemcad::ui {
 
+// Payload handed from the Solubility Suite to the Extraction Lab: the suite's
+// "Send to Extraction Lab" button fills this in and sets `pending`; the
+// extraction view consumes it on its next frame and clears the flag.
+struct ExtractionImport {
+  bool pending = false;
+  std::string solventIdA;  // the aqueous (or lighter-workflow) phase
+  std::string solventIdB;  // the organic partner
+  double volumeMlA = 50.0;
+  double volumeMlB = 50.0;
+  double soluteMassMg = 100.0;
+};
+
 struct SolubilityState {
   // ------------------------------------------------------------- solute
   bool useSketch = true;        // true: pull from st.doc.molecules; false: manualSmiles
@@ -40,11 +52,19 @@ struct SolubilityState {
   // -------------------------------------------------------------- result
   sol::Prediction prediction;
 
+  // ------------------------------------------------------------- display
+  int units = 0;        // 0 g/mL, 1 mg/mL, 2 g/100 mL, 3 mol/L
+  bool logScale = false;  // ratio-plot y axis: linear or log10
+
   // -------------------------------------------------------- ratio sweep
   std::vector<sol::SweepPoint> sweep;
   int sweepSteps = 20;
   std::string sweepSignature;  // cache key: solvent ids + steps + temperature + soluteVersion
   int sweepPeakIndex = -1;  // index into `sweep` of the max-solubility sample, or -1
+
+  // ------------------------------------------------------- solvent screen
+  std::vector<sol::ScreenRow> screening;  // pure-solvent table, best first
+  std::string screeningSignature;         // cache key: soluteVersion + temperature
 
   // ---------------------------------------------------------- funnel sim
   sol::Simulation funnel;
@@ -52,6 +72,8 @@ struct SolubilityState {
   float funnelSpeed = 1.0f;
   float shakeVigour = 0.6f;
   int funnelVessel = 0;  // mirrors sol::Vessel, kept as int for a plain ImGui combo
+
+  ExtractionImport extractionImport;  // suite -> extraction lab hand-off
 
   std::string statusMessage;
 };

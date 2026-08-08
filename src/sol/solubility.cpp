@@ -346,6 +346,56 @@ GroupIncrement classifyAtom(const core::Molecule& molecule, const core::Atom& at
   }
 }
 
+// ---- zwitterion cohesion correction --------------------------------------
+// A molecule carrying both a non-amide N-H amine and a carboxylic acid
+// (every alpha-amino acid) exists as the +NH3/-COO- zwitterion; the ionic
+// lattice cohesion dominates its Hansen H-bond term, and neutral group
+// additivity has no mechanism to see it. Glycine estimated as the neutral
+// form lands at dH ~13 and comes out soluble in hexane; the zwitterionic
+// reality (dH ~ 25, implied by its near-zero alkane solubility) needs an
+// extra ~3e4 J/mol of H-bond cohesion. Quaternary betaines (no N-H) are
+// deliberately not matched.
+constexpr double kZwitterionEh = 30000.0;
+
+bool hasAmineDonor(const core::Molecule& molecule) {
+  for (const core::Atom& atom : molecule.atoms()) {
+    if (atom.atomicNumber != 7) continue;
+    if (hasAromaticBond(molecule, atom.id)) continue;
+    // Amide nitrogens are not protonatable; classifyNitrogen skips them via
+    // the same carbonyl-neighbour test.
+    bool amide = false;
+    for (core::AtomId nb : molecule.neighbors(atom.id)) {
+      const core::Atom* neighbor = molecule.atom(nb);
+      if (neighbor && neighbor->atomicNumber == 6 &&
+          bondedNeighbor(molecule, nb, core::BondOrder::Double, 8) != core::kInvalidAtom) {
+        amide = true;
+        break;
+      }
+    }
+    if (!amide && chem::implicitHCount(molecule, atom.id) >= 1) return true;
+  }
+  return false;
+}
+
+bool hasCarboxylicAcid(const core::Molecule& molecule) {
+  for (const core::Atom& atom : molecule.atoms()) {
+    if (atom.atomicNumber != 6) continue;
+    if (countBondedNeighbors(molecule, atom.id, core::BondOrder::Double, 8) != 1) continue;
+    for (core::AtomId nb : molecule.neighbors(atom.id)) {
+      const core::Atom* oxygen = molecule.atom(nb);
+      if (!oxygen || oxygen->atomicNumber != 8) continue;
+      const core::Bond* bond = molecule.bond(molecule.bondBetween(atom.id, nb));
+      // The acid -OH: singly bonded to the carbonyl carbon and still
+      // carrying its proton (an ester's -O- has none).
+      if (bond && bond->order == core::BondOrder::Single &&
+          chem::implicitHCount(molecule, nb) > 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 Hansen estimateHansen(const core::Molecule& molecule, double molarVolume) {
   double v = std::max(molarVolume, 1e-6);
   RingPerception ring(molecule);
@@ -358,6 +408,7 @@ Hansen estimateHansen(const core::Molecule& molecule, double molarVolume) {
     sumFpSq += inc.fp * inc.fp;
     sumEh += inc.eh;
   }
+  if (hasAmineDonor(molecule) && hasCarboxylicAcid(molecule)) sumEh += kZwitterionEh;
   Hansen hansen;
   hansen.dispersion = sumFd / v;
   hansen.polar = std::sqrt(std::max(sumFpSq, 0.0)) / v;
@@ -657,19 +708,54 @@ MeltingEstimate estimateMeltingPoint(const core::Molecule& molecule) {
 // group with benzoic acid) -- a deliberate trade documented here rather than
 // left to look like an oversight.
 //
-// Per-point log10 residuals (predicted - literature) at 25 C:
+// C3 = 0 has a hole a user can see, though: with no H-bond penalty at all,
+// unreciprocated H-bonding is free, so glycine came out MORE soluble in
+// hexane than in water and naphthalene landed ~700x high in water. The
+// regression could not see those cases because its 19 points contain no true
+// mismatch pairs. The H-bond axis is therefore restored with the asymmetry
+// the physics actually has -- the two mismatch directions are different
+// effects:
+//
+//   term A (solute self-association): max(0, dH_s - dH_m)^2 at classic
+//     regular-solution strength (C3a = 0.25), scaled by the solvent's own
+//     inability to H-bond (max(0, 1 - dH_m / kSolventInertCutoff)): a
+//     zwitterion or polyol dropped into an alkane keeps its full penalty --
+//     glycine/hexane dies here -- while weakly protic chloroform (dH 5.7,
+//     the C-H...N interaction that makes caffeine's chloroform solubility
+//     anomalously high) is mostly exempt.
+//   term B (solvent self-association, the hydrophobic cavity): max(0,
+//     dH_m - dH_s)^2 scaled by max(0, 1 - dH_s / kHydrationCutoff), so it
+//     only bites when the solute cannot hydrate back. Caffeine and the
+//     acids (dH_s >= 8) are spared -- exactly the specific-interaction
+//     exemption the regression found -- while naphthalene (dH_s ~ 3) pays
+//     the cavity cost. C3b = 0.12 is the largest value that keeps every one
+//     of the original 19 points inside the accuracy suite's 1.5-decade bar.
+//
+// Both terms are convex quadratics in the blend fraction, so the
+// co-solvency interior maximum is preserved.
+//
+// Per-point log10 residuals (predicted - literature) at 25 C, from the
+// original symmetric-C3 = 0 fit:
 //   caffeine        water      -1.184   ethanol -0.090   chloroform -1.404   acetone +0.469
 //   benzoic acid    water      +1.152   ethanol -0.629   toluene    -0.009   acetone -0.447   hexane +1.048
 //   naphthalene     ethanol    +0.204   toluene +0.015   hexane     +0.378   acetone -0.293
 //   paracetamol     water      +0.120   ethanol -0.822   acetone    -0.397
 //   salicylic acid  water      +0.947   ethanol -0.935   chloroform +1.005
-// RMS log10 error: 0.744; worst single-point error: 1.404 (caffeine in
-// chloroform), both inside the tests/test_sol_accuracy.cpp 1.5-decade bar.
+// RMS log10 error: 0.744. After the asymmetric H-bond extension above, the
+// ten accuracy-suite points measure (test_sol_accuracy.cpp stdout): caffeine
+// -1.184 / -0.090 / -1.420, benzoic acid +1.152 / -0.629 / -0.140,
+// naphthalene +0.101 / -0.011, paracetamol +0.120 / -0.822 (RMS 0.766) --
+// every point still inside the 1.5-decade bar, while the previously
+// invisible mismatch cases are now physically ordered (glycine water >>
+// hexane, naphthalene ethanol >> water, caffeine water > hexane).
 namespace chiCoeff {
 constexpr double kC0 = 0.0;
 constexpr double kC1 = 0.0;
 constexpr double kC2 = 0.23;
-constexpr double kC3 = 0.0;
+constexpr double kC3a = 0.25;
+constexpr double kC3b = 0.12;
+constexpr double kHydrationCutoff = 8.0;    // MPa^0.5; solute dH below this cannot hydrate
+constexpr double kSolventInertCutoff = 6.0;  // MPa^0.5; solvent dH below this cannot reciprocate
 }  // namespace chiCoeff
 
 // Division that never returns NaN/Inf: out-of-range denominators fall back
@@ -767,20 +853,32 @@ Prediction predict(const Solute& solute, const std::vector<Component>& component
   double red = ra / r0;
 
   // Extended Hansen / Martin regression interaction parameter (contract item
-  // 2; fitted constants and citations above). Each (delta_s - delta_m) is
-  // linear in the blend volume fraction (blend() is linear in it), so chi
-  // stays a convex quadratic in the blend fraction -- the co-solvency
-  // maximum (contract item E) survives untouched. Floored, not clamped
-  // toward zero, at -1.0: the fitted C0..C3 never drive it negative for this
-  // calibration set, but a future refit or a strongly complementary pair
-  // legitimately could, and an unbounded negative chi would leave the
-  // bisection below unable to bracket a root.
+  // 2; fitted constants and citations above). The H-bond axis is asymmetric
+  // by physics (fitted-constant block): solute self-association into an
+  // inert solvent at full classic strength, solvent self-association scaled
+  // by the solute's inability to hydrate. Every term is linear or a convex
+  // quadratic in the blend volume fraction (blend() is linear in it, and
+  // max(0, linear)^2 is convex), so chi stays unimodal-friendly and the
+  // co-solvency maximum (contract item E) survives. Floored, not clamped
+  // toward zero, at -1.0: the fitted constants never drive it negative for
+  // this calibration set, but a strongly complementary pair legitimately
+  // could, and an unbounded negative chi would leave the bisection below
+  // unable to bracket a root.
   double volumeSolute = std::max(solute.molarVolume, 1e-6);
   double mixtureVolume = std::max(mixture.molarVolume, 1e-6);
-  double chi = chiCoeff::kC0 + volumeSolute / (kGasConstant * temperature) *
-                                    (chiCoeff::kC1 * dDispersion * dDispersion +
-                                     chiCoeff::kC2 * dPolar * dPolar +
-                                     chiCoeff::kC3 * dHydrogenBond * dHydrogenBond);
+  const double hSolute = solute.hansen.hydrogenBond;
+  const double hMixture = mixture.hansen.hydrogenBond;
+  const double soluteExcess = std::max(0.0, hSolute - hMixture);    // term A
+  const double solventExcess = std::max(0.0, hMixture - hSolute);   // term B
+  const double inertFactor = std::max(0.0, 1.0 - hMixture / chiCoeff::kSolventInertCutoff);
+  const double cavityFactor =
+      std::max(0.0, 1.0 - hSolute / chiCoeff::kHydrationCutoff);
+  double chi = chiCoeff::kC0 +
+               volumeSolute / (kGasConstant * temperature) *
+                   (chiCoeff::kC1 * dDispersion * dDispersion +
+                    chiCoeff::kC2 * dPolar * dPolar +
+                    chiCoeff::kC3a * inertFactor * soluteExcess * soluteExcess +
+                    chiCoeff::kC3b * cavityFactor * solventExcess * solventExcess);
   chi = std::max(chi, -1.0);
 
   // Ideal (Hildebrand/Yalkowsky) mole-fraction solubility from melting-point
@@ -896,6 +994,47 @@ std::vector<SweepPoint> sweep(const Solute& solute, const std::vector<const Solv
     }
   }
   return points;
+}
+
+std::vector<ScreenRow> screen(const Solute& solute, double temperatureC) {
+  const std::vector<Solvent>& table = solvents();  // propagates a load failure
+  std::vector<ScreenRow> rows;
+  rows.reserve(table.size());
+  for (const Solvent& solvent : table) {
+    const std::vector<Component> pure{Component{&solvent, 1.0}};
+    rows.push_back(ScreenRow{&solvent, predict(solute, pure, temperatureC)});
+  }
+  // Best solvent first; name tiebreak keeps the order deterministic across
+  // runs when two predictions land on the same value.
+  std::stable_sort(rows.begin(), rows.end(), [](const ScreenRow& a, const ScreenRow& b) {
+    return a.prediction.gramsPerMillilitre != b.prediction.gramsPerMillilitre
+               ? a.prediction.gramsPerMillilitre > b.prediction.gramsPerMillilitre
+               : a.solvent->name < b.solvent->name;
+  });
+  return rows;
+}
+
+Partition partition(double massMg, double logP, double volumeAqueousMl,
+                    double volumeOrganicMl) {
+  Partition result;
+  if (massMg <= 0.0) return result;
+
+  // Clamp so a garbage logP cannot overflow the distribution ratio; the
+  // clamp bounds D to [1e-6, 1e6], far past any real solvent pair.
+  const double clampedLogP = std::clamp(logP, -6.0, 6.0);
+  const double d = std::pow(10.0, clampedLogP);
+  const double aqueous = std::max(0.0, volumeAqueousMl);
+  const double organic = std::max(0.0, volumeOrganicMl);
+
+  // C_org/C_aq = D, mass balance over both volumes gives the shares.
+  const double organicTerm = d * organic;
+  const double total = aqueous + organicTerm;
+  if (total <= 0.0) return result;  // no phase volume anywhere
+
+  result.mgOrganic = massMg * organicTerm / total;
+  result.mgAqueous = massMg - result.mgOrganic;
+  result.fractionOrganic = result.mgOrganic / massMg;
+  return result;
 }
 
 }  // namespace chemcad::sol

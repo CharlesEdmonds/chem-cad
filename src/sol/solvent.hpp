@@ -41,4 +41,11 @@ const std::vector<Solvent>& solvents();
 // nullptr when no solvent has that id.
 const Solvent* findSolvent(std::string_view id);
 
+// True when the pair forms a single homogeneous phase at room temperature.
+// The database only records water miscibility, so the rule is deliberately
+// simple: water against a water-immiscible partner separates into two
+// phases; every other pairing is treated as mixable. Used to warn when a
+// blend prediction assumes a homogeneous phase that does not exist.
+bool miscibleWith(const Solvent& a, const Solvent& b);
+
 }  // namespace chemcad::sol
