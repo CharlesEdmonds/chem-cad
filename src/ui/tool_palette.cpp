@@ -1,3 +1,8 @@
+// The left dock's tool column: a two-column grid of tool buttons. The Bond,
+// Ring and Atom tools are split buttons -- the body arms the tool with the
+// current choice's own glyph, the caret opens a gallery popup where every
+// option has an accurate icon. Everything is procedural, no image assets.
+
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -5,6 +10,7 @@
 
 #include "imgui.h"
 
+#include "chem/bridge.hpp"
 #include "ui/icons.hpp"
 #include "ui/theme.hpp"
 #include "ui/ui.hpp"
@@ -26,13 +32,13 @@ constexpr std::array kTools{
               "Drag a box around atoms and bonds to select them"},
     ToolEntry{Tool::Eraser, icons::Icon::Eraser, "Eraser", "E",
               "Click an atom or bond to delete it"},
+    // Bond, Ring and Atom are split buttons drawn by drawSplitCell; their
+    // icons come from the current order/ring/element, so these entries only
+    // supply name/shortcut/hint.
     ToolEntry{Tool::Bond, icons::Icon::Bond, "Bond", "B / M",
               "Click an atom to attach CH3; drag to place or connect carbon. M resets a plain methyl-ready bond"},
     ToolEntry{Tool::Chain, icons::Icon::Chain, "Chain", "K",
               "Drag to draw a zig-zag carbon chain"},
-    // The ring cell is a split button drawn by drawRingCell: the body arms the
-    // tool, the caret opens the ring gallery. The icon comes from kRings via
-    // st.currentRing, so this entry only supplies name/shortcut/hint.
     ToolEntry{Tool::RingTemplate, icons::Icon::RingCyclohexane, "Ring", "R",
               "Stamp the selected ring onto the canvas"},
     ToolEntry{Tool::Atom, icons::Icon::Atom, "Atom", "A",
@@ -72,7 +78,6 @@ constexpr std::array kStereos{
                 "Stereochemistry unknown or a mixture"},
 };
 
-// ---------------------------------------------------------------- rings
 // Every stampable ring with its own glyph, so the grid button and the gallery
 // always show what will actually be drawn.
 struct RingEntry {
@@ -100,73 +105,108 @@ const RingEntry& ringEntry(RingKind kind) {
   return kRings.front();
 }
 
-// Grid of every ring, drawn inside the gallery popup. Each tile shows the
-// ring's glyph over its name; the current ring carries the accent.
-void drawRingGallery(AppState& st) {
+// The elements a working chemist reaches for ninety percent of the time;
+// the full grid stays in the Periodic Table panel.
+struct QuickElement {
+  uint8_t z;
+  const char* name;
+};
+constexpr std::array kQuickElements{
+    QuickElement{1, "Hydrogen"},  QuickElement{6, "Carbon"},   QuickElement{7, "Nitrogen"},
+    QuickElement{8, "Oxygen"},    QuickElement{9, "Fluorine"}, QuickElement{15, "Phosphorus"},
+    QuickElement{16, "Sulfur"},   QuickElement{17, "Chlorine"}, QuickElement{35, "Bromine"},
+    QuickElement{53, "Iodine"},   QuickElement{5, "Boron"},    QuickElement{14, "Silicon"},
+};
+
+// --------------------------------------------------------------- tile grid
+// One gallery glyph: an icon, or a short text (element symbols) when set.
+struct TileGlyph {
+  icons::Icon icon = icons::Icon::Atom;
+  const char* text = nullptr;
+};
+
+// A uniform grid of icon-over-label tiles inside a gallery popup. Returns
+// the clicked entry's index, or -1.
+template <typename T, size_t N, typename GlyphOf, typename NameOf, typename SelectedOf>
+int drawTileGrid(const char* idPrefix, const std::array<T, N>& entries, int columns,
+                 GlyphOf glyphOf, NameOf nameOf, SelectedOf selectedOf) {
   const style::Metrics& m = style::metrics();
   const float pad = m.gap * 0.9f;
   const float glyphBox = m.iconSize * 1.5f;
   const float labelH = ImGui::GetFontSize();
 
   float tileW = 0.0f;
-  for (const RingEntry& entry : kRings) {
-    tileW = std::max(tileW, ImGui::CalcTextSize(entry.name).x);
-  }
+  for (const T& entry : entries) tileW = std::max(tileW, ImGui::CalcTextSize(nameOf(entry)).x);
   tileW = std::max(tileW + pad * 2.0f, glyphBox + pad * 1.5f);
   const float tileH = glyphBox + labelH + pad * 2.0f;
   const float spacing = ImGui::GetStyle().ItemSpacing.x;
 
+  int clicked = -1;
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  for (size_t i = 0; i < kRings.size(); ++i) {
-    const RingEntry& entry = kRings[i];
-    if (i % 3 != 0) ImGui::SameLine(0.0f, spacing);
-    ImGui::PushID(static_cast<int>(entry.kind));
+  ImGui::PushID(idPrefix);
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const T& entry = entries[i];
+    if (static_cast<int>(i) % columns != 0) ImGui::SameLine(0.0f, spacing);
+    ImGui::PushID(static_cast<int>(i));
     const ImVec2 min = ImGui::GetCursorScreenPos();
-    ImGui::InvisibleButton("##ring_tile", ImVec2(tileW, tileH));
-    const bool clicked = ImGui::IsItemClicked();
+    ImGui::InvisibleButton("##tile", ImVec2(tileW, tileH));
+    const bool wasClicked = ImGui::IsItemClicked();
     const float t = widgets::hoverT(ImGui::GetItemID(), ImGui::IsItemHovered());
     ImGui::PopID();
     const ImVec2 max(min.x + tileW, min.y + tileH);
-    const bool current = entry.kind == st.currentRing;
+    const bool selected = selectedOf(entry);
 
-    const ImU32 fill = current ? style::mix(style::col::Accent, style::col::BgRaised, 0.82f)
-                               : style::mix(style::col::BgSurface, style::col::BgRaised, t);
+    const ImU32 fill = selected ? style::mix(style::col::Accent, style::col::BgRaised, 0.82f)
+                                : style::mix(style::col::BgSurface, style::col::BgRaised, t);
     dl->AddRectFilled(min, max, fill, m.radiusMd);
     dl->AddRect(min, max,
-                current ? style::u32(style::col::Accent, 0.9f)
-                        : style::mix(style::col::Border, style::col::BorderStrong, t),
+                selected ? style::u32(style::col::Accent, 0.9f)
+                         : style::mix(style::col::Border, style::col::BorderStrong, t),
                 m.radiusMd, 0, m.hairline);
 
     const ImU32 glyphColor =
-        current ? style::u32(style::col::Accent)
-                : style::mix(style::col::TextDim, style::col::Text, 0.4f + 0.6f * t);
-    icons::draw(dl, entry.icon, ImVec2((min.x + max.x) * 0.5f, min.y + pad + glyphBox * 0.5f),
-                glyphBox * 0.8f, glyphColor);
-    const ImVec2 labelSize = ImGui::CalcTextSize(entry.name);
-    dl->AddText(ImVec2((min.x + max.x - labelSize.x) * 0.5f, max.y - pad - labelH),
-                style::u32(current ? style::col::Text : style::col::TextDim), entry.name);
-
-    if (clicked) {
-      st.currentRing = entry.kind;
-      st.tool = Tool::RingTemplate;
-      st.statusMessage = std::string("Ring template: ") + entry.name;
-      ImGui::CloseCurrentPopup();
+        selected ? style::u32(style::col::Accent)
+                 : style::mix(style::col::TextDim, style::col::Text, 0.4f + 0.6f * t);
+    const TileGlyph glyph = glyphOf(entry);
+    const ImVec2 glyphCentre((min.x + max.x) * 0.5f, min.y + pad + glyphBox * 0.5f);
+    if (glyph.text) {
+      const float textSize = glyphBox * 0.55f;
+      const ImVec2 w = ImGui::CalcTextSize(glyph.text);
+      dl->AddText(style::fonts::mono(), textSize,
+                  ImVec2(glyphCentre.x - w.x * (textSize / ImGui::GetFontSize()) * 0.5f,
+                         glyphCentre.y - textSize * 0.5f),
+                  glyphColor, glyph.text);
+    } else {
+      icons::draw(dl, glyph.icon, glyphCentre, glyphBox * 0.8f, glyphColor);
     }
+    const ImVec2 labelSize = ImGui::CalcTextSize(nameOf(entry));
+    dl->AddText(ImVec2((min.x + max.x - labelSize.x) * 0.5f, max.y - pad - labelH),
+                style::u32(selected ? style::col::Text : style::col::TextDim), nameOf(entry));
+
+    if (wasClicked) clicked = static_cast<int>(i);
   }
+  ImGui::PopID();
+  return clicked;
 }
 
-// The ring tool's grid cell: the body arms Tool::RingTemplate with the current
-// ring (and shows that ring's glyph), the caret in the corner opens the
-// gallery popup. One invisible button with a manual sub-rect hit test for the
+void galleryCaption(const char* text) {
+  ImGui::TextDisabled("%s", text);
+}
+
+// ------------------------------------------------------------- split cell
+// A grid cell that is two controls in one: the body arms its tool with the
+// current choice's glyph on it, the caret in the corner opens a gallery
+// popup. One invisible button with a manual sub-rect hit test for the
 // caret -- a second overlapping item would corrupt CursorPosPrevLine and
 // break the grid's SameLine stride.
-void drawRingCell(AppState& st, ImVec2 cell) {
+template <typename Arm, typename Popup>
+void drawSplitCell(ImVec2 cell, TileGlyph bodyGlyph, bool armed, const char* bodyTip,
+                   const char* caretTip, const char* popupId, Arm&& onArm,
+                   Popup&& popupContent) {
   const style::Metrics& m = style::metrics();
-  const RingEntry& ring = ringEntry(st.currentRing);
-  const bool armed = st.tool == Tool::RingTemplate;
   const ImVec2 min = ImGui::GetCursorScreenPos();
 
-  ImGui::InvisibleButton("##ring", cell);
+  ImGui::InvisibleButton("##split", cell);
   const bool clicked = ImGui::IsItemClicked();
   const bool hovered = ImGui::IsItemHovered();
   const float t = widgets::hoverT(ImGui::GetItemID(), hovered);
@@ -193,11 +233,18 @@ void drawRingCell(AppState& st, ImVec2 cell) {
   }
 
   const ImVec2 centre((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
-  const float glyph = std::min(m.iconSize * 1.25f, std::min(cell.x, cell.y) * 0.80f);
-  icons::draw(dl, ring.icon, centre, glyph, glyphColor);
+  if (bodyGlyph.text) {
+    const float textSize = std::min(m.iconSize * 0.85f, cell.y * 0.5f);
+    const ImVec2 w = ImGui::CalcTextSize(bodyGlyph.text);
+    dl->AddText(style::fonts::mono(), textSize,
+                ImVec2(centre.x - w.x * (textSize / ImGui::GetFontSize()) * 0.5f,
+                       centre.y - textSize * 0.5f),
+                glyphColor, bodyGlyph.text);
+  } else {
+    const float glyph = std::min(m.iconSize * 1.25f, std::min(cell.x, cell.y) * 0.80f);
+    icons::draw(dl, bodyGlyph.icon, centre, glyph, glyphColor);
+  }
 
-  // Caret: a filled triangle tucked into the corner, brightening when the
-  // pointer is inside its zone so it reads as a separate click target.
   const ImU32 caretColor =
       armed ? style::u32(style::col::OnAccent, inCaret ? 1.0f : 0.65f)
             : style::mix(style::col::TextFaint, style::col::Text, inCaret ? 1.0f : 0.0f);
@@ -206,33 +253,139 @@ void drawRingCell(AppState& st, ImVec2 cell) {
   const float s = std::max(3.5f, m.gap * 0.55f);
   dl->AddTriangleFilled(ImVec2(cx - s, cy - s), ImVec2(cx, cy), ImVec2(cx - s, cy), caretColor);
 
-  if (clicked && !inCaret) st.tool = Tool::RingTemplate;
-  if (hovered) {
-    if (inCaret) {
-      ImGui::SetTooltip("%s", "Choose a different ring");
-    } else {
-      char tip[192];
-      std::snprintf(tip, sizeof(tip), "%s (R)\nClick to arm the ring tool", ring.name);
-      ImGui::SetTooltip("%s", tip);
-    }
-  }
+  if (clicked && !inCaret) onArm();
+  if (hovered) ImGui::SetTooltip("%s", inCaret ? caretTip : bodyTip);
 
-  if (clicked && inCaret) ImGui::OpenPopup("##ring_gallery");
+  if (clicked && inCaret) ImGui::OpenPopup(popupId);
   ImGui::SetNextWindowPos(ImVec2(min.x, max.y + m.gap * 0.5f));
-  if (ImGui::BeginPopup("##ring_gallery")) {
-    drawRingGallery(st);
+  if (ImGui::BeginPopup(popupId)) {
+    popupContent();
     ImGui::EndPopup();
   }
+}
+
+// ---------------------------------------------------------------- galleries
+void drawRingGallery(AppState& st) {
+  const int hit = drawTileGrid(
+      "##rings", kRings, 3, [](const RingEntry& e) { return TileGlyph{e.icon, nullptr}; },
+      [](const RingEntry& e) { return e.name; },
+      [&](const RingEntry& e) { return e.kind == st.currentRing; });
+  if (hit >= 0) {
+    st.currentRing = kRings[static_cast<size_t>(hit)].kind;
+    st.tool = Tool::RingTemplate;
+    st.statusMessage = std::string("Ring template: ") + kRings[static_cast<size_t>(hit)].name;
+    ImGui::CloseCurrentPopup();
+  }
+}
+
+void drawBondGallery(AppState& st) {
+  galleryCaption("Bond order");
+  const int order = drawTileGrid(
+      "##orders", kOrders, 4, [](const OrderEntry& e) { return TileGlyph{e.icon, nullptr}; },
+      [](const OrderEntry& e) { return e.name; },
+      [&](const OrderEntry& e) {
+        return st.currentStereo == core::BondStereo::None && st.currentOrder == e.order;
+      });
+  ImGui::Spacing();
+  galleryCaption("Stereochemistry");
+  const int stereo = drawTileGrid(
+      "##stereos", kStereos, 4, [](const StereoEntry& e) { return TileGlyph{e.icon, nullptr}; },
+      [](const StereoEntry& e) { return e.name; },
+      [&](const StereoEntry& e) { return st.currentStereo == e.stereo; });
+  ImGui::Spacing();
+  ImGui::TextDisabled("%s", "M resets a plain single bond (CH3-ready).");
+
+  if (order >= 0) {
+    st.currentOrder = kOrders[static_cast<size_t>(order)].order;
+    st.tool = Tool::Bond;
+    st.statusMessage = kOrders[static_cast<size_t>(order)].name;
+    ImGui::CloseCurrentPopup();
+  } else if (stereo >= 0) {
+    st.currentStereo = kStereos[static_cast<size_t>(stereo)].stereo;
+    st.tool = Tool::Bond;
+    st.statusMessage = kStereos[static_cast<size_t>(stereo)].name;
+    ImGui::CloseCurrentPopup();
+  }
+}
+
+void drawAtomGallery(AppState& st) {
+  galleryCaption("Common elements");
+  const int hit = drawTileGrid(
+      "##elements", kQuickElements, 4,
+      [](const QuickElement& e) { return TileGlyph{icons::Icon::Atom, chem::symbolFor(e.z)}; },
+      [](const QuickElement& e) { return e.name; },
+      [&](const QuickElement& e) { return st.currentElement == e.z; });
+  ImGui::Spacing();
+  ImGui::TextDisabled("%s", "Every element lives in the Periodic Table panel.");
+  if (hit >= 0) {
+    st.currentElement = kQuickElements[static_cast<size_t>(hit)].z;
+    st.tool = Tool::Atom;
+    st.statusMessage = std::string("Element: ") + kQuickElements[static_cast<size_t>(hit)].name;
+    ImGui::CloseCurrentPopup();
+  }
+}
+
+// ------------------------------------------------------------- grid cells
+TileGlyph bondGlyph(const AppState& st) {
+  if (st.currentStereo != core::BondStereo::None) {
+    for (const StereoEntry& e : kStereos) {
+      if (e.stereo == st.currentStereo) return TileGlyph{e.icon, nullptr};
+    }
+  }
+  for (const OrderEntry& e : kOrders) {
+    if (e.order == st.currentOrder) return TileGlyph{e.icon, nullptr};
+  }
+  return TileGlyph{icons::Icon::Bond, nullptr};
+}
+
+const char* bondStyleName(const AppState& st) {
+  if (st.currentStereo != core::BondStereo::None) {
+    for (const StereoEntry& e : kStereos) {
+      if (e.stereo == st.currentStereo) return e.name;
+    }
+  }
+  for (const OrderEntry& e : kOrders) {
+    if (e.order == st.currentOrder) return e.name;
+  }
+  return "Bond";
+}
+
+void drawRingCell(AppState& st, ImVec2 cell) {
+  char tip[192];
+  std::snprintf(tip, sizeof(tip), "%s (R)\nClick to arm the ring tool", ringEntry(st.currentRing).name);
+  drawSplitCell(
+      cell, TileGlyph{ringEntry(st.currentRing).icon, nullptr}, st.tool == Tool::RingTemplate,
+      tip, "Choose a different ring", "##ring_gallery", [&st] { st.tool = Tool::RingTemplate; },
+      [&st] { drawRingGallery(st); });
+}
+
+void drawBondCell(AppState& st, ImVec2 cell) {
+  char tip[192];
+  std::snprintf(tip, sizeof(tip), "%s (B / M)\nClick to arm the bond tool", bondStyleName(st));
+  drawSplitCell(
+      cell, bondGlyph(st), st.tool == Tool::Bond, tip, "Choose bond type and stereo",
+      "##bond_gallery", [&st] { st.tool = Tool::Bond; }, [&st] { drawBondGallery(st); });
+}
+
+void drawAtomCell(AppState& st, ImVec2 cell) {
+  char tip[192];
+  std::snprintf(tip, sizeof(tip), "%s (A)\nClick to arm the atom tool",
+                chem::symbolFor(st.currentElement));
+  drawSplitCell(
+      cell, TileGlyph{icons::Icon::Atom, chem::symbolFor(st.currentElement)},
+      st.tool == Tool::Atom, tip, "Choose a different element", "##atom_gallery",
+      [&st] { st.tool = Tool::Atom; }, [&st] { drawAtomGallery(st); });
 }
 
 // Two-column tool grid. Cells are square but capped, so an unusually wide
 // dock never yields giant buttons.
 void drawToolGrid(AppState& st, float avail) {
+  const style::Metrics& m = style::metrics();
   const float spacing = ImGui::GetStyle().ItemSpacing.x;
-  const float cap = style::metrics().iconSize * 3.0f;
-  const float cell = std::min((avail - spacing) * 0.5f, cap);
+  const float cell = std::min((avail - spacing) * 0.5f, m.iconSize * 3.0f);
   const float gridWidth = cell * 2.0f + spacing;
   const float indent = std::max(0.0f, (avail - gridWidth) * 0.5f);
+  const float startY = ImGui::GetCursorPosY();
 
   for (size_t i = 0; i < kTools.size(); ++i) {
     const ToolEntry& entry = kTools[i];
@@ -241,9 +394,14 @@ void drawToolGrid(AppState& st, float avail) {
     } else {
       ImGui::SameLine(0.0f, spacing);
     }
+
     ImGui::PushID(static_cast<int>(entry.tool));
     if (entry.tool == Tool::RingTemplate) {
       drawRingCell(st, ImVec2(cell, cell));
+    } else if (entry.tool == Tool::Bond) {
+      drawBondCell(st, ImVec2(cell, cell));
+    } else if (entry.tool == Tool::Atom) {
+      drawAtomCell(st, ImVec2(cell, cell));
     } else {
       char tooltip[192];
       std::snprintf(tooltip, sizeof(tooltip), "%s (%s)\n%s", entry.name, entry.shortcut,
@@ -255,56 +413,15 @@ void drawToolGrid(AppState& st, float avail) {
     }
     ImGui::PopID();
   }
-}
-
-template <typename T, size_t N, typename IsCurrent, typename Apply>
-void drawIconRow(const char* idPrefix, const std::array<T, N>& entries, float avail,
-                 icons::Icon T::*iconMember, const char* T::*nameMember,
-                 IsCurrent&& isCurrent, Apply&& apply, AppState& st,
-                 const char* T::*hintMember = nullptr) {
-  const float spacing = ImGui::GetStyle().ItemSpacing.x;
-  const float width = (avail - spacing * static_cast<float>(N - 1)) / static_cast<float>(N);
-  const float height = style::metrics().iconSize * 1.5f;
-  for (size_t i = 0; i < N; ++i) {
-    const T& entry = entries[i];
-    if (i > 0) ImGui::SameLine(0.0f, spacing);
-    ImGui::PushID(idPrefix);
-    ImGui::PushID(static_cast<int>(i));
-    const char* name = entry.*nameMember;
-    const char* hint = hintMember ? entry.*hintMember : nullptr;
-    char tooltip[192];
-    if (hint)
-      std::snprintf(tooltip, sizeof(tooltip), "%s\n%s", name, hint);
-    else
-      std::snprintf(tooltip, sizeof(tooltip), "%s", name);
-    if (widgets::iconButton("##choice", entry.*iconMember, ImVec2(width, height),
-                            isCurrent(entry, st), tooltip)) {
-      apply(entry, st);
-    }
-    ImGui::PopID();
-    ImGui::PopID();
-  }
+  ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y);
+  (void)startY;
 }
 
 }  // namespace
 
 void drawToolPalette(AppState& st) {
   const float avail = std::max(32.0f, ImGui::GetContentRegionAvail().x);
-
   drawToolGrid(st, avail);
-
-  widgets::sectionHeader("Bond  ·  M = CH3");
-  drawIconRow(
-      "##order", kOrders, avail, &OrderEntry::icon, &OrderEntry::name,
-      [](const OrderEntry& e, const AppState& s) { return s.currentOrder == e.order; },
-      [](const OrderEntry& e, AppState& s) { s.currentOrder = e.order; }, st);
-
-  widgets::sectionHeader("Stereo");
-  drawIconRow(
-      "##stereo", kStereos, avail, &StereoEntry::icon, &StereoEntry::name,
-      [](const StereoEntry& e, const AppState& s) { return s.currentStereo == e.stereo; },
-      [](const StereoEntry& e, AppState& s) { s.currentStereo = e.stereo; }, st,
-      &StereoEntry::hint);
 }
 
 }  // namespace chemcad::ui

@@ -220,6 +220,24 @@ void draw(ImDrawList* dl, Icon icon, ImVec2 centre, float size, ImU32 color,
       dl->AddPolyline(points, segments + 1, color, 0, t);
       return;
     }
+    case Icon::Minus:
+      stroke(dl, at(centre, h, -0.30f, 0.0f), at(centre, h, 0.30f, 0.0f), color, t);
+      return;
+    case Icon::ZoomFit: {
+      // Four corner brackets: fit-to-window.
+      const float c = 0.36f;
+      const float a = 0.16f;
+      for (int sx = -1; sx <= 1; sx += 2) {
+        for (int sy = -1; sy <= 1; sy += 2) {
+          const float fx = static_cast<float>(sx), fy = static_cast<float>(sy);
+          stroke(dl, at(centre, h, fx * c, fy * (c - a)), at(centre, h, fx * c, fy * c), color,
+                 t);
+          stroke(dl, at(centre, h, fx * (c - a), fy * c), at(centre, h, fx * c, fy * c), color,
+                 t);
+        }
+      }
+      return;
+    }
     case Icon::Plus:
       stroke(dl, at(centre, h, -0.30f, 0.0f), at(centre, h, 0.30f, 0.0f), color, t);
       stroke(dl, at(centre, h, 0.0f, -0.30f), at(centre, h, 0.0f, 0.30f), color, t);

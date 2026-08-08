@@ -395,15 +395,51 @@ TEST_CASE("tool palette icon grid switches the active tool") {
   CHECK(st.tool == ui::Tool::Bond);
 }
 
-TEST_CASE("bond order icon row switches the bond order") {
+TEST_CASE("bond gallery switches the bond order") {
   HeadlessImGui gui;
   ui::AppState st;
   panelFrame(st, &ui::drawToolPalette, "Tools");
   REQUIRE(st.currentOrder == core::BondOrder::Single);
 
-  // Four cells share the row after the Bond section header; double is cell 1.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 263.0f, 329.0f);
+  // The Bond cell is row 1, column 0; its caret (bottom-right corner) opens
+  // the gallery popup.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 330.0f, 135.0f);
+
+  // "Double bond" is tile 1 of the four-column order grid that opens below
+  // the cell: caption line, then the tile row.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 435.0f, 203.0f);
   CHECK(st.currentOrder == core::BondOrder::Double);
+  CHECK(st.tool == ui::Tool::Bond);
+}
+
+TEST_CASE("bond gallery switches stereochemistry") {
+  HeadlessImGui gui;
+  ui::AppState st;
+  panelFrame(st, &ui::drawToolPalette, "Tools");
+  REQUIRE(st.currentStereo == core::BondStereo::None);
+
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 330.0f, 135.0f);
+
+  // The stereo grid starts one gallery section below the order grid: order
+  // tiles (~60px), a caption, then the stereo row. "Wavy" is tile 3.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 616.0f, 300.0f);
+  CHECK(st.currentStereo == core::BondStereo::Wavy);
+  CHECK(st.tool == ui::Tool::Bond);
+}
+
+TEST_CASE("atom gallery quick-picks a common element") {
+  HeadlessImGui gui;
+  ui::AppState st;
+  panelFrame(st, &ui::drawToolPalette, "Tools");
+  REQUIRE(st.currentElement == 6);
+
+  // The Atom cell is row 2, column 1; its caret opens the element gallery.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 400.0f, 205.0f);
+
+  // "Oxygen" is tile 3 of the first row.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 642.0f, 273.0f);
+  CHECK(st.currentElement == 8);
+  CHECK(st.tool == ui::Tool::Atom);
 }
 
 TEST_CASE("clicking a periodic table tile arms the atom tool with that element") {
