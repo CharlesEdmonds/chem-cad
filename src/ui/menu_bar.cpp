@@ -261,7 +261,7 @@ void drawMenuBar(AppState& st) {
     }
 
     if (ImGui::BeginMenu("View")) {
-      if (ImGui::MenuItem("Fit to window", "F")) st.cam.fit(st.doc, st.canvasSize);
+      if (ImGui::MenuItem("Fit to window", "Ctrl+F")) st.cam.fit(st.doc, st.canvasSize);
       if (ImGui::MenuItem("Reset zoom", "Ctrl+0")) st.cam.zoom = 1.0f;
       ImGui::MenuItem("Show terminal CH3 labels", nullptr,
                       &st.showTerminalMethylLabels);
@@ -318,6 +318,8 @@ void drawMenuBar(AppState& st) {
       }
     } else if (ImGui::IsKeyPressed(ImGuiKey_0, false)) {
       st.cam.zoom = 1.0f;
+    } else if (ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+      st.cam.fit(st.doc, st.canvasSize);
     }
   }
 }

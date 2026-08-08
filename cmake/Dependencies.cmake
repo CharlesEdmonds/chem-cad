@@ -14,6 +14,19 @@ find_package(Threads REQUIRED)
 set(CHEMCAD_DEPS_PREFIX "$ENV{HOME}/.local/share/chemcad-deps" CACHE PATH
     "Prefix where scripts/setup_deps.sh installed RDKit and OPSIN")
 
+# Debian/Ubuntu ship librdkit-dev, whose rdkit-targets.cmake names Cairo::Cairo
+# in MolDraw2D's link interface without exporting a find_package for it. Define
+# the target from pkg-config first so the config file resolves.
+if(NOT TARGET Cairo::Cairo)
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(CHEMCAD_CAIRO QUIET IMPORTED_TARGET cairo)
+    if(CHEMCAD_CAIRO_FOUND)
+      add_library(Cairo::Cairo ALIAS PkgConfig::CHEMCAD_CAIRO)
+    endif()
+  endif()
+endif()
+
 find_package(RDKit CONFIG QUIET
   HINTS "${CHEMCAD_DEPS_PREFIX}/rdkit"
   PATH_SUFFIXES lib64/cmake/rdkit lib/cmake/rdkit share/RDKit/cmake)

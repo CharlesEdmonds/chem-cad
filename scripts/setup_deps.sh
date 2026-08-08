@@ -3,6 +3,9 @@
 #   1. RDKit (C++ toolkit)  -> $PREFIX
 #   2. OPSIN cli jar        -> $PREFIX/share/opsin/opsin.jar
 #
+# Distributions that package RDKit (Debian/Ubuntu: librdkit-dev) only need the
+# OPSIN jar -- set CHEMCAD_SKIP_RDKIT=1 to skip the 20-minute source build.
+#
 # Idempotent: re-running with everything present is a no-op.
 set -euo pipefail
 
@@ -15,8 +18,10 @@ JOBS="${JOBS:-$(nproc)}"
 mkdir -p "$PREFIX" "$SRC"
 
 # ---------------------------------------------------------------- RDKit
-if [ -f "$PREFIX/rdkit/lib64/cmake/rdkit/rdkit-config.cmake" ] || \
-   [ -f "$PREFIX/rdkit/lib/cmake/rdkit/rdkit-config.cmake" ]; then
+if [ -n "${CHEMCAD_SKIP_RDKIT:-}" ]; then
+  echo "[deps] CHEMCAD_SKIP_RDKIT set -- using the system RDKit"
+elif [ -f "$PREFIX/rdkit/lib64/cmake/rdkit/rdkit-config.cmake" ] || \
+     [ -f "$PREFIX/rdkit/lib/cmake/rdkit/rdkit-config.cmake" ]; then
   echo "[deps] RDKit already installed at $PREFIX/rdkit"
 else
   echo "[deps] building RDKit $RDKIT_TAG (this takes 15-30 min)"
