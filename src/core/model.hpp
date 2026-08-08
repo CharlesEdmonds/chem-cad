@@ -20,7 +20,7 @@ inline constexpr AtomId kInvalidAtom = 0;  // 0 is never a valid id
 inline constexpr BondId kInvalidBond = 0;
 
 enum class BondOrder : uint8_t { Single = 1, Double = 2, Triple = 3, Aromatic = 4 };
-enum class BondStereo : uint8_t { None = 0, Wedge = 1, Hash = 2 };
+enum class BondStereo : uint8_t { None = 0, Wedge = 1, Hash = 2, Wavy = 3 };
 
 struct Atom {
   AtomId id{};

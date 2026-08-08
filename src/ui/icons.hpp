@@ -31,6 +31,7 @@ enum class Icon {
   StereoNone,
   StereoWedge,
   StereoHash,
+  StereoWavy,
   Plus,
   Close,
   Search,

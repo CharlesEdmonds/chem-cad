@@ -32,6 +32,7 @@ constexpr const char* kWinSketch = "Sketch";
 constexpr const char* kWinPlanner = "Reaction Planner";
 constexpr const char* kWinSolubility = "Solubility Suite";
 constexpr const char* kWinExtraction = "Extraction Lab";
+constexpr const char* kWinViewer3D = "3D View";
 constexpr const char* kWinTools = "Tools";
 constexpr const char* kWinPTable = "Periodic Table";
 constexpr const char* kWinProps = "Properties";
@@ -156,6 +157,7 @@ void buildDefaultLayout(ImGuiID dockspaceId) {
   ImGui::DockBuilderDockWindow(kWinPlanner, center);
   ImGui::DockBuilderDockWindow(kWinSolubility, center);
   ImGui::DockBuilderDockWindow(kWinExtraction, center);
+  ImGui::DockBuilderDockWindow(kWinViewer3D, center);
   ImGui::DockBuilderDockWindow(kWinPTable, rightTop);
   ImGui::DockBuilderDockWindow(kWinProps, rightBottom);
   ImGui::DockBuilderFinish(dockspaceId);
@@ -295,6 +297,14 @@ int main(int, char**) {
       if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
         state.tab = chemcad::ui::MainTab::Extraction;
       chemcad::ui::drawExtractionLab(state);
+    }
+    ImGui::End();
+
+    focusTabIfRequested(chemcad::ui::MainTab::Viewer3D);
+    if (ImGui::Begin(kWinViewer3D)) {
+      if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+        state.tab = chemcad::ui::MainTab::Viewer3D;
+      chemcad::ui::drawViewer3D(state);
     }
     ImGui::End();
 

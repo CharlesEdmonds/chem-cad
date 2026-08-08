@@ -14,6 +14,7 @@
 #include "rxn/engine.hpp"
 #include "ui/camera.hpp"
 #include "ui/solubility_state.hpp"
+#include "ui/viewer3d_state.hpp"
 
 namespace chemcad::ui {
 
@@ -113,7 +114,7 @@ struct PlannerState {
   int maxRoutes = 5;
 };
 
-enum class MainTab { Sketch, Planner, Solubility, Extraction };
+enum class MainTab { Sketch, Planner, Solubility, Extraction, Viewer3D };
 
 // ---------------------------------------------------------------- app state
 struct AppState {
@@ -164,6 +165,9 @@ struct AppState {
   // Solubility Suite: solvent selection, prediction cache and the separatory
   // funnel simulation. Owned here so the panel survives a tab switch.
   SolubilityState solubility;
+
+  // 3D molecule viewer: turntable angles and the cached conformer.
+  Viewer3DState viewer3d;
 
   void touch() {
     ++docRevision;

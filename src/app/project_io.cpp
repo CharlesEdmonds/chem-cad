@@ -188,7 +188,7 @@ Project deserializeProject(const std::string& text) {
             orderValue > static_cast<std::uint8_t>(core::BondOrder::Aromatic)) {
           throw std::runtime_error("malformed project: bond order is out of range");
         }
-        if (stereoValue > static_cast<std::uint8_t>(core::BondStereo::Hash)) {
+        if (stereoValue > static_cast<std::uint8_t>(core::BondStereo::Wavy)) {
           throw std::runtime_error("malformed project: bond stereo is out of range");
         }
 

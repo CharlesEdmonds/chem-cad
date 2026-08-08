@@ -268,6 +268,18 @@ void drawBond(ImDrawList* draw, const AppState& st, const CanvasRect& rect, int 
                     {center.x + perpendicular.x * halfWidth,
                      center.y + perpendicular.y * halfWidth}, color, thickness);
     }
+  } else if (bond.stereo == core::BondStereo::Wavy) {
+    // Squiggly bond: stereochemistry unknown or a mixture (MDL "either").
+    const float amplitude = 0.05f * st.cam.scale();
+    constexpr int segments = 18;
+    ImVec2 points[segments + 1];
+    for (int i = 0; i <= segments; ++i) {
+      const float t = static_cast<float>(i) / segments;
+      const float wave = std::sin(t * 3.0f * 6.2831853f) * amplitude;
+      points[i] = ImVec2{a.x + dx * t + perpendicular.x * wave,
+                         a.y + dy * t + perpendicular.y * wave};
+    }
+    draw->AddPolyline(points, segments + 1, color, 0, thickness);
   } else {
     switch (bond.order) {
       case core::BondOrder::Single:

@@ -188,6 +188,15 @@ void recomputeSoluteFromSmiles(AppState& st) {
 
 // -------------------------------------------------------------- sweep cache
 
+const sol::Electrolyte* activeBackground(const SolubilityState& sb) {
+  if (!sb.backgroundEnabled) return nullptr;
+  const std::vector<sol::Electrolyte>& all = sol::electrolytes();
+  if (all.empty()) return nullptr;
+  const size_t index = static_cast<size_t>(std::clamp(sb.backgroundElectrolyte, 0,
+                                                      static_cast<int>(all.size()) - 1));
+  return &all[index];
+}
+
 void recomputeSweepIfNeeded(SolubilityState& sb,
                             const std::vector<const sol::Solvent*>& chosen) {
   std::string signature;
@@ -201,11 +210,18 @@ void recomputeSweepIfNeeded(SolubilityState& sb,
   signature += std::to_string(static_cast<int>(sb.temperatureC * 100.0f));
   signature += '|';
   signature += std::to_string(sb.soluteVersion);
+  if (const sol::Electrolyte* bg = activeBackground(sb)) {
+    signature += '|';
+    signature += bg->id;
+    signature += std::to_string(static_cast<int>(sb.backgroundMolarity * 1000.0f));
+  }
   if (signature == sb.sweepSignature) return;
   sb.sweepSignature = signature;
   sb.sweepPeakIndex = -1;
   try {
-    sb.sweep = sol::sweep(sb.solute, chosen, sb.sweepSteps, static_cast<double>(sb.temperatureC));
+    sb.sweep = sol::sweep(sb.solute, chosen, sb.sweepSteps, static_cast<double>(sb.temperatureC),
+                          activeBackground(sb),
+                          static_cast<double>(sb.backgroundMolarity));
     // Cache the maximum-solubility sample once per sweep -- this is the
     // co-solvency peak the ratio plot marks, and finding it is work we do
     // not want to redo on every draw call of an unchanged frame.
@@ -234,10 +250,17 @@ void recomputeScreeningIfNeeded(SolubilityState& sb) {
   std::string signature = std::to_string(sb.soluteVersion);
   signature += '|';
   signature += std::to_string(static_cast<int>(sb.temperatureC * 100.0f));
+  if (const sol::Electrolyte* bg = activeBackground(sb)) {
+    signature += '|';
+    signature += bg->id;
+    signature += std::to_string(static_cast<int>(sb.backgroundMolarity * 1000.0f));
+  }
   if (signature == sb.screeningSignature) return;
   sb.screeningSignature = signature;
   try {
-    sb.screening = sol::screen(sb.solute, static_cast<double>(sb.temperatureC));
+    sb.screening = sol::screen(sb.solute, static_cast<double>(sb.temperatureC),
+                               activeBackground(sb),
+                               static_cast<double>(sb.backgroundMolarity));
   } catch (const std::exception& err) {
     sb.screening.clear();
     sb.statusMessage = std::string("Solvent screen failed: ") + err.what();
@@ -612,6 +635,11 @@ void drawResultHero(SolubilityState& sb) {
                        "Saturation composition did not converge -- treat this result as "
                        "unreliable.");
   }
+  if (p.anchored) {
+    widgets::badge("MEASURED", style::col::Success);
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", p.anchorNote.c_str());
+  }
 }
 
 // ------------------------------------------------------- binary ratio plot
@@ -663,8 +691,10 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
   ImGui::InvisibleButton("##binary_plot", canvasSize);
   const bool hovered = ImGui::IsItemHovered();
 
-  // Click sets the working ratio directly from the x position.
-  if (ImGui::IsItemClicked()) {
+  // Click or drag sets the working ratio directly from the x position: the
+  // graph is the ratio control, the parts sliders just display it.
+  if (ImGui::IsItemClicked() ||
+      (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left))) {
     const float padLClick = 62.0f * uiScale();
     const float padRClick = 20.0f * uiScale();
     float t = (ImGui::GetMousePos().x - (origin.x + padLClick)) /
@@ -823,7 +853,7 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
       sb.ratios[1] = static_cast<float>(peak->fractions[1]);
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("Click the plot to set the working ratio.");
+    ImGui::TextDisabled("Click or drag the plot to set the working ratio.");
   }
 }
 
@@ -908,8 +938,10 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol:
     return wa >= -0.02f && wb >= -0.02f && wc >= -0.02f;
   };
 
-  // Click sets all three working ratios from the barycentric position.
-  if (ImGui::IsItemClicked()) {
+  // Click or drag sets all three working ratios from the barycentric
+  // position.
+  if (ImGui::IsItemClicked() ||
+      (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left))) {
     float wa = 0.0f, wb = 0.0f, wc = 0.0f;
     if (barycentric(ImGui::GetMousePos(), wa, wb, wc)) {
       wa = std::clamp(wa, 0.0f, 1.0f);
@@ -1049,6 +1081,40 @@ void drawSolubilitySuite(AppState& st) {
   ImGui::Spacing();
   ImGui::SetNextItemWidth(-1.0f);
   ImGui::SliderFloat("Temperature (C)", &sb.temperatureC, -20.0f, 150.0f, "%.1f");
+
+  // Common-ion effect: only meaningful for the salts in the database, so
+  // only shown then.
+  if (sb.soluteValid && !sb.solute.canonicalSmiles.empty() &&
+      sol::findSalt(sb.solute.canonicalSmiles) != nullptr) {
+    ImGui::Spacing();
+    widgets::sectionHeader("Common ion effect");
+    const sol::Salt* salt = sol::findSalt(sb.solute.canonicalSmiles);
+    ImGui::TextDisabled("%s  ·  Ksp %.3g  ·  %s / %s", salt->name.c_str(), salt->ksp25,
+                        salt->cation.c_str(), salt->anion.c_str());
+    ImGui::Checkbox("Background electrolyte", &sb.backgroundEnabled);
+    if (sb.backgroundEnabled) {
+      const std::vector<sol::Electrolyte>& all = sol::electrolytes();
+      const sol::Electrolyte* current = activeBackground(sb);
+      ImGui::SetNextItemWidth(-1.0f);
+      if (ImGui::BeginCombo("##bg_salt", current ? current->name.c_str() : "Select...")) {
+        for (size_t i = 0; i < all.size(); ++i) {
+          const bool selected = static_cast<int>(i) == sb.backgroundElectrolyte;
+          if (ImGui::Selectable(all[i].name.c_str(), selected))
+            sb.backgroundElectrolyte = static_cast<int>(i);
+          if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+      }
+      ImGui::SetNextItemWidth(-1.0f);
+      ImGui::SliderFloat("Concentration", &sb.backgroundMolarity, 0.0f, 3.0f, "%.2f mol/L");
+      if (current && (current->cation == salt->cation || current->anion == salt->anion)) {
+        ImGui::TextColored(style::col::Accent, "Common ion with the solute -- solubility is "
+                                               "depressed.");
+      } else if (current) {
+        ImGui::TextDisabled("No common ion -- ionic strength only (slight salting-in).");
+      }
+    }
+  }
   ImGui::Spacing();
 
   // Hand the binary blend to the funnel simulation. Volumes are a fixed
@@ -1086,7 +1152,9 @@ void drawSolubilitySuite(AppState& st) {
   ImGui::BeginChild("##suite_results", ImVec2(0.0f, 0.0f));
   const bool canPredict = sb.soluteValid && solventsOk && !components.empty();
   if (canPredict) {
-    sb.prediction = sol::predict(sb.solute, components, static_cast<double>(sb.temperatureC));
+    sb.prediction = sol::predict(sb.solute, components, static_cast<double>(sb.temperatureC),
+                                 activeBackground(sb),
+                                 static_cast<double>(sb.backgroundMolarity));
     drawResultHero(sb);
     sb.statusMessage = "Predicted " + formatUnits(sb.prediction.gramsPerMillilitre,
                                                   sb.solute.molarMass, sb.units) +

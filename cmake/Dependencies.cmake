@@ -102,6 +102,9 @@ target_link_libraries(chemcad_rdkit INTERFACE
   RDKit::Descriptors
   RDKit::MolDraw2D
   RDKit::SubstructMatch
+  RDKit::DistGeomHelpers
+  RDKit::ForceFieldHelpers
+  RDKit::ForceField
   RDKit::RDGeneral
   RDKit::DataStructs)
 if(WIN32)

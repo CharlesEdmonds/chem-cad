@@ -1,0 +1,210 @@
+{
+  "anchors": [
+    {
+      "solute": "Cn1cnc2c1c(=O)n(C)c(=O)n2C",
+      "solvent": "water",
+      "temperature_c": 25.0,
+      "g_per_ml": 0.0216,
+      "note": "caffeine, CRC Handbook",
+      "solute_tm_c": 235.0
+    },
+    {
+      "solute": "Cn1cnc2c1c(=O)n(C)c(=O)n2C",
+      "solvent": "ethanol",
+      "temperature_c": 25.0,
+      "g_per_ml": 0.0075,
+      "note": "caffeine",
+      "solute_tm_c": 235.0
+    },
+    {
+      "solute": "Cn1cnc2c1c(=O)n(C)c(=O)n2C",
+      "solvent": "chloroform",
+      "temperature_c": 25.0,
+      "g_per_ml": 0.18,
+      "note": "caffeine, classic extraction solvent",
+      "solute_tm_c": 235.0
+    },
+    {
+      "solute": "OC(=O)c1ccccc1",
+      "solvent": "water",
+      "temperature_c": 25.0,
+      "g_per_ml": 0.0034,
+      "note": "benzoic acid, Wikipedia/CRC",
+      "solute_tm_c": 122.0
+    },
+    {
+      "solute": "OC(=O)c1ccccc1",
+      "solvent": "ethanol",
+      "temperature_c": 25.0,
+      "g_per_ml": 0.43,
+      "note": "benzoic acid, J. Chem. Eng. Data",
+      "solute_tm_c": 122.0
+    },
+    {
+      "solute": "OC(=O)c1ccccc1",
+      "solvent": "toluene",
+      "temperature_c": 25.0,
+      "g_per_ml": 0.1,
+      "note": "benzoic acid, J. Chem. Eng. Data",
+      "solute_tm_c": 122.0
+    },
+    {
+      "solute": "c1ccc2ccccc2c1",
+      "solvent": "water",
+      "temperature_c": 25.0,
+      "g_per_ml": 3.16e-05,
+      "note": "naphthalene, 31.6 mg/L",
+      "solute_tm_c": 80.0
+    },
+    {
+      "solute": "c1ccc2ccccc2c1",
+      "solvent": "ethanol",
+      "temperature_c": 25.0,
+      "g_per_ml": 0.1,
+      "note": "naphthalene",
+      "solute_tm_c": 80.0
+    },
+    {
+      "solute": "c1ccc2ccccc2c1",
+      "solvent": "toluene",
+      "temperature_c": 25.0,
+      "g_per_ml": 0.32,
+      "note": "naphthalene",
+      "solute_tm_c": 80.0
+    },
+    {
+      "solute": "CC(=O)Nc1ccc(O)cc1",
+      "solvent": "water",
+      "temperature_c": 25.0,
+      "g_per_ml": 0.014,
+      "note": "paracetamol",
+      "solute_tm_c": 170.0
+    },
+    {
+      "solute": "CC(=O)Nc1ccc(O)cc1",
+      "solvent": "ethanol",
+      "temperature_c": 25.0,
+      "g_per_ml": 0.17,
+      "note": "paracetamol",
+      "solute_tm_c": 170.0
+    },
+    {
+      "solute": "NCC(=O)O",
+      "solvent": "water",
+      "temperature_c": 25.0,
+      "g_per_ml": 0.25,
+      "note": "glycine (zwitterion)",
+      "solute_tm_c": 233.0
+    },
+    {
+      "solute": "NC(=O)N",
+      "solvent": "water",
+      "temperature_c": 25.0,
+      "g_per_ml": 1.08,
+      "note": "urea",
+      "solute_tm_c": 133.0
+    },
+    {
+      "solute": "CC(=O)Oc1ccccc1C(=O)O",
+      "solvent": "water",
+      "temperature_c": 25.0,
+      "g_per_ml": 0.0033,
+      "note": "aspirin",
+      "solute_tm_c": 135.0
+    }
+  ],
+  "salts": [
+    {
+      "solute": "[Na+].[Cl-]",
+      "name": "Sodium chloride",
+      "cation": "Na+",
+      "anion": "Cl-",
+      "molar_mass": 58.44,
+      "ksp25": 37.7,
+      "dh_solution_kj": 3.87,
+      "note": "359 g/L at 25 C",
+      "g_per_ml_water25": 0.359
+    },
+    {
+      "solute": "[K+].[Cl-]",
+      "name": "Potassium chloride",
+      "cation": "K+",
+      "anion": "Cl-",
+      "molar_mass": 74.55,
+      "ksp25": 22.7,
+      "dh_solution_kj": 17.2,
+      "note": "355 g/L at 25 C",
+      "g_per_ml_water25": 0.355
+    },
+    {
+      "solute": "[K+].[O-][N+](=O)[O-]",
+      "name": "Potassium nitrate",
+      "cation": "K+",
+      "anion": "NO3-",
+      "molar_mass": 101.1,
+      "ksp25": 14.4,
+      "dh_solution_kj": 34.9,
+      "note": "383 g/L at 25 C",
+      "g_per_ml_water25": 0.383
+    },
+    {
+      "solute": "[Na+].[O-][N+](=O)[O-]",
+      "name": "Sodium nitrate",
+      "cation": "Na+",
+      "anion": "NO3-",
+      "molar_mass": 85.0,
+      "ksp25": 115.0,
+      "dh_solution_kj": 20.5,
+      "note": "912 g/L at 25 C",
+      "g_per_ml_water25": 0.912
+    },
+    {
+      "solute": "[K+].[Br-]",
+      "name": "Potassium bromide",
+      "cation": "K+",
+      "anion": "Br-",
+      "molar_mass": 119.0,
+      "ksp25": 31.7,
+      "dh_solution_kj": 19.9,
+      "note": "670 g/L at 25 C",
+      "g_per_ml_water25": 0.67
+    }
+  ],
+  "electrolytes": [
+    {
+      "id": "nacl",
+      "name": "Sodium chloride",
+      "cation": "Na+",
+      "anion": "Cl-",
+      "molar_mass": 58.44
+    },
+    {
+      "id": "kcl",
+      "name": "Potassium chloride",
+      "cation": "K+",
+      "anion": "Cl-",
+      "molar_mass": 74.55
+    },
+    {
+      "id": "kno3",
+      "name": "Potassium nitrate",
+      "cation": "K+",
+      "anion": "NO3-",
+      "molar_mass": 101.1
+    },
+    {
+      "id": "nano3",
+      "name": "Sodium nitrate",
+      "cation": "Na+",
+      "anion": "NO3-",
+      "molar_mass": 85.0
+    },
+    {
+      "id": "kbr",
+      "name": "Potassium bromide",
+      "cation": "K+",
+      "anion": "Br-",
+      "molar_mass": 119.0
+    }
+  ]
+}

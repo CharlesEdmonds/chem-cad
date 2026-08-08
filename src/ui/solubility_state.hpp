@@ -66,6 +66,12 @@ struct SolubilityState {
   std::vector<sol::ScreenRow> screening;  // pure-solvent table, best first
   std::string screeningSignature;         // cache key: soluteVersion + temperature
 
+  // ------------------------------------------------- common-ion effect
+  // Only surfaced when the solute is a 1:1 salt (sol::findSalt match).
+  bool backgroundEnabled = false;
+  int backgroundElectrolyte = 0;    // index into sol::electrolytes()
+  float backgroundMolarity = 0.5f;  // mol/L
+
   // ---------------------------------------------------------- funnel sim
   sol::Simulation funnel;
   bool funnelRunning = false;

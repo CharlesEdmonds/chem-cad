@@ -107,6 +107,8 @@ RDKit::RWMol toRDKit(const core::Molecule& source, AtomIndexMap* indexMap = null
       bond->setBondDir(RDKit::Bond::BEGINWEDGE);
     } else if (sourceBond.stereo == core::BondStereo::Hash) {
       bond->setBondDir(RDKit::Bond::BEGINDASH);
+    } else if (sourceBond.stereo == core::BondStereo::Wavy) {
+      bond->setBondDir(RDKit::Bond::UNKNOWN);  // MDL "either": renders wavy
     }
   }
 
@@ -156,6 +158,8 @@ core::Molecule fromRDKit(const RDKit::ROMol& source) {
       bond->stereo = core::BondStereo::Wedge;
     } else if (sourceBond->getBondDir() == RDKit::Bond::BEGINDASH) {
       bond->stereo = core::BondStereo::Hash;
+    } else if (sourceBond->getBondDir() == RDKit::Bond::UNKNOWN) {
+      bond->stereo = core::BondStereo::Wavy;
     }
   }
   return result;

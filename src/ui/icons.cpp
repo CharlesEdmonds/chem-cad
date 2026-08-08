@@ -208,6 +208,18 @@ void draw(ImDrawList* dl, Icon icon, ImVec2 centre, float size, ImU32 color,
       }
       return;
     }
+    case Icon::StereoWavy: {
+      // Squiggly bond for unknown or mixed stereochemistry.
+      constexpr int segments = 16;
+      ImVec2 points[segments + 1];
+      for (int i = 0; i <= segments; ++i) {
+        const float u = static_cast<float>(i) / segments;
+        points[i] = ImVec2(centre.x - 0.32f * h + u * 0.64f * h,
+                           centre.y + std::sin(u * 3.0f * 6.2831853f) * 0.10f * h);
+      }
+      dl->AddPolyline(points, segments + 1, color, 0, t);
+      return;
+    }
     case Icon::Plus:
       stroke(dl, at(centre, h, -0.30f, 0.0f), at(centre, h, 0.30f, 0.0f), color, t);
       stroke(dl, at(centre, h, 0.0f, -0.30f), at(centre, h, 0.0f, 0.30f), color, t);

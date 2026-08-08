@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "core/model.hpp"
+#include "sol/anchors.hpp"
 #include "sol/solvent.hpp"
 
 namespace chemcad::sol {
@@ -21,6 +22,7 @@ struct Solute {
   double logP = 0.0;
   double interactionRadius = 8.0;  // Hansen sphere radius R0, MPa^0.5
   bool meltingPointEstimated = false;  // true when Joback supplied it
+  std::string canonicalSmiles;         // identity key for literature anchors
 };
 
 // Group-contribution estimate of the solute from a sketched structure.
@@ -54,9 +56,19 @@ struct Prediction {
   double chi = 0.0;                       // Flory-Huggins interaction parameter
   bool outsideSphere = false;             // RED > 1
   bool converged = true;
+  bool anchored = false;    // a measured literature value contributed
+  bool saltPath = false;    // Ksp equilibrium, not the organic FH model
+  std::string anchorNote;   // e.g. "measured value (caffeine, CRC Handbook)"
 };
 
-Prediction predict(const Solute&, const std::vector<Component>&, double temperatureC = 25.0);
+// Neutral organic solutes use the Flory-Huggins + extended-Hansen model,
+// corrected toward any literature anchors for the involved pure solvents
+// (log-linear in the blend fraction, so an anchored pure endpoint returns
+// its measured value exactly). 1:1 salts in a water-containing blend use
+// the Ksp equilibrium instead, honouring `background` for the common-ion
+// effect and ionic strength.
+Prediction predict(const Solute&, const std::vector<Component>&, double temperatureC = 25.0,
+                   const Electrolyte* background = nullptr, double backgroundM = 0.0);
 
 struct SweepPoint {
   std::array<double, 3> fractions{};  // volume fractions, sums to 1
@@ -67,7 +79,8 @@ struct SweepPoint {
 // subdivisions per axis and is clamped to [2, 64]. More than 3 solvents throws
 // SolError.
 std::vector<SweepPoint> sweep(const Solute&, const std::vector<const Solvent*>&, int steps,
-                              double temperatureC = 25.0);
+                              double temperatureC = 25.0,
+                              const Electrolyte* background = nullptr, double backgroundM = 0.0);
 
 // One row of the solvent screen: predicted solubility in a pure solvent.
 struct ScreenRow {
@@ -79,7 +92,8 @@ struct ScreenRow {
 // (highest g/mL) first. This backs the solvent-selection table: tens of
 // predictions, cheap enough to recompute whenever the solute or temperature
 // changes. Throws SolError only when the database itself fails to load.
-std::vector<ScreenRow> screen(const Solute&, double temperatureC = 25.0);
+std::vector<ScreenRow> screen(const Solute&, double temperatureC = 25.0,
+                              const Electrolyte* background = nullptr, double backgroundM = 0.0);
 
 // Distribution of a neutral solute between water and a water-immiscible
 // organic phase, using logP as the octanol/water partition proxy.

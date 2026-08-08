@@ -112,6 +112,13 @@ Project exampleProject() {
   const AtomId oxygenId = labelledFragment.addAtom(oxygen);
   const auto wedgeId = labelledFragment.addBond(labelledId, oxygenId, BondOrder::Single);
   labelledFragment.bond(wedgeId)->stereo = BondStereo::Wedge;
+  // A wavy bond (unknown stereochemistry) must survive the round-trip too.
+  Atom nitrogen;
+  nitrogen.atomicNumber = 7;
+  nitrogen.pos = {1.5F, -2.75F};
+  const AtomId nitrogenId = labelledFragment.addAtom(nitrogen);
+  const auto wavyId = labelledFragment.addBond(oxygenId, nitrogenId, BondOrder::Single);
+  labelledFragment.bond(wavyId)->stereo = BondStereo::Wavy;
   REQUIRE(labelledFragment.atoms()[1].id > labelledFragment.atoms()[0].id + 1);
   project.doc.molecules.push_back(std::move(labelledFragment));
 

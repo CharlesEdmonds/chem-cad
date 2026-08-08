@@ -796,6 +796,13 @@ Solute describeSolute(const core::Molecule& molecule) {
   // Empirical R0 fallback that grows gently with molecular size; callers with
   // a measured Hansen sphere radius should override this.
   solute.interactionRadius = std::clamp(3.0 + 0.05 * solute.molarVolume, 5.0, 14.0);
+
+  // Identity key for the literature anchor/salt tables; stays empty for
+  // structures RDKit cannot canonicalise, which simply skips anchoring.
+  try {
+    solute.canonicalSmiles = chem::canonicalize(chem::toSmiles(molecule));
+  } catch (const std::exception&) {
+  }
   return solute;
 }
 
@@ -828,16 +835,21 @@ Mixture blend(const std::vector<Component>& components) {
   return mixture;
 }
 
-Prediction predict(const Solute& solute, const std::vector<Component>& components,
-                    double temperatureC) {
+namespace {
+
+constexpr double kGasConstant = 8.314;  // J/(mol K)
+
+// The organic model, uncorrected: Flory-Huggins + extended-Hansen chi with
+// the ideal-solubility ceiling. The public predict() below layers the
+// salt path and the literature-anchor correction on top of this.
+Prediction computeFhPrediction(const Solute& solute, const std::vector<Component>& components,
+                               double temperatureC) {
   Prediction prediction;
   Mixture mixture = blend(components);
   if (mixture.molarVolume <= 0.0) return prediction;  // nothing to dissolve into
 
   double temperature = temperatureC + 273.15;
   if (!(temperature > 1.0)) return prediction;
-
-  constexpr double kGasConstant = 8.314;  // J/(mol K)
 
   // Hansen distance and RED (contract item 1). This stays on the textbook
   // 4:1:1 Hansen weighting -- it is now purely a reporting/diagnostic
@@ -954,8 +966,148 @@ Prediction predict(const Solute& solute, const std::vector<Component>& component
   return prediction;
 }
 
+// The ideal-solubility factor, exactly as the raw solve computes it, factored
+// out so the anchor correction can scale measured values with it.
+double idealSolubility(double meltingPointC, double entropyOfFusion, double temperatureC) {
+  const double t = temperatureC + 273.15;
+  const double meltingK = meltingPointC + 273.15;
+  if (meltingK <= t) return 1.0;  // liquid: no crystalline penalty
+  double logX = -(entropyOfFusion / kGasConstant) * (meltingK - t) / t;
+  if (!std::isfinite(logX)) logX = std::log(1e-300);
+  return std::clamp(std::exp(std::min(logX, 0.0)), 1e-300, 1.0);
+}
+
+// Aqueous 1:1-salt path. Ksp machinery supplies RATIOS (common-ion effect,
+// ionic strength, van't Hoff temperature); the measured 25 C pure-water
+// value pins the endpoint exactly, so a pure-water query returns the
+// literature number, not the Davies-clamped estimate.
+Prediction saltPrediction(const Salt& salt, double waterFraction, const Electrolyte* background,
+                          double backgroundM, double temperatureC) {
+  Prediction prediction;
+  prediction.saltPath = true;
+  prediction.converged = true;
+
+  const double modelNow = saltSolubilityMolar(salt, background, backgroundM, temperatureC);
+  const double modelBase = saltSolubilityMolar(salt, nullptr, 0.0, 25.0);
+  const double measuredMolar = salt.solubilityGPerMl25 / salt.molarMass * 1000.0;
+  const double molar = modelBase > 0.0 ? measuredMolar * modelNow / modelBase : modelNow;
+  const double gPerMl = molar * salt.molarMass / 1000.0 * waterFraction;
+
+  prediction.gramsPerMillilitre = gPerMl;
+  prediction.molesPerLitre = gPerMl / salt.molarMass * 1000.0;
+  // Molality-style fraction over the water; a dilute-solution approximation
+  // shown for scale, not a rigorous phase composition.
+  prediction.moleFraction = molar * waterFraction / 55.5;
+  prediction.idealMoleFraction = prediction.moleFraction;
+  const double ionicI = (background ? backgroundM : 0.0) + modelNow;
+  prediction.activityCoefficient = daviesGamma(ionicI);
+  prediction.anchored = true;
+  prediction.anchorNote = salt.name + ": measured value" +
+                          (background && backgroundM > 0.0 ? " with " + background->name
+                                                           : "") +
+                          (temperatureC != 25.0 ? ", van't Hoff scaled" : "");
+  return prediction;
+}
+
+}  // namespace
+
+Prediction predict(const Solute& solute, const std::vector<Component>& components,
+                   double temperatureC, const Electrolyte* background, double backgroundM) {
+  // 1:1 salts bypass the organic model: a Ksp equilibrium over the aqueous
+  // share of the blend. A salt in a waterless blend is effectively
+  // insoluble.
+  if (!solute.canonicalSmiles.empty()) {
+    if (const Salt* salt = findSalt(solute.canonicalSmiles)) {
+      double waterFraction = 0.0;
+      double totalFraction = 0.0;
+      for (const Component& component : components) {
+        if (!component.solvent || component.volumeFraction <= 0.0) continue;
+        totalFraction += component.volumeFraction;
+        if (component.solvent->family == "water") waterFraction += component.volumeFraction;
+      }
+      waterFraction = totalFraction > 0.0 ? waterFraction / totalFraction : 0.0;
+      return saltPrediction(*salt, waterFraction, background, backgroundM, temperatureC);
+    }
+  }
+
+  Prediction prediction = computeFhPrediction(solute, components, temperatureC);
+  if (solute.canonicalSmiles.empty()) return prediction;
+
+  // Measured-value correction: where a literature anchor exists for an
+  // involved pure solvent, pull the prediction toward it log-linearly in the
+  // blend fraction. The anchor travels with the solute's ideal solubility,
+  //
+  //   S(T, Tm) = S_measured * xIdeal(T; Tm_current) / xIdeal(T_anchor; Tm_lit)
+  //
+  // so an overridden melting point or a different working temperature keeps
+  // its leverage, while (T = 25 C, Tm = literature) returns the measured
+  // value exactly. At an anchored pure endpoint (weight 1) the result IS
+  // the anchor; blends interpolate geometrically between anchored
+  // endpoints. The model's job is the shape; the anchors' job is the truth.
+  double total = 0.0;
+  for (const Component& component : components) {
+    if (component.solvent && component.volumeFraction > 0.0) total += component.volumeFraction;
+  }
+  if (total <= 0.0) return prediction;
+
+  const double idealNow = idealSolubility(solute.meltingPoint, solute.entropyOfFusion,
+                                          temperatureC);
+  double logCorrection = 0.0;
+  bool anchored = false;
+  std::string notes;
+  for (const Component& component : components) {
+    if (!component.solvent || component.volumeFraction <= 0.0) continue;
+    // Nearest anchor for this exact pair (the DB holds at most one today).
+    const SolubilityAnchor* anchor = nullptr;
+    for (const SolubilityAnchor& candidate : anchors()) {
+      if (candidate.soluteSmiles != solute.canonicalSmiles ||
+          candidate.solventId != component.solvent->id) {
+        continue;
+      }
+      if (!anchor || std::fabs(candidate.temperatureC - temperatureC) <
+                         std::fabs(anchor->temperatureC - temperatureC)) {
+        anchor = &candidate;
+      }
+    }
+    if (!anchor) continue;
+    const std::vector<Component> pure{Component{component.solvent, 1.0}};
+    const double rawPure = computeFhPrediction(solute, pure, temperatureC).gramsPerMillilitre;
+    if (rawPure <= 0.0) continue;
+    const double idealAtAnchor = idealSolubility(anchor->soluteMeltingPointC,
+                                                 solute.entropyOfFusion, anchor->temperatureC);
+    const double anchorValue = anchor->gramsPerMillilitre * idealNow /
+                               std::max(idealAtAnchor, 1e-300);
+    logCorrection += (component.volumeFraction / total) * std::log(anchorValue / rawPure);
+    anchored = true;
+    if (!notes.empty()) notes += "; ";
+    notes += anchor->note.empty() ? component.solvent->name : anchor->note;
+  }
+  if (!anchored) return prediction;
+
+  const double scale = std::exp(logCorrection);
+  prediction.gramsPerMillilitre *= scale;
+  // Recompute the derived quantities with the SAME transforms the raw solve
+  // used, so moleFraction, molesPerLitre and gramsPerMillilitre stay
+  // exactly self-consistent after the correction.
+  const Mixture mix = blend(components);
+  const double g = prediction.gramsPerMillilitre;
+  const double vs = std::max(solute.molarVolume, 1e-6);
+  const double vm = std::max(mix.molarVolume, 1e-6);
+  const double mm = std::max(solute.molarMass, 1e-9);
+  double x = g * vm / std::max(mm - g * (vs - vm), 1e-300);
+  x = std::clamp(x, 0.0, 1.0);
+  const double solutionMolarVolume = x * vs + (1.0 - x) * vm;
+  prediction.moleFraction = x;
+  prediction.molesPerLitre = std::max(0.0, 1000.0 * x / solutionMolarVolume);
+  prediction.activityCoefficient = idealNow / std::max(x, 1e-300);
+  prediction.anchored = true;
+  prediction.anchorNote = "anchored to measured data (" + notes + ")";
+  return prediction;
+}
+
 std::vector<SweepPoint> sweep(const Solute& solute, const std::vector<const Solvent*>& solvents,
-                              int steps, double temperatureC) {
+                              int steps, double temperatureC, const Electrolyte* background,
+                              double backgroundM) {
   if (solvents.empty() || solvents.size() > 3) {
     throw SolError("sweep needs 1 to 3 solvents");
   }
@@ -972,7 +1124,7 @@ std::vector<SweepPoint> sweep(const Solute& solute, const std::vector<const Solv
     components.push_back({solvents[0], f0});
     if (solvents.size() > 1) components.push_back({solvents[1], f1});
     if (solvents.size() > 2) components.push_back({solvents[2], f2});
-    point.prediction = predict(solute, components, temperatureC);
+    point.prediction = predict(solute, components, temperatureC, background, backgroundM);
     points.push_back(std::move(point));
   };
 
@@ -996,13 +1148,15 @@ std::vector<SweepPoint> sweep(const Solute& solute, const std::vector<const Solv
   return points;
 }
 
-std::vector<ScreenRow> screen(const Solute& solute, double temperatureC) {
+std::vector<ScreenRow> screen(const Solute& solute, double temperatureC,
+                              const Electrolyte* background, double backgroundM) {
   const std::vector<Solvent>& table = solvents();  // propagates a load failure
   std::vector<ScreenRow> rows;
   rows.reserve(table.size());
   for (const Solvent& solvent : table) {
     const std::vector<Component> pure{Component{&solvent, 1.0}};
-    rows.push_back(ScreenRow{&solvent, predict(solute, pure, temperatureC)});
+    rows.push_back(ScreenRow{&solvent, predict(solute, pure, temperatureC, background,
+                                               backgroundM)});
   }
   // Best solvent first; name tiebreak keeps the order deterministic across
   // runs when two predictions land on the same value.

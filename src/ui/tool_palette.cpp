@@ -68,6 +68,8 @@ constexpr std::array kStereos{
                 "Bond comes out of the plane towards you"},
     StereoEntry{core::BondStereo::Hash, icons::Icon::StereoHash, "Hashed wedge",
                 "Bond goes behind the plane"},
+    StereoEntry{core::BondStereo::Wavy, icons::Icon::StereoWavy, "Wavy",
+                "Stereochemistry unknown or a mixture"},
 };
 
 // ---------------------------------------------------------------- rings
@@ -139,7 +141,7 @@ void drawRingGallery(AppState& st) {
         current ? style::u32(style::col::Accent)
                 : style::mix(style::col::TextDim, style::col::Text, 0.4f + 0.6f * t);
     icons::draw(dl, entry.icon, ImVec2((min.x + max.x) * 0.5f, min.y + pad + glyphBox * 0.5f),
-                glyphBox * 0.55f, glyphColor);
+                glyphBox * 0.8f, glyphColor);
     const ImVec2 labelSize = ImGui::CalcTextSize(entry.name);
     dl->AddText(ImVec2((min.x + max.x - labelSize.x) * 0.5f, max.y - pad - labelH),
                 style::u32(current ? style::col::Text : style::col::TextDim), entry.name);
@@ -192,7 +194,7 @@ void drawRingCell(AppState& st, ImVec2 cell) {
 
   const ImVec2 centre((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
   const float glyph = std::min(m.iconSize * 1.25f, std::min(cell.x, cell.y) * 0.80f);
-  icons::draw(dl, ring.icon, centre, glyph * 0.5f, glyphColor);
+  icons::draw(dl, ring.icon, centre, glyph, glyphColor);
 
   // Caret: a filled triangle tucked into the corner, brightening when the
   // pointer is inside its zone so it reads as a separate click target.
