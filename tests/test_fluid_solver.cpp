@@ -761,3 +761,78 @@ TEST_CASE("vessel-frame shake and pose mathematics use the analytic laws") {
         doctest::Approx(0.5 * expectedVelocity * expectedVelocity * motion.shakeFrequencyHz)
             .epsilon(1.0e-12));
 }
+
+TEST_CASE("a thrown vessel leaves the stage and coasts back to centre") {
+  fluid::HandFollower follower;
+  constexpr double kDt = 1.0 / 60.0;
+
+  // A brisk 25 cm lateral stroke over a fifth of a second: the gesture that
+  // flings the funnel off the side of the stage.
+  constexpr double kStrokeM = 0.25;
+  constexpr int kStrokeFrames = 12;
+  double peakAcceleration = 0.0;
+  for (int frame = 0; frame < kStrokeFrames; ++frame) {
+    follower.advance({kStrokeM / kStrokeFrames, 0.0, 0.0}, true, kDt);
+    peakAcceleration = std::max(peakAcceleration, std::abs(follower.acceleration[0]));
+  }
+
+  // The vessel must genuinely travel, not sit pinned near the origin: the
+  // funnel is ~0.18 m tall, so a displacement past its own height is what
+  // carries it out of frame.
+  CHECK(follower.position[0] > 0.18);
+  CHECK(follower.hand[0] == doctest::Approx(kStrokeM).epsilon(1.0e-9));
+  // The forcing the fluid feels lives in the transients: once the hand moves at
+  // a constant rate the spring settles to a fixed lag and the net acceleration
+  // is nearly zero, which is why the peak over the stroke -- not its final
+  // value -- is what makes this a shake.
+  CHECK(peakAcceleration > 9.80665);
+
+  const double releasedAt = follower.position[0];
+  const double travelled = releasedAt;
+
+  // Release: nothing is holding it, so the hand target is gone immediately.
+  follower.advance({0.0, 0.0, 0.0}, false, kDt);
+  CHECK(follower.hand[0] == 0.0);
+  // It coasts outward first -- the throw's momentum is not discarded.
+  CHECK(follower.position[0] > travelled);
+
+  // Within a second the soft return has brought it exactly home and stopped.
+  int frames = 0;
+  while (!follower.atRest() && frames < 120) {
+    follower.advance({0.0, 0.0, 0.0}, false, kDt);
+    ++frames;
+  }
+  CHECK(frames < 120);
+  CHECK(follower.atRest());
+  CHECK(follower.position[0] == 0.0);
+  CHECK(follower.acceleration[0] == 0.0);
+  CHECK(releasedAt > 0.0);
+}
+
+TEST_CASE("the hand follower bounds excursion and acceleration") {
+  fluid::HandFollower follower;
+  constexpr double kDt = 1.0 / 60.0;
+
+  // Slam the hand far past the limit every frame for two seconds.
+  for (int frame = 0; frame < 120; ++frame) {
+    follower.advance({10.0, 0.0, 10.0}, true, kDt);
+  }
+  CHECK(follower.hand[0] == doctest::Approx(follower.excursionLimit).epsilon(1.0e-12));
+  CHECK(follower.hand[2] == doctest::Approx(follower.excursionLimit).epsilon(1.0e-12));
+
+  // The per-axis clamp bounds a cube, but the fluid must never see more than
+  // the stated acceleration magnitude on the diagonal.
+  const double magnitude = std::sqrt(follower.acceleration[0] * follower.acceleration[0] +
+                                     follower.acceleration[1] * follower.acceleration[1] +
+                                     follower.acceleration[2] * follower.acceleration[2]);
+  CHECK(magnitude <= follower.accelerationLimit * (1.0 + 1.0e-9));
+
+  // A slow drag is not a shake: crossing the same distance over ten seconds
+  // keeps the vessel on the hand and produces almost no forcing.
+  fluid::HandFollower gentle;
+  for (int frame = 0; frame < 600; ++frame) {
+    gentle.advance({0.10 / 600.0, 0.0, 0.0}, true, kDt);
+  }
+  CHECK(std::abs(gentle.position[0] - gentle.hand[0]) < 1.0e-3);
+  CHECK(std::abs(gentle.acceleration[0]) < 0.1);
+}

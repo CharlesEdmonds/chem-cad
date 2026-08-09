@@ -52,7 +52,6 @@ constexpr const char* kWinPlanner = "Reaction Planner";
 constexpr const char* kWinSolubility = "Solubility Suite";
 constexpr const char* kWinExtraction = "Extraction Calculator";
 constexpr const char* kWinToolbox = "Toolbox";
-constexpr const char* kWinSolvents = "Solvent Selection";
 constexpr const char* kWinPreview3D = "Preview";
 constexpr const char* kWinTools = "Tools";
 constexpr const char* kWinPTable = "Periodic Table";
@@ -311,7 +310,6 @@ void buildLayoutForTab(ImGuiID dockspaceId, chemcad::ui::MainTab tab) {
   ImGui::DockBuilderDockWindow(kWinSolubility, center);
   ImGui::DockBuilderDockWindow(kWinExtraction, center);
   ImGui::DockBuilderDockWindow(kWinToolbox, center);
-  ImGui::DockBuilderDockWindow(kWinSolvents, center);
   ImGui::DockBuilderFinish(dockspaceId);
 }
 
@@ -515,14 +513,6 @@ int main(int, char**) {
     }
     ImGui::End();
 
-    focusTabIfRequested(chemcad::ui::MainTab::Solvents);
-    if (ImGui::Begin(kWinSolvents)) {
-      if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
-        state.tab = chemcad::ui::MainTab::Solvents;
-      chemcad::ui::drawSolventSelector(state);
-    }
-    ImGui::End();
-
     focusTabIfRequested(chemcad::ui::MainTab::Toolbox);
     if (ImGui::Begin(kWinToolbox)) {
       if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
@@ -534,7 +524,6 @@ int main(int, char**) {
     // Side panels are workspace-specific: only the panels the active tab can
     // actually use are submitted, so nothing inapplicable clutters the bench.
     const bool moleculePanels = state.tab != chemcad::ui::MainTab::Extraction &&
-                                state.tab != chemcad::ui::MainTab::Solvents &&
                                 state.tab != chemcad::ui::MainTab::Toolbox;
     if (state.tab == chemcad::ui::MainTab::Sketch) {
       if (ImGui::Begin(kWinTools)) chemcad::ui::drawToolPalette(state);

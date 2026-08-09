@@ -116,7 +116,9 @@ struct PlannerState {
   int maxRoutes = 5;
 };
 
-enum class MainTab { Sketch, Planner, Solubility, Extraction, Solvents, Toolbox };
+// Solvent selection is a mode of the Solubility Suite, not a workspace of its
+// own: choosing a solvent and predicting what it dissolves are one decision.
+enum class MainTab { Sketch, Planner, Solubility, Extraction, Toolbox };
 
 // ---------------------------------------------------------------- app state
 struct AppState {

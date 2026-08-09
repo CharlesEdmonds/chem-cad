@@ -126,11 +126,84 @@ void cleanUp(AppState& st) {
   }
 }
 
+void deleteSelected(AppState& st) {
+  if (st.sel.empty()) return;
+  st.snapshot();
+  for (int molIndex = static_cast<int>(st.doc.molecules.size()) - 1; molIndex >= 0;
+       --molIndex) {
+    core::Molecule& molecule = st.doc.molecules[static_cast<size_t>(molIndex)];
+    for (const BondRef& ref : st.sel.bonds) {
+      if (ref.mol == molIndex) molecule.removeBond(ref.id);
+    }
+    for (const AtomRef& ref : st.sel.atoms) {
+      if (ref.mol == molIndex) molecule.removeAtom(ref.id);
+    }
+  }
+  std::erase_if(st.doc.molecules, [](const core::Molecule& molecule) {
+    return molecule.empty();
+  });
+  st.sel.clear();
+  st.hoverAtom = {};
+  st.hoverBond = {};
+  st.touch();
+  st.statusMessage = "Selection deleted";
+}
+
+void clearStructure(AppState& st) {
+  if (st.doc.empty()) return;
+  st.snapshot();
+  st.doc.clear();
+  st.sel.clear();
+  st.hoverAtom = {};
+  st.hoverBond = {};
+  st.touch();
+  st.statusMessage = "Structure cleared";
+}
+
 std::string projectFilename(const AppState& st) {
   if (st.projectPath.empty()) return {};
   std::error_code ec;
   const auto name = std::filesystem::path(st.projectPath).filename();
   return ec ? std::string{} : name.string();
+}
+
+bool iconMenuItem(icons::Icon icon, const char* label, const char* shortcut = nullptr,
+                  bool selected = false, bool enabled = true, bool danger = false) {
+  const style::Metrics& m = style::metrics();
+  std::string padded = "   ";
+  padded += label;
+  if (danger) {
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, style::col::Danger);
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, style::col::Danger);
+  }
+  const bool activated = ImGui::MenuItem(padded.c_str(), shortcut, selected, enabled);
+  const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+  if (danger) ImGui::PopStyleColor(2);
+
+  const ImVec2 min = ImGui::GetItemRectMin();
+  const ImVec2 max = ImGui::GetItemRectMax();
+  const float iconSize = ImGui::GetFontSize() * 0.72f;
+  const ImVec4 colour =
+      !enabled ? style::col::TextFaint
+               : (hovered && danger ? style::col::OnAccent : style::col::TextDim);
+  icons::draw(ImGui::GetWindowDrawList(), icon,
+              ImVec2(min.x + m.gap + iconSize * 0.5f, (min.y + max.y) * 0.5f),
+              iconSize, style::u32(colour));
+  return activated;
+}
+
+bool iconToggleMenuItem(icons::Icon icon, const char* label, bool* selected) {
+  const style::Metrics& m = style::metrics();
+  std::string padded = "   ";
+  padded += label;
+  const bool activated = ImGui::MenuItem(padded.c_str(), nullptr, selected);
+  const ImVec2 min = ImGui::GetItemRectMin();
+  const ImVec2 max = ImGui::GetItemRectMax();
+  const float iconSize = ImGui::GetFontSize() * 0.72f;
+  icons::draw(ImGui::GetWindowDrawList(), icon,
+              ImVec2(min.x + m.gap + iconSize * 0.5f, (min.y + max.y) * 0.5f),
+              iconSize, style::u32(style::col::TextDim));
+  return activated;
 }
 
 void openDialog(FileDialog& dialog, DialogAction& action, DialogAction requested,
@@ -196,48 +269,53 @@ void drawMenuBar(AppState& st) {
   if (ImGui::BeginMenuBar()) {
     // Brand mark: benzene-ring glyph + wordmark, then the menus.
     {
+      const style::Metrics& m = style::metrics();
       const float h = ImGui::GetFrameHeight();
       const ImVec2 textSize = ImGui::CalcTextSize("ChemCAD");
-      ImGui::Dummy(ImVec2(h + textSize.x + 14.0f, h));
+      ImGui::Dummy(ImVec2(h + textSize.x + m.gap * 1.75f, h));
       const ImVec2 min = ImGui::GetItemRectMin();
       ImDrawList* dl = ImGui::GetWindowDrawList();
       icons::draw(dl, icons::Icon::Logo, ImVec2(min.x + h * 0.5f, min.y + h * 0.52f),
-                  h * 0.68f, style::u32(style::col::Accent), 1.6f);
+                  h * 0.68f, style::u32(style::col::Accent), m.hairline * 1.6f);
       const bool pushed = style::pushFont(style::fonts::semibold());
-      dl->AddText(ImVec2(min.x + h + 6.0f, min.y + (h - textSize.y) * 0.5f),
+      dl->AddText(ImVec2(min.x + h + m.gap * 0.75f, min.y + (h - textSize.y) * 0.5f),
                   style::u32(style::col::Text), "ChemCAD");
       style::popFont(pushed);
     }
     if (ImGui::BeginMenu("File")) {
-      if (ImGui::MenuItem("New", "Ctrl+N")) newDocument(st);
-      if (ImGui::MenuItem("Open...", "Ctrl+O")) {
+      if (iconMenuItem(icons::Icon::Plus, "New", "Ctrl+N", false, true, true))
+        newDocument(st);
+      if (iconMenuItem(icons::Icon::Folder, "Open...", "Ctrl+O")) {
         openDialog(dialog, dialogAction, DialogAction::OpenProject, st);
       }
-      if (ImGui::MenuItem("Save", "Ctrl+S")) {
+      if (iconMenuItem(icons::Icon::Save, "Save", "Ctrl+S")) {
         if (!st.projectPath.empty() && st.saveProject) {
           st.saveProject(st.projectPath);
         } else {
           openDialog(dialog, dialogAction, DialogAction::SaveProject, st);
         }
       }
-      if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S")) {
+      if (iconMenuItem(icons::Icon::Save, "Save As...", "Ctrl+Shift+S")) {
         openDialog(dialog, dialogAction, DialogAction::SaveProject, st);
       }
       ImGui::Separator();
-      if (ImGui::MenuItem("Import MOL...")) {
+      if (iconMenuItem(icons::Icon::Folder, "Import MOL...")) {
         openDialog(dialog, dialogAction, DialogAction::ImportMol, st);
       }
-      if (ImGui::MenuItem("Export MOL...", nullptr, false, !st.doc.empty())) {
+      if (iconMenuItem(icons::Icon::ArrowRight, "Export MOL...", nullptr, false,
+                       !st.doc.empty())) {
         openDialog(dialog, dialogAction, DialogAction::ExportMol, st);
       }
-      if (ImGui::MenuItem("Export SVG...", nullptr, false, !st.doc.empty())) {
+      if (iconMenuItem(icons::Icon::ArrowRight, "Export SVG...", nullptr, false,
+                       !st.doc.empty())) {
         openDialog(dialog, dialogAction, DialogAction::ExportSvg, st);
       }
-      if (ImGui::MenuItem("Export PNG...", nullptr, false, !st.doc.empty())) {
+      if (iconMenuItem(icons::Icon::ArrowRight, "Export PNG...", nullptr, false,
+                       !st.doc.empty())) {
         openDialog(dialog, dialogAction, DialogAction::ExportPng, st);
       }
       ImGui::Separator();
-      if (ImGui::MenuItem("Quit", "Ctrl+Q")) {
+      if (iconMenuItem(icons::Icon::Close, "Quit", "Ctrl+Q")) {
         if (GLFWwindow* window = glfwGetCurrentContext()) {
           glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
@@ -246,28 +324,46 @@ void drawMenuBar(AppState& st) {
     }
 
     if (ImGui::BeginMenu("Edit")) {
-      if (ImGui::MenuItem("Undo", "Ctrl+Z", false, st.undo.canUndo())) undo(st);
-      if (ImGui::MenuItem("Redo", "Ctrl+Shift+Z", false, st.undo.canRedo())) redo(st);
+      if (iconMenuItem(icons::Icon::Undo, "Undo", "Ctrl+Z", false, st.undo.canUndo()))
+        undo(st);
+      if (iconMenuItem(icons::Icon::Redo, "Redo", "Ctrl+Shift+Z", false,
+                       st.undo.canRedo()))
+        redo(st);
       ImGui::Separator();
-      if (ImGui::MenuItem("Copy SMILES", "Ctrl+C", false, !st.doc.empty())) copySmiles(st);
-      if (ImGui::MenuItem("Paste SMILES", "Ctrl+V")) pasteSmiles(st);
+      if (iconMenuItem(icons::Icon::Copy, "Copy SMILES", "Ctrl+C", false,
+                       !st.doc.empty()))
+        copySmiles(st);
+      if (iconMenuItem(icons::Icon::Link, "Paste SMILES", "Ctrl+V")) pasteSmiles(st);
+      ImGui::Separator();
+      if (iconMenuItem(icons::Icon::Trash, "Delete Selection", "Del", false,
+                       !st.sel.empty(), true))
+        deleteSelected(st);
       ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("Structure")) {
-      if (ImGui::MenuItem("Clean Up Structure", nullptr, false, !st.doc.empty())) cleanUp(st);
-      ImGui::MenuItem("Auto-name", nullptr, &st.props.autoName);
+      if (iconMenuItem(icons::Icon::Sparkle, "Clean Up Structure", nullptr, false,
+                       !st.doc.empty()))
+        cleanUp(st);
+      iconToggleMenuItem(icons::Icon::Book, "Auto-name", &st.props.autoName);
+      ImGui::Separator();
+      if (iconMenuItem(icons::Icon::Trash, "Clear Structure", nullptr, false,
+                       !st.doc.empty(), true))
+        clearStructure(st);
       ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("View")) {
-      if (ImGui::MenuItem("Fit to window", "Ctrl+F")) st.cam.fit(st.doc, st.canvasSize);
-      if (ImGui::MenuItem("Reset zoom", "Ctrl+0")) st.cam.zoom = 1.0f;
+      if (iconMenuItem(icons::Icon::ZoomFit, "Fit to window", "Ctrl+F"))
+        st.cam.fit(st.doc, st.canvasSize);
+      if (iconMenuItem(icons::Icon::Crosshair, "Reset zoom", "Ctrl+0"))
+        st.cam.zoom = 1.0f;
       ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("Help")) {
-      if (ImGui::MenuItem("About ChemCAD")) ImGui::OpenPopup("About ChemCAD");
+      if (iconMenuItem(icons::Icon::Info, "About ChemCAD"))
+        ImGui::OpenPopup("About ChemCAD");
       ImGui::EndMenu();
     }
 
@@ -288,7 +384,7 @@ void drawMenuBar(AppState& st) {
       const style::Metrics& m = style::metrics();
       const ImVec2 mouse = ImGui::GetMousePos();
 
-      const auto captionButton = [&](int index, const char* glyph, bool danger,
+      const auto captionButton = [&](int index, icons::Icon glyph, bool danger,
                                      const char* tooltip) -> bool {
         const ImVec2 bMin(winMin.x + winW - btnW * static_cast<float>(3 - index), winMin.y);
         const ImVec2 bMax(bMin.x + btnW, bMin.y + barH);
@@ -305,22 +401,19 @@ void drawMenuBar(AppState& st) {
                                    : style::u32(style::col::BgRaised));
           ImGui::SetTooltip("%s", tooltip);
         }
-        const ImVec2 gSize = ImGui::CalcTextSize(glyph);
-        dl->AddText(ImVec2(bMin.x + (btnW - gSize.x) * 0.5f,
-                           bMin.y + (barH - gSize.y) * 0.5f),
+        icons::draw(dl, glyph, ImVec2((bMin.x + bMax.x) * 0.5f, (bMin.y + bMax.y) * 0.5f),
+                    m.iconSize * 0.62f,
                     style::u32(hovered && danger ? style::col::OnAccent
-                                                 : style::col::TextDim),
-                    glyph);
-        (void)m;
+                                                 : style::col::TextDim));
         return clicked;
       };
 
-      if (captionButton(0, "-", false, "Minimize") && window) {
+      if (captionButton(0, icons::Icon::Minus, false, "Minimize") && window) {
         glfwIconifyWindow(window);
       }
       const bool maximized = window && glfwGetWindowAttrib(window, GLFW_MAXIMIZED);
-      if (captionButton(1, maximized ? "v" : "^", false,
-                        maximized ? "Restore" : "Maximize") &&
+      if (captionButton(1, maximized ? icons::Icon::ChevronDown : icons::Icon::ChevronUp,
+                        false, maximized ? "Restore" : "Maximize") &&
           window) {
         if (maximized) {
           glfwRestoreWindow(window);
@@ -328,7 +421,7 @@ void drawMenuBar(AppState& st) {
           glfwMaximizeWindow(window);
         }
       }
-      if (captionButton(2, "x", true, "Close") && window) {
+      if (captionButton(2, icons::Icon::Close, true, "Close") && window) {
         glfwSetWindowShouldClose(window, GLFW_TRUE);
       }
     }
@@ -347,7 +440,7 @@ void drawMenuBar(AppState& st) {
       const ImVec2 min = ImGui::GetItemRectMin();
       icons::draw(ImGui::GetWindowDrawList(), icons::Icon::Logo,
                   ImVec2(min.x + logo * 0.5f, min.y + logo * 0.5f), logo * 0.9f,
-                  style::u32(style::col::Accent), 2.0f);
+                  style::u32(style::col::Accent), style::metrics().hairline * 2.0f);
     }
     const bool pushed = style::pushFont(style::fonts::semibold());
     ImGui::TextUnformatted("ChemCAD");

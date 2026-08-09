@@ -65,6 +65,17 @@ struct TernarySurfaceMesh {
   double logMaximum = 1.0;
 };
 
+// The Solubility Suite hosts two views of the same question. `Predict` answers
+// "how much of this dissolves in the blend I chose"; `Select` answers "which
+// solvent should I choose for this operation". They were separate top-level
+// panels, which forced the user to leave the workspace to answer the second
+// half of one decision, so they are now two modes of one panel and hand their
+// results to each other in place.
+enum class SuiteMode : uint8_t {
+  Predict,
+  Select,
+};
+
 enum class ExtractionRenderMode : uint8_t {
   Fluid3D,
   Schematic2D,
@@ -83,6 +94,9 @@ enum class FluidResolution : uint8_t {
 };
 
 struct SolubilityState {
+  // ------------------------------------------------------------ workspace
+  SuiteMode suiteMode = SuiteMode::Predict;
+
   // ------------------------------------------------------------- solute
   bool useSketch = true;        // true: pull from st.doc.molecules; false: manualSmiles
   std::string manualSmiles;
@@ -194,19 +208,14 @@ struct SolubilityState {
   bool fluidReframeRequested = false;
 
   // Dragging the stage shakes the vessel, in both the 3D and the schematic
-  // view; orbiting the 3D camera is on the right button. The pointer does not
-  // set an acceleration directly -- a per-frame pointer delta scaled to g gives
-  // a hand stroke almost no authority, and differentiating pointer position
-  // twice amplifies its integer jitter. Instead the pointer commands where the
-  // hand IS, and the vessel follows it as a stiff spring-damper: a slow drag
-  // then produces almost no acceleration and a wiggle produces a real shake,
-  // which is exactly how a funnel behaves in a hand.
+  // view; orbiting the 3D camera is on the right button. The pointer commands
+  // where the hand IS and fluid::HandFollower turns that into the vessel's
+  // motion, so the vessel can be flung clean off the stage and swings back on
+  // release. Only the pointer bookkeeping lives here; the mechanics are physics
+  // and live in fluid/frame.hpp.
   bool fluidGrabActive = false;
   std::array<float, 2> fluidGrabAnchorPx{};
-  std::array<double, 3> fluidGrabHandM{};      // commanded hand position, m
-  std::array<double, 3> fluidGrabOffsetM{};    // vessel position, m
-  std::array<double, 3> fluidGrabVelocityMs{}; // vessel velocity, m/s
-  std::array<double, 3> fluidManualAcceleration{};
+  fluid::HandFollower fluidHand;
 
   // Pose animation state. The angular rate is retained so setPose receives an
   // angular acceleration consistent with the visible tilt animation.

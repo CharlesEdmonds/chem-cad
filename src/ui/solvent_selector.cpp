@@ -1,5 +1,7 @@
 // Solvent Selection: operation-first solvent ranking with explicit evidence.
-// Renders inside an already-open window and owns no GL resources.
+// This is the Solubility Suite's `Select` mode, not a panel of its own: it
+// renders inside the suite's already-open window and hands its winning blend
+// straight into `Predict`. Owns no GL resources.
 
 #include "imgui.h"
 
@@ -997,7 +999,7 @@ void loadIntoSuite(AppState& state, const sol::SolventCandidate& candidate) {
     suite.solute = species.solute;
     suite.soluteValid = true;
     suite.soluteError.clear();
-    suite.soluteNote = "Imported from Solvent Selection: " + species.label;
+    suite.soluteNote = "Imported from the solvent ranking: " + species.label;
     suite.useSketch = false;
     suite.manualSmiles = species.solute.canonicalSmiles;
     suite.overrideSolute = false;
@@ -1006,9 +1008,10 @@ void loadIntoSuite(AppState& state, const sol::SolventCandidate& candidate) {
   }
   suite.sweepSignature.clear();
   suite.screeningSignature.clear();
-  suite.statusMessage = "Candidate blend loaded from Solvent Selection";
-  state.tab = MainTab::Solubility;
-  state.tabChangeRequested = true;
+  suite.statusMessage = "Candidate blend loaded into the prediction workspace";
+  // Select and Predict are two modes of this one panel, so loading a candidate
+  // switches the mode in place instead of requesting a tab change.
+  suite.suiteMode = SuiteMode::Predict;
   state.selection.statusMessage = suite.statusMessage;
   state.statusMessage = suite.statusMessage;
 }
@@ -1109,7 +1112,9 @@ void drawCandidateCard(AppState& state, const sol::SolventCandidate& candidate,
   if (!candidate.partner) ImGui::EndDisabled();
 
   if (actionsInline) ImGui::SameLine(0.0f, gap);
-  if (widgets::primaryButton("Load in Solubility Suite", ImVec2(actionWidth, 0.0f))) {
+  if (widgets::actionButton("##load_into_predict", icons::Icon::Flask,
+                            "Load into Predict", ImVec2(actionWidth, 0.0f), true,
+                            "Load this blend into the prediction workspace")) {
     loadIntoSuite(state, candidate);
   }
   if (selection.compareMode) {

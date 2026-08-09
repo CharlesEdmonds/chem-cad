@@ -384,12 +384,13 @@ TEST_CASE("tool command rail switches the active tool") {
   st.tool = ui::Tool::Select;
   panelFrame(st, &ui::drawToolPalette, "Tools");
 
-  // The active-tool card comes first; Navigate contains full-width Select and
-  // Eraser rows, followed by the Build section.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 100.0f, 185.0f);
+  // The active-tool header comes first, then the Navigate grid (Select,
+  // Eraser) and the Build grid (Bond, Chain, RingTemplate, Atom). Coordinates
+  // are tile centres in the 700 px test panel.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 84.0f, 85.0f);
   CHECK(st.tool == ui::Tool::Eraser);
 
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 100.0f, 270.0f);
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 28.0f, 168.0f);
   CHECK(st.tool == ui::Tool::Bond);
 }
 
@@ -399,10 +400,10 @@ TEST_CASE("bond gallery switches the bond order") {
   panelFrame(st, &ui::drawToolPalette, "Tools");
   REQUIRE(st.currentOrder == core::BondOrder::Single);
 
-  // Bond is the first Build command. Its right-hand menu affordance opens a
-  // side flyout; Double bond is the second tile in the first section.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 680.0f, 270.0f);
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 866.0f, 363.0f);
+  // Selecting the Bond tool also opens its gallery; Double is the second tile
+  // of the bond-order section.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 28.0f, 168.0f);
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 136.0f, 266.0f);
   CHECK(st.currentOrder == core::BondOrder::Double);
   CHECK(st.tool == ui::Tool::Bond);
 }
@@ -413,10 +414,10 @@ TEST_CASE("bond gallery switches stereochemistry") {
   panelFrame(st, &ui::drawToolPalette, "Tools");
   REQUIRE(st.currentStereo == core::BondStereo::None);
 
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 680.0f, 270.0f);
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 28.0f, 168.0f);
 
-  // Wavy is the fourth tile in the stereochemistry section.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 922.0f, 461.0f);
+  // Wavy is the fourth tile of the stereochemistry section.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 288.0f, 320.0f);
   CHECK(st.currentStereo == core::BondStereo::Wavy);
   CHECK(st.tool == ui::Tool::Bond);
 }
@@ -427,10 +428,9 @@ TEST_CASE("atom gallery quick-picks a common element") {
   panelFrame(st, &ui::drawToolPalette, "Tools");
   REQUIRE(st.currentElement == 6);
 
-  // Atom is the fourth Build command. Oxygen is the fourth tile in the first
-  // row of its side flyout.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 680.0f, 438.0f);
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 1014.0f, 530.0f);
+  // Atom is the fourth Build tile; oxygen is the fourth quick element.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 188.0f, 168.0f);
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 496.0f, 272.0f);
   CHECK(st.currentElement == 8);
   CHECK(st.tool == ui::Tool::Atom);
 }
@@ -440,9 +440,8 @@ TEST_CASE("clicking a periodic table tile arms the atom tool with that element")
   ui::AppState st;
   panelFrame(st, &ui::drawPeriodicTable, "Periodic Table");
 
-  // Hydrogen is the top-left tile; its position is pinned at the grid origin
-  // regardless of how the cell-fitting math resolves.
-  panelClickAt(st, &ui::drawPeriodicTable, "Periodic Table", 26.0f, 49.0f);
+  // Hydrogen is the top-left tile, below the colour-mode and search toolbar.
+  panelClickAt(st, &ui::drawPeriodicTable, "Periodic Table", 28.0f, 84.0f);
   CHECK(st.currentElement == 1);
   CHECK(st.tool == ui::Tool::Atom);
 }

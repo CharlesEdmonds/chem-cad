@@ -1,7 +1,11 @@
-// Solubility Suite: solute + solvent inputs on the left rail, the prediction
-// and the solubility-vs-composition graph dominant on the right. Pure
-// solvents are screened in a ranked table; a chosen blend can be handed to
-// the Extraction Calculator. Renders inside an already-open window; never owns one.
+// Solubility Suite: the workspace for every "which solvent, and how much
+// dissolves" question. Two modes share it. Predict holds solute + solvent
+// inputs on the left rail with the prediction and the solubility-vs-composition
+// graph dominant on the right. Select hosts the operation-first solvent ranking
+// (ui/solvent_selector.cpp), which hands its winning blend straight back into
+// Predict rather than across a panel boundary. Pure solvents are screened in a
+// ranked table; a chosen blend can be handed to the Extraction Calculator.
+// Renders inside an already-open window; never owns one.
 
 #include "imgui.h"
 
@@ -24,6 +28,7 @@
 #include "sol/solvent.hpp"
 #include "ui/app_state.hpp"
 #include "ui/charts.hpp"
+#include "ui/icons.hpp"
 #include "ui/solubility_state.hpp"
 #include "ui/theme.hpp"
 #include "ui/ui.hpp"
@@ -2132,10 +2137,40 @@ void drawScreeningCard(SolubilityState& sb, ImVec2 size) {
   widgets::endCard();
 }
 
+// One row of chrome that names the two halves of the workspace. It is drawn
+// before the mode dispatch so the switch is present in both modes -- a control
+// that vanishes in the view it would take you out of is a trap.
+void drawSuiteModeBar(SolubilityState& sb) {
+  static const char* kModeLabels[2] = {"Predict solubility", "Select solvent"};
+  int mode = static_cast<int>(sb.suiteMode);
+
+  widgets::beginToolbar("##suite_mode_bar");
+  icons::draw(ImGui::GetWindowDrawList(), icons::Icon::Flask,
+              ImVec2(ImGui::GetCursorScreenPos().x + ImGui::GetFontSize() * 0.5f,
+                     ImGui::GetCursorScreenPos().y + ImGui::GetFrameHeight() * 0.5f),
+              ImGui::GetFontSize(), style::u32(style::col::Accent));
+  ImGui::Dummy(ImVec2(ImGui::GetFontSize() * 1.2f, ImGui::GetFrameHeight()));
+  ImGui::SameLine();
+  widgets::segmented("##suite_mode", kModeLabels, 2, mode, ImGui::GetFontSize() * 22.0f);
+  sb.suiteMode = mode == 1 ? SuiteMode::Select : SuiteMode::Predict;
+  ImGui::SameLine();
+  widgets::helpMarker(
+      "Predict answers how much of your solute dissolves in a blend you choose. "
+      "Select ranks the whole solvent database for an operation -- extraction, "
+      "recrystallisation, a wash -- and loads the winner back into Predict.");
+  widgets::endToolbar();
+}
+
 }  // namespace
 
 void drawSolubilitySuite(AppState& st) {
   SolubilityState& sb = st.solubility;
+  drawSuiteModeBar(sb);
+  if (sb.suiteMode == SuiteMode::Select) {
+    drawSolventSelector(st);
+    return;
+  }
+
   const style::Metrics& metrics = style::metrics();
   const ImVec2 panelAvail = ImGui::GetContentRegionAvail();
   const float preferredRail = ImGui::GetFontSize() * 20.0f;

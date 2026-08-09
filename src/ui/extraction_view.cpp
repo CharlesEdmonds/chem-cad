@@ -24,6 +24,7 @@
 #include "sol/solubility.hpp"
 #include "ui/app_state.hpp"
 #include "ui/charts.hpp"
+#include "ui/icons.hpp"
 #include "ui/solubility_state.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -932,7 +933,7 @@ void recordFluidFailure(SolubilityState& s, const std::exception& error) {
   state.observedSimulation = s.fluid.get();
   s.funnelRunning = false;
   s.fluidGrabActive = false;
-  s.fluidManualAcceleration = {0.0, 0.0, 0.0};
+  s.fluidHand.reset();
   s.extractionRenderMode = ExtractionRenderMode::Schematic2D;
   s.statusMessage = "Physics unavailable: " + state.reason;
 }
@@ -983,7 +984,7 @@ void startFluidBuild(SolubilityState& s) {
   const std::size_t signature = fluidConfigurationSignature(s);
   s.fluidBuildPending = true;
   s.fluidBuildSignature = signature;
-  s.fluidManualAcceleration = {0.0, 0.0, 0.0};
+  s.fluidHand.reset();
   s.fluidShakeProgressValid = false;
   s.fluidShakeStartElapsedS = 0.0;
   s.fluidShakeEndElapsedS = 0.0;
@@ -1480,6 +1481,10 @@ void drawTransportControls(SolubilityState& s) {
   sol::Simulation& charge = s.funnel;
   static const char* kVesselNames[] = {"Separatory funnel", "Decanting flask",
                                        "Graduated cylinder"};
+  // Glassware is recognised by its silhouette long before its name is read, so
+  // the vessel choice is a row of shapes with the names on hover.
+  static const icons::Icon kVesselGlyphs[] = {
+      icons::Icon::SepFunnel, icons::Icon::Flask, icons::Icon::Beaker};
   const float width = ImGui::GetContentRegionAvail().x;
   const int columns = width >= 720.0f ? 4 : (width >= 420.0f ? 2 : 1);
   constexpr ImGuiTableFlags flags =
@@ -1488,27 +1493,32 @@ void drawTransportControls(SolubilityState& s) {
 
   ImGui::TableNextColumn();
   ImGui::TextDisabled("VESSEL");
-  ImGui::SetNextItemWidth(-1.0f);
-  if (ImGui::Combo("##vessel", &s.funnelVessel, kVesselNames, IM_ARRAYSIZE(kVesselNames))) {
-    s.funnelVessel = std::clamp(s.funnelVessel, 0, 2);
-    charge.vessel = static_cast<sol::Vessel>(s.funnelVessel);
+  int vessel = std::clamp(s.funnelVessel, 0, 2);
+  if (widgets::segmentedIcons("##vessel", kVesselGlyphs, kVesselNames, 3, vessel)) {
+    s.funnelVessel = vessel;
+    charge.vessel = static_cast<sol::Vessel>(vessel);
     sol::reset(charge);
     if (rechargeFluid(s))
-      s.statusMessage = std::string("Recharged into ") + kVesselNames[s.funnelVessel];
+      s.statusMessage = std::string("Recharged into ") + kVesselNames[vessel];
   }
 
   ImGui::TableNextColumn();
   ImGui::TextDisabled("TRANSPORT");
-  const char* runLabel = s.funnelRunning ? "Pause" : "Run";
-  const ImVec2 runSize = textButtonSize(runLabel);
-  const ImVec2 resetSize = textButtonSize("Reset");
   const float actionSpacing = ImGui::GetStyle().ItemSpacing.x;
-  const bool actionsFit =
-      runSize.x + actionSpacing + resetSize.x <= ImGui::GetContentRegionAvail().x;
-  if (widgets::ghostButton(runLabel, runSize))
+  const float actionWidth =
+      std::max((ImGui::GetContentRegionAvail().x - actionSpacing) * 0.5f,
+               ImGui::GetFrameHeight() * 2.0f);
+  if (widgets::actionButton("##run_solver",
+                            s.funnelRunning ? icons::Icon::Pause : icons::Icon::Play,
+                            s.funnelRunning ? "Pause" : "Run",
+                            ImVec2(actionWidth, 0.0f), !s.funnelRunning,
+                            "Advance or hold the particle solver")) {
     s.funnelRunning = !s.funnelRunning;
-  if (actionsFit) ImGui::SameLine(0.0f, actionSpacing);
-  if (widgets::ghostButton("Reset", resetSize)) {
+  }
+  ImGui::SameLine(0.0f, actionSpacing);
+  if (widgets::actionButton("##reset_solver", icons::Icon::Rewind, "Reset",
+                            ImVec2(actionWidth, 0.0f), false,
+                            "Recharge the vessel and stand it upright")) {
     sol::reset(charge);
     const bool recharged = rechargeFluid(s);
     s.funnelRunning = false;
@@ -1517,13 +1527,13 @@ void drawTransportControls(SolubilityState& s) {
     s.fluidTiltAngularVelocityRadS = 0.0f;
     if (recharged) s.statusMessage = "Particle vessel recharged";
   }
-  ImGui::TextColored(s.funnelRunning ? style::col::Success : style::col::TextDim,
-                     "%s", s.funnelRunning ? "Running" : "Paused");
+  widgets::badge(s.funnelRunning ? "RUNNING" : "PAUSED",
+                 s.funnelRunning ? style::col::Success : style::col::TextDim);
 
   ImGui::TableNextColumn();
   ImGui::TextDisabled("SIMULATION SPEED");
-  ImGui::SetNextItemWidth(-1.0f);
-  ImGui::SliderFloat("##speed", &s.funnelSpeed, 0.1f, 10.0f, "%.1fx");
+  widgets::glyphSlider("##speed", icons::Icon::Timer, "rate", s.funnelSpeed, 0.1f, 10.0f,
+                       "%.1fx", "Simulated seconds per wall-clock second");
 
   ImGui::TableNextColumn();
   ImGui::TextDisabled("SOLVER QUALITY");
@@ -1664,29 +1674,26 @@ void drawShakeControls(SolubilityState& s) {
     ImGui::TableNextColumn();
     ImGui::TextDisabled("AXIS");
     int axis = static_cast<int>(s.shakeAxis);
-    ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::Combo("##shake_axis", &axis, kShakeAxisNames.data(),
-                     static_cast<int>(kShakeAxisNames.size()))) {
+    if (widgets::segmented("##shake_axis", kShakeAxisNames.data(),
+                           static_cast<int>(kShakeAxisNames.size()), axis)) {
       s.shakeAxis = static_cast<FluidShakeAxis>(
           std::clamp(axis, 0, static_cast<int>(kShakeAxisNames.size()) - 1));
     }
 
     ImGui::TableNextColumn();
     ImGui::TextDisabled("DURATION");
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::DragFloat("##duration", &s.shakeDurationS, 0.1f, 1.0f, 30.0f, "%.0f s");
+    widgets::glyphSlider("##duration", icons::Icon::Timer, "t", s.shakeDurationS, 1.0f,
+                         30.0f, "%.0f s", "How long the driven shake runs");
 
     ImGui::TableNextColumn();
     ImGui::TextDisabled("FREQUENCY");
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::DragFloat("##frequency", &s.shakeFrequencyHz, 0.05f, 0.5f, 6.0f,
-                     "%.1f Hz");
+    widgets::glyphSlider("##frequency", icons::Icon::Shake, "f", s.shakeFrequencyHz, 0.5f,
+                         6.0f, "%.1f Hz", "Strokes per second; peak speed is 2*pi*f*A");
 
     ImGui::TableNextColumn();
     ImGui::TextDisabled("AMPLITUDE");
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::DragFloat("##amplitude", &s.shakeAmplitudeCm, 0.1f, 1.0f, 15.0f,
-                     "%.0f cm");
+    widgets::glyphSlider("##amplitude", icons::Icon::Ruler, "A", s.shakeAmplitudeCm, 1.0f,
+                         15.0f, "%.0f cm", "Half-stroke of the driven oscillation");
     ImGui::EndTable();
   }
   if (std::isfinite(realTimeFactor)) {
@@ -1737,23 +1744,30 @@ void drawTiltControls(SolubilityState& s) {
       ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
   if (!ImGui::BeginTable("##tilt_grid", columns, flags)) return;
   ImGui::TableNextColumn();
-  ImGui::SetNextItemWidth(-1.0f);
-  if (ImGui::SliderFloat("##tilt", &s.fluidTiltTargetDeg, 0.0f, 180.0f, "%.0f deg"))
+  if (widgets::glyphSlider("##tilt", icons::Icon::Gauge, "tilt", s.fluidTiltTargetDeg, 0.0f,
+                           180.0f, "%.0f deg",
+                           "Vessel attitude: 0 upright, 180 fully inverted"))
     s.funnelRunning = true;
 
   ImGui::TableNextColumn();
-  const float actionWidth = ImGui::GetContentRegionAvail().x;
-  const ImVec2 uprightSize = textButtonSize("Upright");
-  const ImVec2 ventSize = textButtonSize("Vent");
-  const ImVec2 invertSize = textButtonSize("Invert");
+  // The chevrons encode the attitude each preset commands, so the row reads as
+  // three positions of one vessel rather than three unrelated words.
   const float spacing = ImGui::GetStyle().ItemSpacing.x;
-  const bool oneLine =
-      uprightSize.x + ventSize.x + invertSize.x + spacing * 2.0f <= actionWidth;
-  if (widgets::ghostButton("Upright", uprightSize)) setTiltTarget(s, 0.0f);
-  if (oneLine) ImGui::SameLine(0.0f, spacing);
-  if (widgets::ghostButton("Vent", ventSize)) setTiltTarget(s, 135.0f);
-  if (oneLine) ImGui::SameLine(0.0f, spacing);
-  if (widgets::ghostButton("Invert", invertSize)) setTiltTarget(s, 180.0f);
+  const float presetWidth =
+      std::max((ImGui::GetContentRegionAvail().x - spacing * 2.0f) / 3.0f,
+               ImGui::GetFrameHeight() * 1.8f);
+  const ImVec2 presetSize(presetWidth, 0.0f);
+  if (widgets::actionButton("##tilt_upright", icons::Icon::ChevronUp, "Upright", presetSize,
+                            false, "Stand the vessel up (0 deg)"))
+    setTiltTarget(s, 0.0f);
+  ImGui::SameLine(0.0f, spacing);
+  if (widgets::actionButton("##tilt_vent", icons::Icon::ChevronRight, "Vent", presetSize,
+                            false, "Tip to the venting attitude (135 deg)"))
+    setTiltTarget(s, 135.0f);
+  ImGui::SameLine(0.0f, spacing);
+  if (widgets::actionButton("##tilt_invert", icons::Icon::ChevronDown, "Invert", presetSize,
+                            false, "Fully invert to drain from the neck (180 deg)"))
+    setTiltTarget(s, 180.0f);
   ImGui::EndTable();
 }
 
@@ -2300,73 +2314,42 @@ void drawMultiStageExtraction(const SolubilityState& s, bool fillHeight) {
 }
 
 
-bool stageChoiceButton(const char* id, const char* label, bool selected,
-                       ImVec2 requestedSize = ImVec2(0.0f, 0.0f)) {
-  const ImVec2 size =
-      requestedSize.x > 0.0f && requestedSize.y > 0.0f
-          ? requestedSize
-          : ImVec2(std::max(ImGui::GetContentRegionAvail().x, 1.0f),
-                   ImGui::GetFrameHeight());
-  ImGui::InvisibleButton(id, size);
-  const bool clicked = ImGui::IsItemClicked();
-  const bool hovered = ImGui::IsItemHovered();
-  const ImVec2 min = ImGui::GetItemRectMin();
-  const ImVec2 max = ImGui::GetItemRectMax();
-  const style::Metrics& metrics = style::metrics();
-  ImDrawList* draw = ImGui::GetWindowDrawList();
-  draw->AddRectFilled(min, max,
-                      selected ? style::u32(style::col::Accent, 0.88f)
-                               : style::u32(style::col::BgRaised,
-                                            hovered ? 1.0f : 0.62f),
-                      metrics.radiusSm);
-  draw->AddRect(min, max,
-                selected ? style::u32(style::col::AccentHover)
-                         : style::u32(style::col::Border),
-                metrics.radiusSm, 0, metrics.hairline);
-  const std::string fitted =
-      ellipsizeText(label, std::max(size.x - metrics.gap * 2.0f, 0.0f));
-  const ImVec2 text = ImGui::CalcTextSize(fitted.c_str());
-  draw->AddText(ImVec2(min.x + (size.x - text.x) * 0.5f,
-                       min.y + (size.y - text.y) * 0.5f),
-                style::u32(selected ? style::col::OnAccent : style::col::TextDim),
-                fitted.c_str());
-  if (hovered && fitted != label) ImGui::SetTooltip("%s", label);
-  return clicked;
-}
-
 void drawStageToolbar(SolubilityState& s) {
-  constexpr ImGuiTableFlags flags =
-      ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
-  if (ImGui::BeginTable("##stage_modes", 3, flags)) {
-    ImGui::TableNextColumn();
-    if (stageChoiceButton("##fluid_3d", "3D fluid",
-                          s.extractionRenderMode == ExtractionRenderMode::Fluid3D)) {
-      s.extractionRenderMode = ExtractionRenderMode::Fluid3D;
-    }
+  // The two stages answer different questions -- a solid is what you show
+  // someone, a section is what you measure -- so they are one exclusive switch
+  // rather than two buttons that happen to be mutually exclusive.
+  static const icons::Icon kStageGlyphs[2] = {icons::Icon::Cube, icons::Icon::Layers};
+  static const char* kStageTips[2] = {
+      "3D fluid: screen-space surface reconstruction of the particle field",
+      "2D schematic: exact x-z section through the vessel axis"};
+  int mode = s.extractionRenderMode == ExtractionRenderMode::Schematic2D ? 1 : 0;
 
-    ImGui::TableNextColumn();
-    if (stageChoiceButton(
-            "##schematic_2d", "2D schematic",
-            s.extractionRenderMode == ExtractionRenderMode::Schematic2D)) {
-      s.extractionRenderMode = ExtractionRenderMode::Schematic2D;
-      s.fluidGrabActive = false;
-    }
-
-    ImGui::TableNextColumn();
-    ImGui::BeginDisabled(s.extractionRenderMode != ExtractionRenderMode::Fluid3D);
-    if (stageChoiceButton("##reframe_stage", "Re-frame", false)) {
-      s.fluidReframeRequested = true;
-    }
-    ImGui::EndDisabled();
-    ImGui::EndTable();
+  widgets::beginToolbar("##stage_modes");
+  widgets::segmentedIcons("##stage_mode", kStageGlyphs, kStageTips, 2, mode,
+                          ImGui::GetFontSize() * 7.0f);
+  s.extractionRenderMode =
+      mode == 1 ? ExtractionRenderMode::Schematic2D : ExtractionRenderMode::Fluid3D;
+  ImGui::SameLine();
+  widgets::toolbarSeparator();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(s.extractionRenderMode != ExtractionRenderMode::Fluid3D);
+  if (widgets::actionButton("##reframe_stage", icons::Icon::Crosshair, "Re-frame",
+                            ImVec2(0.0f, 0.0f), false,
+                            "Fit the vessel to the stage; double-clicking the stage "
+                            "does the same thing")) {
+    s.fluidReframeRequested = true;
   }
+  ImGui::EndDisabled();
+  widgets::endToolbar();
 
-  // Grab is no longer a mode: the left button always shakes, in both views.
+  // Grab is no longer a mode: the left button always shakes, in both views, and
+  // the vessel is free to leave the stage entirely while it is held.
   const char* hint =
       s.extractionRenderMode == ExtractionRenderMode::Schematic2D
-          ? "Drag the vessel to shake it | particle cut: |y| < 1.5 particle radii."
-          : "Drag the vessel to shake it | right-drag orbit | wheel zoom | "
-            "double-click re-frame.";
+          ? "Drag to shake -- fling it off the stage and let go to watch it "
+            "swing back | particle cut: |y| < 1.5 particle radii."
+          : "Drag to shake -- fling it off the stage and let go to watch it "
+            "swing back | right-drag orbit | wheel zoom | double-click re-frame.";
   const std::string fitted =
       ellipsizeText(hint, ImGui::GetContentRegionAvail().x);
   ImGui::TextDisabled("%s", fitted.c_str());
@@ -2384,61 +2367,17 @@ double stagePixelsPerMetre(const gfx::Camera3D& camera, float canvasHeightPx) {
   return 0.5 * static_cast<double>(canvasHeightPx) / halfHeightM;
 }
 
-// Advances the hand-follower one frame and publishes the resulting fictitious
-// acceleration. `handDelta` is this frame's commanded hand movement in world
-// metres; it is zero on the frames the user is not dragging, which lets the
-// spring ring down and settle instead of cutting the force off abruptly.
+// Advances the hand-follower one frame and publishes the resulting vessel
+// motion. `handDelta` is this frame's commanded hand movement in world metres;
+// it is zero on the frames the user is not dragging. The mechanics live in
+// fluid::HandFollower, which is physics and is tested as such.
 void advanceVesselShake(SolubilityState& s, fluid::Simulation& simulation,
                         const std::array<double, 3>& handDelta, double dt) {
   if (!(dt > 0.0)) return;
-  constexpr double kGravity = 9.80665;
-  // A hand holding glassware is stiff: 6 Hz, near-critically damped. At that
-  // stiffness a 3 cm wiggle is about 4 g, which is a vigorous shake, while a
-  // steady drag keeps the vessel within a millimetre of the hand and produces
-  // almost nothing. Both match the real apparatus.
-  constexpr double kNaturalHz = 6.0;
-  constexpr double kStiffness = 4.0 * 3.14159265358979323846 *
-                                3.14159265358979323846 * kNaturalHz * kNaturalHz;
-  const double damping = 2.0 * 0.7 * std::sqrt(kStiffness);
-  constexpr double kMaxExcursionM = 0.12;
-  constexpr double kMaxAcceleration = 8.0 * kGravity;
-
-  const bool holding = s.fluidGrabActive;
-  for (std::size_t axis = 0; axis < 3; ++axis) {
-    double& hand = s.fluidGrabHandM[axis];
-    hand += handDelta[axis];
-    // Releasing returns the hand to the origin so the vessel settles back to
-    // rest rather than being left permanently displaced.
-    if (!holding) hand *= std::exp(-dt / 0.12);
-    hand = std::clamp(hand, -kMaxExcursionM, kMaxExcursionM);
-
-    double& position = s.fluidGrabOffsetM[axis];
-    double& velocity = s.fluidGrabVelocityMs[axis];
-    double acceleration = kStiffness * (hand - position) - damping * velocity;
-    acceleration = std::clamp(acceleration, -kMaxAcceleration, kMaxAcceleration);
-    // Semi-implicit Euler: stable for a stiff spring at frame rates a UI sees.
-    velocity += acceleration * dt;
-    position += velocity * dt;
-
-    s.fluidManualAcceleration[axis] = acceleration;
-    if (!holding && std::fabs(acceleration) < 1.0e-3 && std::fabs(velocity) < 1.0e-4) {
-      s.fluidManualAcceleration[axis] = 0.0;
-      velocity = 0.0;
-      position = 0.0;
-      hand = 0.0;
-    }
-  }
-
-  const double magnitude = std::sqrt(s.fluidManualAcceleration[0] * s.fluidManualAcceleration[0] +
-                                     s.fluidManualAcceleration[1] * s.fluidManualAcceleration[1] +
-                                     s.fluidManualAcceleration[2] * s.fluidManualAcceleration[2]);
-  if (magnitude > kMaxAcceleration) {
-    const double scale = kMaxAcceleration / magnitude;
-    for (double& component : s.fluidManualAcceleration) component *= scale;
-  }
-
-  runFluidInteraction(
-      s, [&] { simulation.setManualMotion(s.fluidGrabOffsetM, s.fluidManualAcceleration); });
+  s.fluidHand.advance(handDelta, s.fluidGrabActive, dt);
+  runFluidInteraction(s, [&] {
+    simulation.setManualMotion(s.fluidHand.position, s.fluidHand.acceleration);
+  });
 }
 
 // Tracks the pointer while the left button is held and reports this frame's

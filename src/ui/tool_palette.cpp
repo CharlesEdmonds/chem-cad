@@ -193,7 +193,8 @@ void galleryHeader(TileGlyph glyph, const char* title, const char* subtitle) {
   const style::Metrics& m = style::metrics();
   const float iconBox = m.iconSize * 1.75f;
   const ImVec2 min = ImGui::GetCursorScreenPos();
-  ImGui::Dummy(ImVec2(std::max(300.0f, ImGui::GetContentRegionAvail().x), iconBox));
+  ImGui::Dummy(
+      ImVec2(std::max(ImGui::GetFontSize() * 18.0f, ImGui::GetContentRegionAvail().x), iconBox));
   ImDrawList* dl = ImGui::GetWindowDrawList();
   dl->AddRectFilled(min, ImVec2(min.x + iconBox, min.y + iconBox),
                     style::u32(style::col::BgSurface), m.radiusMd);
@@ -204,7 +205,8 @@ void galleryHeader(TileGlyph glyph, const char* title, const char* subtitle) {
 
   const float textX = min.x + iconBox + m.gap;
   const bool heading = style::pushFont(style::fonts::semibold());
-  dl->AddText(ImVec2(textX, min.y + 1.0f), style::u32(style::col::Text), title);
+  dl->AddText(ImVec2(textX, min.y + ImGui::GetFontSize() * 0.06f),
+              style::u32(style::col::Text), title);
   style::popFont(heading);
   dl->AddText(ImVec2(textX, min.y + ImGui::GetFontSize() + m.gap * 0.35f),
               style::u32(style::col::TextDim), subtitle);
@@ -254,7 +256,8 @@ int drawTileGrid(const char* idPrefix, const std::array<T, N>& entries, int colu
                 m.radiusMd, 0, m.hairline);
     if (selected) {
       dl->AddCircleFilled(ImVec2(max.x - pad * 0.75f, min.y + pad * 0.75f),
-                          std::max(2.5f, m.hairline * 2.5f), style::u32(style::col::Accent));
+                          std::max(ImGui::GetFontSize() * 0.14f, m.hairline * 2.5f),
+                          style::u32(style::col::Accent));
     }
 
     const ImU32 glyphColor = selected
@@ -272,124 +275,6 @@ int drawTileGrid(const char* idPrefix, const std::array<T, N>& entries, int colu
   return clicked;
 }
 
-// --------------------------------------------------------------- command row
-struct RowResult {
-  bool body = false;
-  bool menu = false;
-  ImVec2 min{};
-  ImVec2 max{};
-};
-
-RowResult drawCommandRow(TileGlyph glyph, const char* label, const char* detail,
-                         const char* shortcut, bool selected, bool hasMenu,
-                         const char* tooltip) {
-  const style::Metrics& m = style::metrics();
-  const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-  const float height = std::max(52.0f, ImGui::GetFrameHeight() + m.gap * 2.7f);
-  const ImVec2 min = ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##command", ImVec2(width, height));
-  const bool clicked = ImGui::IsItemClicked();
-  const bool hovered = ImGui::IsItemHovered();
-  const float hover = widgets::hoverT(ImGui::GetItemID(), hovered);
-  const ImVec2 max(min.x + width, min.y + height);
-
-  const float menuW = hasMenu ? std::max(28.0f, m.gap * 3.0f) : 0.0f;
-  const ImVec2 mouse = ImGui::GetMousePos();
-  const bool overMenu = hasMenu && hovered && mouse.x >= max.x - menuW;
-  const bool compact = width < 175.0f;
-  const bool showShortcut = !compact && shortcut && shortcut[0] != '\0';
-
-  ImDrawList* dl = ImGui::GetWindowDrawList();
-  const ImVec4 selectedBase{0.16f, 0.135f, 0.085f, 1.0f};
-  const ImU32 fill = selected ? style::mix(selectedBase, style::col::BgRaised, hover * 0.35f)
-                              : style::mix(style::col::BgSurface, style::col::BgRaised, hover);
-  dl->AddRectFilled(min, max, fill, m.radiusMd);
-  dl->AddRect(min, max,
-              selected ? style::u32(style::col::Accent, 0.65f)
-                       : style::mix(style::col::Border, style::col::BorderStrong, hover),
-              m.radiusMd, 0, m.hairline);
-  if (selected) {
-    dl->AddRectFilled(min, ImVec2(min.x + std::max(3.0f, m.gap * 0.34f), max.y),
-                      style::u32(style::col::Accent), m.radiusMd,
-                      ImDrawFlags_RoundCornersLeft);
-  }
-
-  const float pad = m.gap * 0.85f;
-  const float iconBox = height - pad * 1.55f;
-  const ImVec2 iconMin(min.x + pad, min.y + (height - iconBox) * 0.5f);
-  const ImVec2 iconMax(iconMin.x + iconBox, iconMin.y + iconBox);
-  dl->AddRectFilled(iconMin, iconMax,
-                    selected ? style::u32(style::col::Accent, 0.18f)
-                             : style::u32(style::col::BgRaised),
-                    m.radiusSm);
-  dl->AddRect(iconMin, iconMax,
-              selected ? style::u32(style::col::Accent, 0.45f)
-                       : style::u32(style::col::Border),
-              m.radiusSm, 0, m.hairline);
-  drawGlyph(dl, glyph, ImVec2((iconMin.x + iconMax.x) * 0.5f, (iconMin.y + iconMax.y) * 0.5f),
-            m.iconSize, selected ? style::u32(style::col::Accent)
-                                 : style::mix(style::col::TextDim, style::col::Text, hover));
-
-  const float textX = iconMax.x + pad;
-  const float rightEdge = max.x - menuW - pad;
-  const float titleY = compact ? min.y + (height - ImGui::GetFontSize()) * 0.5f
-                               : min.y + pad * 0.72f;
-  const bool heading = style::pushFont(style::fonts::semibold());
-  dl->PushClipRect(ImVec2(textX, min.y), ImVec2(rightEdge, max.y), true);
-  dl->AddText(ImVec2(textX, titleY), style::u32(style::col::Text), label);
-  style::popFont(heading);
-  if (!compact && detail && detail[0] != '\0') {
-    dl->AddText(ImVec2(textX, titleY + ImGui::GetFontSize() + m.gap * 0.28f),
-                style::u32(style::col::TextDim), detail);
-  }
-  dl->PopClipRect();
-
-  if (showShortcut) {
-    const ImVec2 measured = ImGui::CalcTextSize(shortcut);
-    const float chipW = measured.x + m.gap * 1.15f;
-    const float chipH = ImGui::GetFontSize() + m.gap * 0.55f;
-    const ImVec2 chipMax(rightEdge, min.y + (height + chipH) * 0.5f);
-    const ImVec2 chipMin(chipMax.x - chipW, chipMax.y - chipH);
-    if (chipMin.x > textX + ImGui::CalcTextSize(label).x + m.gap) {
-      dl->AddRectFilled(chipMin, chipMax, style::u32(style::col::BgDeep, 0.65f), chipH * 0.5f);
-      dl->AddRect(chipMin, chipMax, style::u32(style::col::Border), chipH * 0.5f, 0,
-                  m.hairline);
-      dl->AddText(ImVec2(chipMin.x + (chipW - measured.x) * 0.5f,
-                         chipMin.y + (chipH - measured.y) * 0.5f),
-                  style::u32(style::col::TextFaint), shortcut);
-    }
-  }
-
-  if (hasMenu) {
-    const float dividerX = max.x - menuW;
-    dl->AddLine(ImVec2(dividerX, min.y + pad), ImVec2(dividerX, max.y - pad),
-                style::u32(overMenu ? style::col::Accent : style::col::Border), m.hairline);
-    const ImVec2 c(dividerX + menuW * 0.5f, min.y + height * 0.5f);
-    const float s = std::max(3.5f, m.gap * 0.42f);
-    dl->AddTriangleFilled(ImVec2(c.x - s, c.y - s * 0.45f),
-                          ImVec2(c.x + s, c.y - s * 0.45f), ImVec2(c.x, c.y + s * 0.55f),
-                          style::u32(overMenu ? style::col::Accent : style::col::TextDim));
-  }
-
-  if (hovered && tooltip) ImGui::SetTooltip("%s", tooltip);
-  return RowResult{clicked && !overMenu, clicked && overMenu, min, max};
-}
-
-template <typename Popup>
-void openRowPopup(const char* id, const RowResult& row, Popup&& content) {
-  const style::Metrics& m = style::metrics();
-  if (row.menu) ImGui::OpenPopup(id);
-  ImGui::SetNextWindowPos(ImVec2(row.max.x + m.gap, row.min.y), ImGuiCond_Appearing);
-  ImGui::SetNextWindowSizeConstraints(ImVec2(330.0f, 0.0f),
-                                      ImVec2(ImGui::GetMainViewport()->WorkSize.x * 0.62f,
-                                             ImGui::GetMainViewport()->WorkSize.y * 0.78f));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(m.gap * 1.25f, m.gap * 1.15f));
-  if (ImGui::BeginPopup(id, ImGuiWindowFlags_NoMove)) {
-    content();
-    ImGui::EndPopup();
-  }
-  ImGui::PopStyleVar();
-}
 
 // ----------------------------------------------------------------- galleries
 void drawRingGallery(AppState& st) {
@@ -410,35 +295,60 @@ void drawRingGallery(AppState& st) {
 
 void drawBondGallery(AppState& st) {
   galleryHeader(bondGlyph(st), "Bond palette", "Order and stereochemical direction");
-  gallerySection("BOND ORDER");
-  const int order = drawTileGrid(
-      "##orders", kOrders, 4,
-      [](const OrderEntry& entry) { return TileGlyph{entry.icon, nullptr}; },
-      [](const OrderEntry& entry) { return entry.name; },
-      [&](const OrderEntry& entry) {
-        return st.currentStereo == core::BondStereo::None && st.currentOrder == entry.order;
-      });
-  gallerySection("STEREOCHEMISTRY");
-  const int stereo = drawTileGrid(
-      "##stereos", kStereos, 4,
-      [](const StereoEntry& entry) { return TileGlyph{entry.icon, nullptr}; },
-      [](const StereoEntry& entry) { return entry.name; },
-      [&](const StereoEntry& entry) { return st.currentStereo == entry.stereo; });
-  ImGui::Spacing();
-  ImGui::TextDisabled("M restores a methyl-ready plain single bond.");
 
-  if (order >= 0) {
-    st.currentOrder = kOrders[static_cast<size_t>(order)].order;
+  constexpr std::array orderGlyphs{
+      icons::Icon::BondSingle,
+      icons::Icon::BondDouble,
+      icons::Icon::BondTriple,
+      icons::Icon::BondAromatic,
+  };
+  constexpr std::array<const char*, 4> orderTips{
+      "Single bond",
+      "Double bond",
+      "Triple bond",
+      "Aromatic bond",
+  };
+  int orderIndex = 0;
+  for (size_t i = 0; i < kOrders.size(); ++i) {
+    if (kOrders[i].order == st.currentOrder) orderIndex = static_cast<int>(i);
+  }
+  widgets::cardHeader(icons::Icon::Bond, "Bond order", "Mutually exclusive bond order");
+  if (widgets::segmentedIcons("##bond_order", orderGlyphs.data(), orderTips.data(),
+                              static_cast<int>(orderGlyphs.size()), orderIndex)) {
+    st.currentOrder = kOrders[static_cast<size_t>(orderIndex)].order;
     st.currentStereo = core::BondStereo::None;
     st.tool = Tool::Bond;
-    st.statusMessage = kOrders[static_cast<size_t>(order)].name;
-    ImGui::CloseCurrentPopup();
-  } else if (stereo >= 0) {
-    st.currentStereo = kStereos[static_cast<size_t>(stereo)].stereo;
-    st.tool = Tool::Bond;
-    st.statusMessage = kStereos[static_cast<size_t>(stereo)].name;
-    ImGui::CloseCurrentPopup();
+    st.statusMessage = kOrders[static_cast<size_t>(orderIndex)].name;
   }
+
+  constexpr std::array stereoGlyphs{
+      icons::Icon::StereoNone,
+      icons::Icon::StereoWedge,
+      icons::Icon::StereoHash,
+      icons::Icon::StereoWavy,
+  };
+  constexpr std::array<const char*, 4> stereoTips{
+      "Plain bond",
+      "Solid wedge",
+      "Hashed wedge",
+      "Wavy bond",
+  };
+  int stereoIndex = 0;
+  for (size_t i = 0; i < kStereos.size(); ++i) {
+    if (kStereos[i].stereo == st.currentStereo) stereoIndex = static_cast<int>(i);
+  }
+  ImGui::Spacing();
+  widgets::cardHeader(icons::Icon::StereoWedge, "Stereochemistry",
+                      "Directional display for the active bond");
+  if (widgets::segmentedIcons("##bond_stereo", stereoGlyphs.data(), stereoTips.data(),
+                              static_cast<int>(stereoGlyphs.size()), stereoIndex)) {
+    st.currentStereo = kStereos[static_cast<size_t>(stereoIndex)].stereo;
+    st.tool = Tool::Bond;
+    st.statusMessage = kStereos[static_cast<size_t>(stereoIndex)].name;
+  }
+
+  ImGui::Spacing();
+  ImGui::TextDisabled("M restores a methyl-ready plain single bond.");
 }
 
 void drawAtomGallery(AppState& st) {
@@ -463,127 +373,94 @@ void drawAtomGallery(AppState& st) {
 }
 
 // ------------------------------------------------------------- rail structure
-void paletteSectionLabel(const char* label) {
+
+template <size_t N>
+void drawToolGrid(AppState& st, const std::array<Tool, N>& tools) {
   const style::Metrics& m = style::metrics();
-  ImGui::Spacing();
-  const ImVec2 min = ImGui::GetCursorScreenPos();
-  const float height = ImGui::GetFontSize() + m.gap * 0.45f;
-  ImGui::Dummy(ImVec2(ImGui::GetContentRegionAvail().x, height));
-  ImDrawList* dl = ImGui::GetWindowDrawList();
-  dl->AddText(nullptr, ImGui::GetFontSize() * 0.78f,
-              ImVec2(min.x + m.gap * 0.15f, min.y + m.gap * 0.15f),
-              style::u32(style::col::TextFaint), label);
-}
+  const float spacing = ImGui::GetStyle().ItemSpacing.x;
+  const float available = std::max(ImGui::GetContentRegionAvail().x, ImGui::GetFrameHeight());
+  const float preferred = std::max(ImGui::GetFrameHeight() * 1.85f, ImGui::GetFontSize() * 3.2f);
+  const int columns =
+      std::max(1, static_cast<int>((available + spacing) / (preferred + spacing)));
+  const float tile = std::max(
+      ImGui::GetFrameHeight(),
+      (available - spacing * static_cast<float>(columns - 1)) / static_cast<float>(columns));
 
-void drawActiveToolCard(const AppState& st) {
-  const style::Metrics& m = style::metrics();
-  const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-  const float height = std::max(70.0f, ImGui::GetFrameHeight() + m.gap * 4.5f);
-  const ImVec2 min = ImGui::GetCursorScreenPos();
-  ImGui::Dummy(ImVec2(width, height));
-  const ImVec2 max(min.x + width, min.y + height);
-  ImDrawList* dl = ImGui::GetWindowDrawList();
-  dl->AddRectFilled(min, max, style::u32(style::col::BgSurface), m.radiusLg);
-  dl->AddRect(min, max, style::u32(style::col::BorderStrong), m.radiusLg, 0, m.hairline);
-  dl->AddLine(ImVec2(min.x + m.gap, min.y), ImVec2(max.x - m.gap, min.y),
-              style::u32(style::col::Accent), std::max(2.0f, m.hairline * 2.0f));
+  for (size_t i = 0; i < tools.size(); ++i) {
+    if (static_cast<int>(i) % columns != 0) ImGui::SameLine(0.0f, spacing);
+    const ToolEntry& entry = toolEntry(tools[i]);
+    ImGui::PushID(static_cast<int>(entry.tool));
 
-  const float iconBox = height - m.gap * 2.0f;
-  const ImVec2 iconMin(min.x + m.gap, min.y + m.gap);
-  const ImVec2 iconMax(iconMin.x + iconBox, iconMin.y + iconBox);
-  dl->AddRectFilled(iconMin, iconMax, style::u32(style::col::Accent, 0.12f), m.radiusMd);
-  dl->AddRect(iconMin, iconMax, style::u32(style::col::Accent, 0.42f), m.radiusMd, 0,
-              m.hairline);
-  drawGlyph(dl, toolGlyph(st, st.tool),
-            ImVec2((iconMin.x + iconMax.x) * 0.5f, (iconMin.y + iconMax.y) * 0.5f),
-            m.iconSize * 1.2f, style::u32(style::col::Accent));
+    char tooltip[256];
+    if (entry.shortcut && entry.shortcut[0] != '\0') {
+      std::snprintf(tooltip, sizeof(tooltip), "%s (%s)\n%s", entry.name, entry.shortcut,
+                    entry.hint);
+    } else {
+      std::snprintf(tooltip, sizeof(tooltip), "%s\n%s", entry.name, entry.hint);
+    }
 
-  const float textX = iconMax.x + m.gap;
-  dl->PushClipRect(ImVec2(textX, min.y), ImVec2(max.x - m.gap, max.y), true);
-  dl->AddText(nullptr, ImGui::GetFontSize() * 0.72f, ImVec2(textX, min.y + m.gap * 0.9f),
-              style::u32(style::col::TextFaint), "ACTIVE TOOL");
-  const bool heading = style::pushFont(style::fonts::semibold());
-  dl->AddText(ImVec2(textX, min.y + m.gap * 2.2f), style::u32(style::col::Text),
-              toolEntry(st.tool).name);
-  style::popFont(heading);
-  const std::string detail = toolDetail(st, st.tool);
-  dl->AddText(ImVec2(textX, min.y + m.gap * 2.2f + ImGui::GetFontSize() + m.gap * 0.35f),
-              style::u32(style::col::TextDim), detail.c_str());
-  dl->PopClipRect();
-}
+    const TileGlyph glyph = toolGlyph(st, entry.tool);
+    const bool clicked = widgets::iconButton("##tool", glyph.icon, ImVec2(tile, tile),
+                                             st.tool == entry.tool, tooltip);
+    if (clicked) {
+      st.tool = entry.tool;
+      st.statusMessage = std::string(entry.name) + " tool";
+      if (entry.tool == Tool::Bond) ImGui::OpenPopup("##bond_gallery");
+      if (entry.tool == Tool::RingTemplate) ImGui::OpenPopup("##ring_gallery");
+      if (entry.tool == Tool::Atom) ImGui::OpenPopup("##atom_gallery");
+    }
 
-void drawSimpleTool(AppState& st, const ToolEntry& entry) {
-  ImGui::PushID(static_cast<int>(entry.tool));
-  char tooltip[256];
-  std::snprintf(tooltip, sizeof(tooltip), "%s (%s)\n%s", entry.name, entry.shortcut, entry.hint);
-  const std::string detail = toolDetail(st, entry.tool);
-  const RowResult row = drawCommandRow({entry.icon, nullptr}, entry.name, detail.c_str(),
-                                       entry.shortcut, st.tool == entry.tool, false, tooltip);
-  if (row.body) st.tool = entry.tool;
-  ImGui::PopID();
-}
-
-void drawBondTool(AppState& st) {
-  const ToolEntry& entry = toolEntry(Tool::Bond);
-  ImGui::PushID(static_cast<int>(entry.tool));
-  const RowResult row = drawCommandRow(bondGlyph(st), entry.name, bondStyleName(st),
-                                       entry.shortcut, st.tool == Tool::Bond, true,
-                                       "Bond tool\nClick to draw; open the palette to change style");
-  if (row.body) st.tool = Tool::Bond;
-  openRowPopup("##bond_gallery", row, [&] { drawBondGallery(st); });
-  ImGui::PopID();
-}
-
-void drawRingTool(AppState& st) {
-  const ToolEntry& entry = toolEntry(Tool::RingTemplate);
-  ImGui::PushID(static_cast<int>(entry.tool));
-  const RingEntry& active = ringEntry(st.currentRing);
-  const RowResult row = drawCommandRow({active.icon, nullptr}, entry.name, active.name,
-                                       entry.shortcut, st.tool == Tool::RingTemplate, true,
-                                       "Ring tool\nClick to stamp; open the palette to choose a template");
-  if (row.body) st.tool = Tool::RingTemplate;
-  openRowPopup("##ring_gallery", row, [&] { drawRingGallery(st); });
-  ImGui::PopID();
-}
-
-void drawAtomTool(AppState& st) {
-  const ToolEntry& entry = toolEntry(Tool::Atom);
-  ImGui::PushID(static_cast<int>(entry.tool));
-  const ElementData* element = findElement(st.currentElement);
-  const std::string detail = std::string(chem::symbolFor(st.currentElement)) + " · " +
-                             (element ? element->name : "Element");
-  const RowResult row = drawCommandRow({icons::Icon::Atom, chem::symbolFor(st.currentElement)},
-                                       entry.name, detail.c_str(), entry.shortcut,
-                                       st.tool == Tool::Atom, true,
-                                       "Atom tool\nClick to place; open the palette for common elements");
-  if (row.body) st.tool = Tool::Atom;
-  openRowPopup("##atom_gallery", row, [&] { drawAtomGallery(st); });
-  ImGui::PopID();
+    if (entry.tool == Tool::Bond || entry.tool == Tool::RingTemplate ||
+        entry.tool == Tool::Atom) {
+      const float font = ImGui::GetFontSize();
+      ImGui::SetNextWindowSizeConstraints(
+          ImVec2(font * 20.0f, 0.0f),
+          ImVec2(ImGui::GetMainViewport()->WorkSize.x * 0.62f,
+                 ImGui::GetMainViewport()->WorkSize.y * 0.78f));
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                          ImVec2(m.gap * 1.25f, m.gap * 1.15f));
+      if (entry.tool == Tool::Bond && ImGui::BeginPopup("##bond_gallery")) {
+        drawBondGallery(st);
+        ImGui::EndPopup();
+      } else if (entry.tool == Tool::RingTemplate && ImGui::BeginPopup("##ring_gallery")) {
+        drawRingGallery(st);
+        ImGui::EndPopup();
+      } else if (entry.tool == Tool::Atom && ImGui::BeginPopup("##atom_gallery")) {
+        drawAtomGallery(st);
+        ImGui::EndPopup();
+      }
+      ImGui::PopStyleVar();
+    }
+    ImGui::PopID();
+  }
 }
 
 }  // namespace
 
 void drawToolPalette(AppState& st) {
-  drawActiveToolCard(st);
+  const std::string activeSummary = "Active tool · " + toolDetail(st, st.tool);
+  widgets::cardHeader(toolGlyph(st, st.tool).icon, toolEntry(st.tool).name,
+                      activeSummary.c_str(), style::col::Accent);
 
-  paletteSectionLabel("NAVIGATE");
-  drawSimpleTool(st, toolEntry(Tool::Select));
-  drawSimpleTool(st, toolEntry(Tool::Eraser));
-
-  paletteSectionLabel("BUILD");
-  drawBondTool(st);
-  drawSimpleTool(st, toolEntry(Tool::Chain));
-  drawRingTool(st);
-  drawAtomTool(st);
-
-  paletteSectionLabel("MODIFY");
-  drawSimpleTool(st, toolEntry(Tool::ChargePlus));
-  drawSimpleTool(st, toolEntry(Tool::ChargeMinus));
+  widgets::cardHeader(icons::Icon::Select, "Navigate", "Select, inspect, or remove");
+  drawToolGrid(st, std::array{Tool::Select, Tool::Eraser});
 
   ImGui::Spacing();
-  ImGui::PushTextWrapPos();
-  ImGui::TextDisabled("Keyboard shortcuts stay active while the sketch canvas is focused.");
-  ImGui::PopTextWrapPos();
+  widgets::cardHeader(icons::Icon::Bond, "Build", "Bonds, chains, rings, and atoms");
+  drawToolGrid(st, std::array{Tool::Bond, Tool::Chain, Tool::RingTemplate, Tool::Atom});
+
+  ImGui::Spacing();
+  if (widgets::disclosure("##charge_tools", "Formal charge", "2 tools", false,
+                          icons::Icon::ChargePlus, style::col::Teal)) {
+    widgets::cardHeader(icons::Icon::ChargePlus, "Charge tools",
+                        "Increase or decrease formal charge", style::col::Teal);
+    drawToolGrid(st, std::array{Tool::ChargePlus, Tool::ChargeMinus});
+  }
+
+  ImGui::Spacing();
+  widgets::notice(icons::Icon::Info,
+                  "Keyboard shortcuts stay active while the sketch canvas is focused.",
+                  style::col::TextDim);
 }
 
 }  // namespace chemcad::ui

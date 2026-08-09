@@ -1,6 +1,6 @@
 #pragma once
-// Persistent UI state for the Solvent Selection panel. Construction stays
-// data-only: the solvent database is loaded lazily by rankSolvents().
+// Persistent UI state for the Solubility Suite's `Select` mode. Construction
+// stays data-only: the solvent database is loaded lazily by rankSolvents().
 
 #include <cstdint>
 #include <string>

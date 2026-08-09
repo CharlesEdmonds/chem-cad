@@ -17,6 +17,7 @@
 #include "chem/embed3d.hpp"
 #include "core/model.hpp"
 #include "ui/app_state.hpp"
+#include "ui/icons.hpp"
 #include "ui/theme.hpp"
 #include "ui/viewer3d_state.hpp"
 #include "ui/widgets.hpp"
@@ -282,6 +283,50 @@ void drawSkeleton2D(AppState& st, ImVec2 min, ImVec2 max) {
   style::popFont(mono);
 }
 
+void fitView(Viewer3DState& vs) {
+  vs.yawDeg = 35.0f;
+  vs.pitchDeg = -18.0f;
+  vs.zoom = 1.0f;
+  vs.autoRotate = false;
+}
+
+void drawOrientationOverlay(const Viewer3DState& vs, ImDrawList* dl, ImVec2 min, ImVec2 max) {
+  const style::Metrics& m = style::metrics();
+  const float fontSize = ImGui::GetFontSize();
+  ImFont* font = style::fonts::mono() ? style::fonts::mono() : ImGui::GetFont();
+
+  char readout[96];
+  std::snprintf(readout, sizeof(readout), "Yaw %.0f  Pitch %.0f  Zoom %.2fx", vs.yawDeg,
+                vs.pitchDeg, vs.zoom);
+  const ImVec2 textSize = font->CalcTextSizeA(fontSize, max.x - min.x, 0.0f, readout);
+  const ImVec2 textPos(max.x - m.gap - textSize.x, min.y + m.gap);
+  dl->AddText(font, fontSize, textPos, style::u32(style::col::TextFaint), readout);
+
+  const float yaw = vs.yawDeg * kPi / 180.0f;
+  const float pitch = vs.pitchDeg * kPi / 180.0f;
+  const float cy = std::cos(yaw), sy = std::sin(yaw);
+  const float cp = std::cos(pitch), sp = std::sin(pitch);
+  const float axisLength = fontSize * 1.35f;
+  const ImVec2 origin(max.x - m.gap - axisLength,
+                      textPos.y + textSize.y + m.gap + axisLength);
+
+  const auto drawAxis = [&](float x, float y, float z, const char* label, ImVec4 color) {
+    const float x1 = x * cy + z * sy;
+    const float z1 = -x * sy + z * cy;
+    const float y2 = y * cp - z1 * sp;
+    const ImVec2 end(origin.x + x1 * axisLength, origin.y - y2 * axisLength);
+    dl->AddLine(origin, end, style::u32(color), m.hairline * 1.5f);
+    dl->AddCircleFilled(end, m.hairline * 2.0f, style::u32(color));
+    dl->AddText(font, fontSize * 0.8f,
+                ImVec2(end.x + m.hairline * 2.0f, end.y - fontSize * 0.4f),
+                style::u32(color), label);
+  };
+
+  drawAxis(1.0f, 0.0f, 0.0f, "X", style::col::Accent);
+  drawAxis(0.0f, 1.0f, 0.0f, "Y", style::col::Teal);
+  drawAxis(0.0f, 0.0f, 1.0f, "Z", style::col::Violet);
+}
+
 // ---------------------------------------------------------------- drawing
 void drawViewerCanvas(AppState& st, ImVec2 min, ImVec2 max, bool compact = false) {
   Viewer3DState& vs = st.viewer3d;
@@ -292,14 +337,8 @@ void drawViewerCanvas(AppState& st, ImVec2 min, ImVec2 max, bool compact = false
   dl->AddRectFilled(min, max, style::u32(style::col::BgDeep), m.radiusMd);
   const ImVec2 centre((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
 
-  if (!vs.hasModel) {
-    const char* message = vs.errorMessage.empty() ? "Draw a molecule in the Sketch tab."
-                                                  : vs.errorMessage.c_str();
-    const ImVec2 textSize = ImGui::CalcTextSize(message);
-    dl->AddText(ImVec2(centre.x - textSize.x * 0.5f, centre.y - textSize.y * 0.5f),
-                style::u32(style::col::TextFaint), message);
-    return;
-  }
+  // Model absence is handled by the layout-level empty state, where guidance
+  // remains accessible to ImGui navigation instead of becoming canvas paint.
 
   const bool skeleton = vs.style == 3 && vs.hasSketch;
   if (skeleton) {
@@ -398,14 +437,7 @@ void drawViewerCanvas(AppState& st, ImVec2 min, ImVec2 max, bool compact = false
               ImVec2(min.x + m.gap, max.y - m.gap - ImGui::GetFontSize()),
               style::u32(style::col::TextDim), caption);
 
-  // Interaction hint, bottom-right (hidden when the stage is too narrow to
-  // keep it clear of the caption).
-  if (!compact && max.x - min.x > 380.0f) {
-    const char* hint = "drag to rotate  |  wheel to zoom  |  double-click resets";
-    const ImVec2 hintSize = ImGui::CalcTextSize(hint);
-    dl->AddText(ImVec2(max.x - m.gap - hintSize.x, max.y - m.gap - hintSize.y),
-                style::u32(style::col::TextFaint), hint);
-  }
+  drawOrientationOverlay(vs, dl, min, max);
 }
 
 }  // namespace
@@ -418,27 +450,61 @@ void drawViewer3D(AppState& st) {
     vs.yawDeg = std::fmod(vs.yawDeg + ImGui::GetIO().DeltaTime * 25.0f, 360.0f);
   }
 
-  // Control row: compact single line so the docked preview keeps its stage
-  // area; stacks only when the column gets very narrow.
-  static const char* kStyles[] = {"Ball and stick", "Licorice", "Space-filling", "Skeleton"};
-  const float availW = ImGui::GetContentRegionAvail().x;
-  const float rowW = 132.0f + ImGui::CalcTextSize("Auto-rotate").x + 26.0f + 76.0f;
-  const bool oneRow = availW >= rowW;
-  ImGui::SetNextItemWidth(std::min(132.0f, availW));
-  ImGui::Combo("##v3d_style", &vs.style, kStyles, 4);
-  if (oneRow) ImGui::SameLine();
-  ImGui::Checkbox("Auto-rotate", &vs.autoRotate);
-  if (oneRow) ImGui::SameLine();
-  if (widgets::ghostButton("Reset")) {
-    vs.yawDeg = 35.0f;
-    vs.pitchDeg = -18.0f;
-    vs.zoom = 1.0f;
-    vs.autoRotate = false;
+  static constexpr icons::Icon kStyleIcons[] = {
+      icons::Icon::Molecule,
+      icons::Icon::Bond,
+      icons::Icon::Atom,
+      icons::Icon::RingBenzene,
+  };
+  static const char* kStyleTooltips[] = {
+      "Ball and stick",
+      "Licorice",
+      "Space filling",
+      "Skeleton",
+  };
+
+  const float frameHeight = ImGui::GetFrameHeight();
+  widgets::beginToolbar("##v3d_toolbar");
+  widgets::segmentedIcons("##v3d_style", kStyleIcons, kStyleTooltips, 4, vs.style,
+                          frameHeight * 4.0f);
+  ImGui::SameLine();
+  widgets::toolbarSeparator();
+  ImGui::SameLine();
+  widgets::toggle("##v3d_auto_rotate", "Auto rotate", vs.autoRotate,
+                  "Continuously orbit the molecule");
+  ImGui::SameLine();
+  widgets::toolbarSeparator();
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(frameHeight * 4.75f);
+  widgets::glyphSlider("##v3d_zoom", icons::Icon::ZoomFit, "Zoom", vs.zoom, 0.25f, 6.0f,
+                       "%.2fx", "Scale relative to fit-to-view");
+  ImGui::SameLine();
+  widgets::toolbarSeparator();
+  ImGui::SameLine();
+  if (widgets::actionButton("##v3d_fit", icons::Icon::Crosshair, "Fit",
+                            ImVec2(frameHeight * 2.4f, frameHeight), false,
+                            "Reframe the molecule and stop auto rotation")) {
+    fitView(vs);
+  }
+  ImGui::SameLine();
+  widgets::helpMarker(
+      "Drag to orbit. Use the mouse wheel to zoom. Double-click to fit the molecule.");
+  widgets::endToolbar();
+
+  if (!vs.hasModel) {
+    std::string guidance = "Draw a molecule in the Sketch tab to generate a 3D structure.";
+    if (!vs.errorMessage.empty() && vs.errorMessage != "Sketch is empty.") {
+      guidance += " ";
+      guidance += vs.errorMessage;
+    }
+    widgets::emptyState(icons::Icon::Cube, "No 3D structure", guidance.c_str());
+    return;
   }
 
+
   ImVec2 size = ImGui::GetContentRegionAvail();
-  size.x = std::max(size.x, 60.0f);
-  size.y = std::max(size.y, 120.0f);
+  size.x = std::max(size.x, ImGui::GetFrameHeight() * 2.0f);
+  size.y = std::max(size.y, ImGui::GetTextLineHeightWithSpacing() * 6.0f);
   ImGui::InvisibleButton("##v3d_canvas", size);
   const ImVec2 min = ImGui::GetItemRectMin();
   const ImVec2 max = ImGui::GetItemRectMax();
@@ -452,11 +518,7 @@ void drawViewer3D(AppState& st) {
   if (ImGui::IsItemHovered()) {
     const float wheel = ImGui::GetIO().MouseWheel;
     if (wheel != 0.0f) vs.zoom = std::clamp(vs.zoom * (1.0f + wheel * 0.12f), 0.25f, 6.0f);
-    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-      vs.yawDeg = 35.0f;
-      vs.pitchDeg = -18.0f;
-      vs.zoom = 1.0f;
-    }
+    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) fitView(vs);
   }
 
   drawViewerCanvas(st, min, max);

@@ -13,6 +13,8 @@ void drawPeriodicTable(AppState&);  // ui/periodic_table.cpp
 void drawPropertiesPanel(AppState&);// ui/properties_panel.cpp
 void drawReactionPlanner(AppState&);// ui/reaction_planner.cpp
 void drawToolbox(AppState&);        // ui/toolbox_view.cpp
+// The Solubility Suite's two modes. `drawSolubilitySuite` owns the mode switch
+// and calls the selector itself; nothing else should submit the selector.
 void drawSolventSelector(AppState&);// ui/solvent_selector.cpp
 void drawSolubilitySuite(AppState&);// ui/solubility_suite.cpp
 void drawExtractionLab(AppState&);  // ui/extraction_view.cpp

@@ -15,7 +15,7 @@ struct Viewer3DState {
   float pitchDeg = -18.0f;
   float zoom = 1.0f;      // multiplies the fit-to-view scale
   bool autoRotate = false;
-  int style = 0;          // 0 ball-and-stick, 1 licorice, 2 space-filling
+  int style = 0;          // 0 ball-and-stick, 1 licorice, 2 space-filling, 3 skeleton
 
   // Cached model, re-embedded whenever the sketch changes.
   uint64_t sourceRevision = 0;

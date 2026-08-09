@@ -78,6 +78,47 @@ std::array<double, 3> shakeAcceleration(const VesselMotion&, double timeS);
 // the fluid feels can never disagree.
 std::array<double, 3> shakeDisplacement(const VesselMotion&, double timeS);
 
+// Where a hand-held vessel actually is, given where the hand is being told to
+// go. The pointer commands the hand; the vessel tracks it as a spring-damper.
+// Mapping a pointer delta straight to an acceleration instead gives a hand
+// stroke almost no authority and amplifies the pointer's integer jitter twice
+// over, which is why the UI drives this rather than differencing positions.
+//
+// Two regimes, because holding a funnel and letting go of one are different
+// mechanical problems:
+//
+//   held     6.0 Hz, zeta 0.70 -- clamped in a hand. A 3 cm wiggle is ~4 g, a
+//                                 steady drag is almost nothing.
+//   released 1.2 Hz, zeta 0.85 -- nothing constrains it. The vessel keeps the
+//                                 momentum of the throw and coasts back to the
+//                                 bench in about half a second.
+//
+// `excursionLimit` is deliberately far larger than the vessel: it is allowed to
+// be thrown clean off the stage and swing back.
+struct HandFollower {
+  std::array<double, 3> hand{0.0, 0.0, 0.0};          // commanded hand position, m
+  std::array<double, 3> position{0.0, 0.0, 0.0};      // vessel position, m
+  std::array<double, 3> velocity{0.0, 0.0, 0.0};      // vessel velocity, m/s
+  std::array<double, 3> acceleration{0.0, 0.0, 0.0};  // vessel acceleration, m/s^2
+
+  double heldHz = 6.0;
+  double heldDampingRatio = 0.7;
+  double releasedHz = 1.2;
+  double releasedDampingRatio = 0.85;
+  double excursionLimit = 0.60;                  // m, per axis
+  double accelerationLimit = 8.0 * 9.80665;      // m/s^2, magnitude
+
+  // Integrates one frame. `handDelta` is this frame's commanded hand movement
+  // in world metres and is ignored while `held` is false, because a released
+  // vessel has no hand to follow.
+  void advance(const std::array<double, 3>& handDelta, bool held, double dt);
+
+  // True once the vessel has come back to rest at the origin.
+  bool atRest() const;
+
+  void reset();
+};
+
 // Assembles the frame terms: rotates gravity into the vessel, subtracts the
 // translational forcing (shake plus hand motion) and carries the rotation
 // rates through for the Coriolis/Euler/centrifugal terms.

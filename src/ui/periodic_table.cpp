@@ -2,13 +2,12 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
 #include "imgui.h"
 
-#include "ui/atom_view.hpp"
 #include "ui/element_data.hpp"
 #include "ui/icons.hpp"
 #include "ui/theme.hpp"
@@ -17,6 +16,8 @@
 
 namespace chemcad::ui {
 namespace {
+
+enum class ColourMode { Category, AtomicMass };
 
 const char* categoryDisplayName(const std::string& category);
 
@@ -31,24 +32,30 @@ bool matches(const ElementData& element, const std::string& query) {
   const std::string symbol = lower(element.symbol);
   const std::string name = lower(element.name);
   const std::string category = lower(categoryDisplayName(element.category));
+  const std::string number = std::to_string(element.z);
   return symbol.starts_with(query) || name.find(query) != std::string::npos ||
-         category.find(query) != std::string::npos;
+         number.starts_with(query) || category.find(query) != std::string::npos;
 }
 
-// Category hues. These read as small stripes and tinted symbols on dark
-// tiles, so they stay saturated.
+bool exactMatch(const ElementData& element, const std::string& query) {
+  return lower(element.symbol) == query || lower(element.name) == query ||
+         std::to_string(element.z) == query;
+}
+
+// Category identity is deliberately constrained to the shared palette so the
+// table remains coherent with every other panel under alternate UI scaling.
 ImVec4 categoryColor(const std::string& category) {
-  if (category == "alkali-metal") return {0.90f, 0.42f, 0.36f, 1.0f};
-  if (category == "alkaline-earth") return {0.90f, 0.63f, 0.34f, 1.0f};
-  if (category == "transition-metal") return {0.51f, 0.63f, 0.84f, 1.0f};
-  if (category == "post-transition") return {0.45f, 0.73f, 0.75f, 1.0f};
-  if (category == "metalloid") return {0.49f, 0.76f, 0.53f, 1.0f};
-  if (category == "nonmetal") return {0.42f, 0.71f, 0.88f, 1.0f};
-  if (category == "halogen") return {0.73f, 0.55f, 0.86f, 1.0f};
-  if (category == "noble-gas") return {0.80f, 0.50f, 0.74f, 1.0f};
-  if (category == "lanthanide") return {0.82f, 0.60f, 0.47f, 1.0f};
-  if (category == "actinide") return {0.72f, 0.53f, 0.57f, 1.0f};
-  return {0.55f, 0.60f, 0.65f, 1.0f};
+  if (category == "alkali-metal") return style::col::Danger;
+  if (category == "alkaline-earth") return style::col::Accent;
+  if (category == "transition-metal") return style::col::Violet;
+  if (category == "post-transition") return style::col::Teal;
+  if (category == "metalloid") return style::col::Success;
+  if (category == "nonmetal") return style::col::Teal;
+  if (category == "halogen") return style::col::Violet;
+  if (category == "noble-gas") return style::col::AccentHover;
+  if (category == "lanthanide") return style::col::AccentActive;
+  if (category == "actinide") return style::col::Danger;
+  return style::col::TextDim;
 }
 
 const char* categoryDisplayName(const std::string& category) {
@@ -71,278 +78,246 @@ void selectElement(AppState& st, const ElementData& element) {
   st.statusMessage = "Element: " + element.name + " (" + element.symbol + ")";
 }
 
+ImU32 propertyRamp(float value, float alpha = 1.0f) {
+  const float t = std::clamp(value, 0.0f, 1.0f);
+  if (t <= 0.5f) {
+    return style::mix(style::col::BgSurface, style::col::Teal, t * 2.0f, alpha);
+  }
+  return style::mix(style::col::Teal, style::col::Accent, (t - 0.5f) * 2.0f, alpha);
+}
+
+float normaliseMass(const ElementData& element, double minMass, double maxMass) {
+  if (maxMass <= minMass) return 0.0f;
+  return static_cast<float>((element.mass - minMass) / (maxMass - minMass));
+}
+
+std::string fitText(ImFont* font, float fontSize, const std::string& text, float width) {
+  if (width <= 0.0f) return {};
+  const float unlimited = std::numeric_limits<float>::max();
+  if (font->CalcTextSizeA(fontSize, unlimited, 0.0f, text.c_str()).x <= width)
+    return text;
+
+  constexpr const char* suffix = "...";
+  const float suffixWidth = font->CalcTextSizeA(fontSize, unlimited, 0.0f, suffix).x;
+  if (suffixWidth > width) return {};
+
+  std::size_t end = text.size();
+  while (end > 0) {
+    --end;
+    while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xC0u) == 0x80u) --end;
+    const float candidateWidth =
+        font->CalcTextSizeA(fontSize, unlimited, 0.0f, text.data(), text.data() + end).x;
+    if (candidateWidth + suffixWidth <= width) return text.substr(0, end) + suffix;
+  }
+  return {};
+}
+
 void elementTooltip(const ElementData& element) {
-  const style::Metrics& metrics = style::metrics();
   const float fs = ImGui::GetFontSize();
-  const ImVec4 category = categoryColor(element.category);
-  const ImGuiViewport* viewport = ImGui::GetMainViewport();
-  const ImVec2 maxCardSize(
-      std::max(viewport->WorkSize.x - metrics.gap * 2.0f, 1.0f),
-      std::max(viewport->WorkSize.y - metrics.gap * 2.0f, 1.0f));
-  const ImVec2 cardSize(std::min(fs * 21.0f, maxCardSize.x),
-                        std::min(fs * 33.5f, maxCardSize.y));
-
-  // Keep the hover card close to the pointer without letting it run off the
-  // current viewport. BeginTooltip remains backend-agnostic for headless use.
-  const ImVec2 mouse = ImGui::GetMousePos();
-  ImVec2 cardPos(mouse.x + metrics.gap * 2.0f, mouse.y + metrics.gap * 1.5f);
-  const float viewportRight = viewport->WorkPos.x + viewport->WorkSize.x;
-  const float viewportBottom = viewport->WorkPos.y + viewport->WorkSize.y;
-  if (cardPos.x + cardSize.x > viewportRight - metrics.gap)
-    cardPos.x = mouse.x - cardSize.x - metrics.gap * 2.0f;
-  if (cardPos.y + cardSize.y > viewportBottom - metrics.gap)
-    cardPos.y = mouse.y - cardSize.y - metrics.gap * 1.5f;
-  cardPos.x = std::max(viewport->WorkPos.x + metrics.gap, cardPos.x);
-  cardPos.y = std::max(viewport->WorkPos.y + metrics.gap, cardPos.y);
-
-  ImGui::SetNextWindowPos(cardPos, ImGuiCond_Always);
-  ImGui::SetNextWindowSize(cardSize, ImGuiCond_Always);
-  ImGui::SetNextWindowBgAlpha(1.0f);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
-                      ImVec2(metrics.gap * 1.25f, metrics.gap * 1.15f));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, metrics.radiusLg);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, metrics.hairline);
+  ImGui::SetNextWindowSizeConstraints(ImVec2(fs * 18.0f, 0.0f),
+                                      ImVec2(fs * 27.0f, fs * 24.0f));
   ImGui::PushStyleColor(ImGuiCol_PopupBg, style::col::BgRaised);
   ImGui::PushStyleColor(ImGuiCol_Border, style::col::BorderStrong);
   ImGui::BeginTooltip();
 
-  ImDrawList* dl = ImGui::GetWindowDrawList();
-  const ImVec2 windowMin = ImGui::GetWindowPos();
-  const ImVec2 windowMax(windowMin.x + ImGui::GetWindowSize().x,
-                         windowMin.y + ImGui::GetWindowSize().y);
-  const float stripH = std::max(metrics.hairline * 3.0f, metrics.gap * 0.65f);
-  dl->AddRectFilled(windowMin, ImVec2(windowMax.x, windowMin.y + stripH),
-                    style::u32(category), metrics.radiusLg,
-                    ImDrawFlags_RoundCornersTop);
-  ImGui::Dummy(ImVec2(0.0f, stripH * 0.45f));
+  widgets::cardHeader(icons::Icon::Atom, element.name.c_str(), element.symbol.c_str(),
+                      categoryColor(element.category));
 
-  // Large symbol tile and identity block.
-  const float tile = fs * 3.35f;
-  const ImVec2 tileMin = ImGui::GetCursorScreenPos();
-  ImGui::Dummy(ImVec2(tile, tile));
-  const ImVec2 tileMax(tileMin.x + tile, tileMin.y + tile);
-  dl->AddRectFilled(tileMin, tileMax,
-                    style::mix(style::col::BgSurface, category, 0.20f),
-                    metrics.radiusMd);
-  dl->AddRect(tileMin, tileMax, style::u32(category, 0.85f),
-              metrics.radiusMd, 0, metrics.hairline);
-  ImFont* symbolFont =
-      style::fonts::semibold() ? style::fonts::semibold() : ImGui::GetFont();
-  const float symbolSize = fs * 1.85f;
-  const ImVec2 symbolExtent =
-      symbolFont->CalcTextSizeA(symbolSize, 10000.0f, 0.0f,
-                                element.symbol.c_str());
-  dl->AddText(symbolFont, symbolSize,
-              ImVec2(tileMin.x + (tile - symbolExtent.x) * 0.5f,
-                     tileMin.y + (tile - symbolExtent.y) * 0.5f),
-              style::mix(category, style::col::Text, 0.42f),
-              element.symbol.c_str());
+  char number[16];
+  std::snprintf(number, sizeof(number), "%u", static_cast<unsigned>(element.z));
+  char mass[32];
+  std::snprintf(mass, sizeof(mass), "%.6g u", element.mass);
+  char group[16];
+  std::snprintf(group, sizeof(group), "%d", element.group);
+  char period[16];
+  std::snprintf(period, sizeof(period), "%d", element.period);
 
-  ImGui::SameLine(0.0f, metrics.gap);
-  ImGui::BeginGroup();
-  ImGui::PushTextWrapPos(0.0f);
-  const bool nameFont = style::pushFont(style::fonts::semibold());
-  ImGui::TextUnformatted(element.name.c_str());
-  style::popFont(nameFont);
-  const bool zFont = style::pushFont(style::fonts::mono());
-  ImGui::TextColored(style::col::TextDim, "Z = %u",
-                     static_cast<unsigned>(element.z));
-  style::popFont(zFont);
-  ImGui::PopTextWrapPos();
-  widgets::badge(categoryDisplayName(element.category), category);
-  ImGui::EndGroup();
+  widgets::keyValue("Symbol", element.symbol.c_str(), categoryColor(element.category));
+  widgets::keyValue("Name", element.name.c_str());
+  widgets::keyValue("Atomic number", number);
+  widgets::keyValue("Atomic mass", mass);
+  widgets::keyValue("Group", element.group == 0 ? "f-block" : group);
+  widgets::keyValue("Period", period);
+  widgets::keyValue("Category", categoryDisplayName(element.category),
+                    categoryColor(element.category));
 
   ImGui::Spacing();
-  ImGui::Separator();
-  ImGui::Spacing();
-
-  // Animated atom stage: orbital clouds by default, Bohr shells as backup.
-  static bool bohrMode = false;
-  const ImVec2 stageAvail = ImGui::GetContentRegionAvail();
-  const float rowsReserve = fs * 10.0f;
-  const float stage =
-      std::max(1.0f, std::min(stageAvail.x, stageAvail.y - rowsReserve));
-  const ImVec2 stageMin = ImGui::GetCursorScreenPos();
-  ImGui::Dummy(ImVec2(stage, stage));
-  const ImVec2 stageMax(stageMin.x + stage, stageMin.y + stage);
-  drawAtomModel(element, stageMin, stageMax, bohrMode);
-  {
-    // Mode toggle rides the stage's top-right corner.
-    const char* modeLabel = bohrMode ? "BOHR" : "ORBITAL";
-    ImGui::SetCursorScreenPos(ImVec2(stageMax.x - ImGui::CalcTextSize(modeLabel).x -
-                                         metrics.gap * 2.2f,
-                                     stageMin.y + metrics.gap * 0.7f));
-    if (ImGui::SmallButton(modeLabel)) bohrMode = !bohrMode;
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Switch between orbital-cloud and Bohr-shell representations");
-    ImGui::SetCursorScreenPos(ImVec2(stageMin.x, stageMax.y));
-  }
-  {
-    const int neutrons =
-        std::max(0, static_cast<int>(std::lround(element.mass)) - element.z);
-    char buf[96];
-    std::snprintf(buf, sizeof(buf), "%d p+   %d n0   %d e-", element.z, neutrons,
-                  element.z);
-    const ImVec2 labelSize = ImGui::CalcTextSize(buf);
-    dl->AddText(style::fonts::mono(), fs * 0.9f,
-                ImVec2((stageMin.x + stageMax.x - labelSize.x) * 0.5f,
-                       stageMax.y - labelSize.y - metrics.gap * 0.6f),
-                style::u32(style::col::TextDim), buf);
-  }
-
-  ImGui::Spacing();
-
-  // ElementData supplies number, mass, group and period; the configuration is
-  // derived from Z. Keep the values aligned and monospaced.
-  constexpr ImGuiTableFlags tableFlags =
-      ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings |
-      ImGuiTableFlags_RowBg;
-  if (ImGui::BeginTable("##element_stats", 2, tableFlags)) {
-    const float statsWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
-    const float labelWidth =
-        std::min(ImGui::CalcTextSize("Standard atomic weight").x +
-                     ImGui::GetStyle().CellPadding.x * 2.0f,
-                 statsWidth * 0.62f);
-    ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, labelWidth);
-    ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
-
-    const auto row = [](const char* label, const char* value) {
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::PushTextWrapPos(0.0f);
-      ImGui::TextDisabled("%s", label);
-      ImGui::PopTextWrapPos();
-      ImGui::TableNextColumn();
-      const bool mono = style::pushFont(style::fonts::mono());
-      ImGui::PushTextWrapPos(0.0f);
-      ImGui::TextUnformatted(value);
-      ImGui::PopTextWrapPos();
-      style::popFont(mono);
-    };
-
-    char atomicNumber[8];
-    std::snprintf(atomicNumber, sizeof(atomicNumber), "%u",
-                  static_cast<unsigned>(element.z));
-    char atomicMass[32];
-    std::snprintf(atomicMass, sizeof(atomicMass), "%.6g", element.mass);
-    char group[16];
-    std::snprintf(group, sizeof(group), "%d", element.group);
-    char period[16];
-    std::snprintf(period, sizeof(period), "%d", element.period);
-    row("Atomic number", atomicNumber);
-    row("Standard atomic weight", atomicMass);
-    row("Group", element.group == 0 ? "f-block" : group);
-    row("Period", period);
-    row("Configuration", elementConfigString(element).c_str());
-    ImGui::EndTable();
-  }
-
-  ImGui::Spacing();
-  const char* actionDetail = "Select element and activate the Atom tool";
-  ImGui::TextColored(style::col::Accent, "CLICK");
-  if (ImGui::GetContentRegionAvail().x >=
-      ImGui::CalcTextSize(actionDetail).x + metrics.gap * 0.5f)
-    ImGui::SameLine(0.0f, metrics.gap * 0.5f);
-  ImGui::TextWrapped("%s", actionDetail);
+  widgets::notice(icons::Icon::Atom, "Click to select this element and activate the Atom tool.",
+                  style::col::Accent);
 
   ImGui::EndTooltip();
   ImGui::PopStyleColor(2);
-  ImGui::PopStyleVar(3);
 }
 
-// One element tile: behaviour via an invisible button, everything else drawn.
+// Each tile keeps three readable levels of hierarchy even when the table must
+// scroll. The name is omitted only if its measured ellipsis cannot fit.
 void drawTile(ImDrawList* dl, ImVec2 min, ImVec2 size, const ElementData& element,
-              bool selected, bool match, float hoverT) {
+              bool selected, bool queryActive, bool searchMatch, float hover,
+              ColourMode mode, double minMass, double maxMass) {
   const style::Metrics& m = style::metrics();
-  const float alpha = match ? 1.0f : 0.20f;
-  const float cell = std::min(size.x, size.y);
-  const float radius = std::min(m.radiusMd, cell * 0.22f);
+  const float fs = ImGui::GetFontSize();
+  const float alpha = !queryActive || searchMatch ? 1.0f : 0.22f;
+  const float radius = std::min(m.radiusMd, fs * 0.45f);
   const ImVec2 max(min.x + size.x, min.y + size.y);
-  const ImVec4 cat = categoryColor(element.category);
+  const ImVec4 category = categoryColor(element.category);
+  const float massT = normaliseMass(element, minMass, maxMass);
 
-  const ImU32 fill = style::mix(style::col::BgSurface, cat, 0.05f + 0.13f * hoverT, alpha);
-  dl->AddRectFilled(min, max, fill, radius);
-
-  if (selected) {
-    // Soft outer glow, then the solid amber frame.
-    dl->AddRect(ImVec2(min.x - 2.0f, min.y - 2.0f), ImVec2(max.x + 2.0f, max.y + 2.0f),
-                style::u32(style::col::Accent, 0.28f * alpha), radius + 2.0f, 0, 4.0f);
-    dl->AddRect(min, max, style::u32(style::col::Accent, alpha), radius, 0,
-                m.hairline + 1.0f);
+  if (mode == ColourMode::Category) {
+    dl->AddRectFilled(min, max,
+                      style::mix(style::col::BgSurface, category, 0.10f + hover * 0.12f,
+                                 alpha),
+                      radius);
   } else {
-    dl->AddRect(min, max, style::mix(style::col::Border, cat, 0.25f + 0.60f * hoverT, alpha),
-                radius, 0, m.hairline);
+    dl->AddRectFilled(min, max, propertyRamp(massT, alpha * (0.72f + hover * 0.18f)),
+                      radius);
   }
 
-  // Category stripe along the bottom edge.
-  const float stripeH = std::max(2.0f, cell * 0.10f);
-  const float inset = cell * 0.14f;
-  dl->AddRectFilled(ImVec2(min.x + inset, max.y - inset * 0.55f - stripeH),
-                    ImVec2(max.x - inset, max.y - inset * 0.55f),
-                    style::u32(cat, alpha * (0.75f + 0.25f * hoverT)), stripeH * 0.5f);
+  const ImU32 modeBorder = mode == ColourMode::Category
+                               ? style::mix(style::col::Border, category,
+                                            0.30f + hover * 0.48f, alpha)
+                               : propertyRamp(massT, alpha * (0.65f + hover * 0.25f));
+  dl->AddRect(min, max, modeBorder, radius, 0, m.hairline);
 
-  ImFont* font = ImGui::GetFont();
-  const float fs = ImGui::GetFontSize();
-  const float symbolSize = std::min(fs, size.x * 0.62f);
-  const ImU32 symbolCol =
-      selected ? style::u32(style::col::Accent, alpha)
-               : style::mix(cat, style::col::Text, 0.42f + 0.25f * hoverT, alpha);
-  const ImVec2 symbolExtent = font->CalcTextSizeA(symbolSize, 10000.0f, 0.0f,
-                                                  element.symbol.c_str());
-  dl->AddText(font, symbolSize,
-              ImVec2(min.x + (size.x - symbolExtent.x) * 0.5f,
-                     min.y + (size.y - symbolExtent.y) * 0.5f - size.y * 0.035f),
-              symbolCol, element.symbol.c_str());
+  if (queryActive && searchMatch) {
+    const float inset = m.hairline * 2.0f;
+    dl->AddRect(ImVec2(min.x + inset, min.y + inset),
+                ImVec2(max.x - inset, max.y - inset), style::u32(style::col::Teal, alpha),
+                std::max(radius - inset, 0.0f), 0, m.hairline * 2.0f);
+  }
+  if (selected) {
+    const float glow = m.hairline * 2.0f;
+    dl->AddRect(ImVec2(min.x - glow, min.y - glow),
+                ImVec2(max.x + glow, max.y + glow),
+                style::u32(style::col::Accent, 0.28f * alpha), radius + glow, 0,
+                m.hairline * 3.0f);
+    dl->AddRect(min, max, style::u32(style::col::Accent, alpha), radius, 0,
+                m.hairline * 2.0f);
+  }
 
-  // Atomic number, top-left.
-  if (size.x >= fs * 1.25f) {
-    char zbuf[8];
-    std::snprintf(zbuf, sizeof(zbuf), "%u", static_cast<unsigned>(element.z));
-    const float zSize = std::min(fs * 0.62f, size.x * 0.26f);
-    dl->AddText(font, zSize, ImVec2(min.x + size.x * 0.10f, min.y + size.y * 0.07f),
-                style::u32(style::col::TextFaint, alpha), zbuf);
+  const float padX = fs * 0.34f;
+  const float numberSize = fs * 0.62f;
+  ImFont* body = style::fonts::body() ? style::fonts::body() : ImGui::GetFont();
+  ImFont* semibold =
+      style::fonts::semibold() ? style::fonts::semibold() : ImGui::GetFont();
+
+  char zbuf[8];
+  std::snprintf(zbuf, sizeof(zbuf), "%u", static_cast<unsigned>(element.z));
+  dl->AddText(body, numberSize, ImVec2(min.x + padX, min.y + fs * 0.20f),
+              style::u32(style::col::TextFaint, alpha), zbuf);
+
+  const float symbolSize = fs * 1.42f;
+  const ImVec2 symbolExtent =
+      semibold->CalcTextSizeA(symbolSize, size.x, 0.0f, element.symbol.c_str());
+  const float symbolY = min.y + fs * 1.14f;
+  dl->AddText(semibold, symbolSize,
+              ImVec2(min.x + (size.x - symbolExtent.x) * 0.5f, symbolY),
+              selected ? style::u32(style::col::Accent, alpha)
+                       : style::u32(style::col::Text, alpha),
+              element.symbol.c_str());
+
+  const float stripeHeight = m.hairline * 2.0f;
+  const float stripeY = max.y - fs * 0.28f;
+  const float stripeInset = fs * 0.38f;
+  const ImU32 stripe = mode == ColourMode::Category
+                           ? style::u32(category, alpha * (0.72f + hover * 0.28f))
+                           : propertyRamp(massT, alpha);
+  dl->AddRectFilled(ImVec2(min.x + stripeInset, stripeY - stripeHeight),
+                    ImVec2(max.x - stripeInset, stripeY), stripe,
+                    stripeHeight * 0.5f);
+
+  const float nameSize = fs * 0.66f;
+  const float nameWidth = size.x - padX * 2.0f;
+  const std::string fittedName = fitText(body, nameSize, element.name, nameWidth);
+  const ImVec2 nameExtent =
+      fittedName.empty()
+          ? ImVec2(0.0f, 0.0f)
+          : body->CalcTextSizeA(nameSize, nameWidth, 0.0f, fittedName.c_str());
+  const float nameY = stripeY - stripeHeight - fs * 0.24f - nameExtent.y;
+  const float availableNameHeight = nameY - (symbolY + symbolExtent.y);
+  if (!fittedName.empty() && availableNameHeight >= fs * 0.08f) {
+    dl->AddText(body, nameSize,
+                ImVec2(min.x + (size.x - nameExtent.x) * 0.5f, nameY),
+                style::u32(style::col::TextDim, alpha), fittedName.c_str());
   }
 }
 
-// Ln/An spacer tile: dashed outline, dim label.
 void drawPlaceholder(ImDrawList* dl, ImVec2 min, ImVec2 size, const char* label) {
   const style::Metrics& m = style::metrics();
-  const float cell = std::min(size.x, size.y);
+  const float fs = ImGui::GetFontSize();
   const ImVec2 max(min.x + size.x, min.y + size.y);
-  const ImU32 col = style::u32(style::col::TextFaint, 0.55f);
-  // Dashed square: four dashed edges.
-  const float dash = cell * 0.14f;
-  const float gap = cell * 0.10f;
+  const ImU32 color = style::u32(style::col::TextFaint, 0.55f);
+  const float dash = fs * 0.48f;
+  const float dashGap = fs * 0.32f;
   auto dashed = [&](ImVec2 a, ImVec2 b) {
-    const float dx = b.x - a.x, dy = b.y - a.y;
-    const float len = std::sqrt(dx * dx + dy * dy);
-    if (len < 0.01f) return;
-    const float ux = dx / len, uy = dy / len;
-    for (float s = 0.0f; s < len; s += dash + gap) {
-      const float e = std::min(s + dash, len);
-      dl->AddLine(ImVec2(a.x + ux * s, a.y + uy * s), ImVec2(a.x + ux * e, a.y + uy * e),
-                  col, m.hairline);
+    const float dx = b.x - a.x;
+    const float dy = b.y - a.y;
+    const float length = std::sqrt(dx * dx + dy * dy);
+    if (length <= m.hairline) return;
+    const float ux = dx / length;
+    const float uy = dy / length;
+    for (float start = 0.0f; start < length; start += dash + dashGap) {
+      const float end = std::min(start + dash, length);
+      dl->AddLine(ImVec2(a.x + ux * start, a.y + uy * start),
+                  ImVec2(a.x + ux * end, a.y + uy * end), color, m.hairline);
     }
   };
-  ImVec2 cmin(min.x + 1.0f, min.y + 1.0f), cmax(max.x - 1.0f, max.y - 1.0f);
-  dashed(cmin, ImVec2(cmax.x, cmin.y));
-  dashed(ImVec2(cmax.x, cmin.y), cmax);
-  dashed(cmax, ImVec2(cmin.x, cmax.y));
-  dashed(ImVec2(cmin.x, cmax.y), cmin);
 
-  ImFont* font = ImGui::GetFont();
-  const float fontSize = std::min(ImGui::GetFontSize() * 0.8f, cell * 0.4f);
-  const ImVec2 extent = font->CalcTextSizeA(fontSize, 10000.0f, 0.0f, label);
+  const float inset = m.hairline;
+  const ImVec2 innerMin(min.x + inset, min.y + inset);
+  const ImVec2 innerMax(max.x - inset, max.y - inset);
+  dashed(innerMin, ImVec2(innerMax.x, innerMin.y));
+  dashed(ImVec2(innerMax.x, innerMin.y), innerMax);
+  dashed(innerMax, ImVec2(innerMin.x, innerMax.y));
+  dashed(ImVec2(innerMin.x, innerMax.y), innerMin);
+
+  ImFont* font = style::fonts::semibold() ? style::fonts::semibold() : ImGui::GetFont();
+  const float fontSize = fs * 0.78f;
+  const ImVec2 extent = font->CalcTextSizeA(fontSize, size.x, 0.0f, label);
   dl->AddText(font, fontSize,
               ImVec2(min.x + (size.x - extent.x) * 0.5f,
                      min.y + (size.y - extent.y) * 0.5f),
-              col, label);
+              color, label);
+}
+
+void drawMassLegend(double minMass, double maxMass) {
+  const style::Metrics& m = style::metrics();
+  const float fs = ImGui::GetFontSize();
+  const float width = std::max(ImGui::GetContentRegionAvail().x, fs);
+  const float labelHeight = ImGui::GetTextLineHeight();
+  const float stripHeight = std::max(m.hairline * 4.0f, fs * 0.30f);
+  const float totalHeight = labelHeight + m.gap * 0.45f + stripHeight;
+  const ImVec2 min = ImGui::GetCursorScreenPos();
+  ImGui::Dummy(ImVec2(width, totalHeight));
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+
+  char low[32];
+  char high[32];
+  std::snprintf(low, sizeof(low), "%.4g u", minMass);
+  std::snprintf(high, sizeof(high), "%.4g u", maxMass);
+  dl->AddText(min, style::u32(style::col::TextDim), low);
+  const ImVec2 highExtent = ImGui::CalcTextSize(high);
+  dl->AddText(ImVec2(min.x + width - highExtent.x, min.y),
+              style::u32(style::col::TextDim), high);
+
+  const float stripY = min.y + labelHeight + m.gap * 0.45f;
+  constexpr int segments = 48;
+  for (int i = 0; i < segments; ++i) {
+    const float x0 = min.x + width * static_cast<float>(i) / segments;
+    const float x1 = min.x + width * static_cast<float>(i + 1) / segments;
+    dl->AddRectFilled(ImVec2(x0, stripY), ImVec2(x1, stripY + stripHeight),
+                      propertyRamp((static_cast<float>(i) + 0.5f) / segments));
+  }
+  dl->AddRect(ImVec2(min.x, stripY), ImVec2(min.x + width, stripY + stripHeight),
+              style::u32(style::col::BorderStrong), m.radiusSm, 0, m.hairline);
 }
 
 }  // namespace
 
 void drawPeriodicTable(AppState& st) {
-  static char search[96]{};
+  static std::string search;
+  static std::string previousQuery;
+  static uint8_t pendingJump = 0;
+  static int colourModeIndex = 0;
   static bool loadErrorSurfaced = false;
 
   const auto& elements = elementTable();
@@ -351,21 +326,21 @@ void drawPeriodicTable(AppState& st) {
     loadErrorSurfaced = true;
   }
 
+  const style::Metrics& m = style::metrics();
+  const float fs = ImGui::GetFontSize();
+  widgets::beginToolbar("##periodic_search_toolbar");
+  const float glyphFrame = ImGui::GetFrameHeight();
+  const ImVec2 glyphMin = ImGui::GetCursorScreenPos();
+  ImGui::Dummy(ImVec2(glyphFrame, glyphFrame));
+  icons::draw(ImGui::GetWindowDrawList(), icons::Icon::Search,
+              ImVec2(glyphMin.x + glyphFrame * 0.5f, glyphMin.y + glyphFrame * 0.5f),
+              std::min(m.iconSize, glyphFrame * 0.66f), style::u32(style::col::TextDim));
+  ImGui::SameLine();
   ImGui::SetNextItemWidth(-1.0f);
-  const bool enter = ImGui::InputTextWithHint(
-      "##element_search", "Search element...", search, sizeof(search),
+  const bool submitted = widgets::stringInputWithHint(
+      "##element_search", "Symbol, name or atomic number", search,
       ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("%s", "Type a name or symbol, Enter picks a unique match");
-  // Magnifier decoration inside the frame's right edge.
-  {
-    const ImVec2 rmin = ImGui::GetItemRectMin();
-    const ImVec2 rmax = ImGui::GetItemRectMax();
-    const float g = (rmax.y - rmin.y) * 0.44f;
-    icons::draw(ImGui::GetWindowDrawList(), icons::Icon::Search,
-                ImVec2(rmax.x - g * 0.9f, (rmin.y + rmax.y) * 0.5f), g,
-                style::u32(style::col::TextFaint));
-  }
+  widgets::endToolbar();
 
   const std::string query = lower(search);
   std::vector<const ElementData*> matched;
@@ -374,32 +349,64 @@ void drawPeriodicTable(AppState& st) {
       if (matches(element, query)) matched.push_back(&element);
     }
   }
-  if (enter && matched.size() == 1) selectElement(st, *matched.front());
 
-  // Reserve compact gutters for group and period labels, then fit all 18
-  // groups to the remaining width. The draw-list labels never advance the
-  // cursor, so every behaviour item stays inside the declared content rect.
+  if (query != previousQuery) {
+    pendingJump = 0;
+    if (!matched.empty()) {
+      const auto exact = std::find_if(matched.begin(), matched.end(), [&](const ElementData* e) {
+        return exactMatch(*e, query);
+      });
+      pendingJump = static_cast<uint8_t>((exact != matched.end() ? *exact : matched.front())->z);
+    }
+    previousQuery = query;
+  }
+  if (submitted && matched.size() == 1) selectElement(st, *matched.front());
+
+  ImGui::Spacing();
+  static constexpr const char* modeLabels[] = {"Category", "Atomic mass"};
+  widgets::segmented("##element_colour_mode", modeLabels,
+                     2, colourModeIndex);
+
+  double minMass = 0.0;
+  double maxMass = 0.0;
+  if (!elements.empty()) {
+    minMass = elements.front().mass;
+    maxMass = elements.front().mass;
+    for (const auto& element : elements) {
+      minMass = std::min(minMass, element.mass);
+      maxMass = std::max(maxMass, element.mass);
+    }
+  }
+  const ColourMode colourMode = colourModeIndex == 0 ? ColourMode::Category
+                                                      : ColourMode::AtomicMass;
+  if (colourMode == ColourMode::AtomicMass) {
+    ImGui::Spacing();
+    drawMassLegend(minMass, maxMass);
+  }
+  ImGui::Spacing();
+
+  // A font-derived minimum protects legibility. Narrow panels scroll instead of
+  // shrinking chemical symbols into an unreadable mosaic.
   const ImVec2 avail = ImGui::GetContentRegionAvail();
-  const float fs = ImGui::GetFontSize();
-  const float gapX = std::max(1.0f, ImGui::GetStyle().ItemSpacing.x * 0.18f);
-  const float gapY = std::max(2.0f, ImGui::GetStyle().ItemSpacing.y * 0.32f);
-  const float labelGutter = fs * 1.15f;
-  const float groupHeader = fs * 1.05f;
-  const float preferredW = std::max(fs * 2.60f, 40.0f);
-  const float fittedW = (avail.x - labelGutter - 17.0f * gapX) / 18.0f;
-  const float cellW = std::clamp(fittedW, fs * 0.92f, preferredW);
-  const float fittedH = (avail.y - groupHeader - 9.0f * gapY) / 10.0f;
-  const float cellH = std::clamp(fittedH, cellW, cellW * 1.65f);
-  const float stepX = cellW + gapX;
-  const float stepY = cellH + gapY;
-  const float width = labelGutter + 18.0f * cellW + 17.0f * gapX;
-  const float height = groupHeader + 10.0f * cellH + 9.0f * gapY;
+  const float gapX = std::max(m.hairline, ImGui::GetStyle().ItemSpacing.x * 0.24f);
+  const float gapY = std::max(m.hairline * 2.0f, ImGui::GetStyle().ItemSpacing.y * 0.38f);
+  const float labelGutter = fs * 1.45f;
+  const float groupHeader = ImGui::GetTextLineHeightWithSpacing();
+  const float minCellWidth = fs * 3.70f;
+  const float maxCellWidth = fs * 5.20f;
+  const float fittedWidth = (avail.x - labelGutter - gapX * 17.0f) / 18.0f;
+  const float cellWidth = std::clamp(fittedWidth, minCellWidth, maxCellWidth);
+  const float cellHeight = std::max(fs * 4.45f, cellWidth * 1.08f);
+  const float stepX = cellWidth + gapX;
+  const float stepY = cellHeight + gapY;
+  const float width = labelGutter + cellWidth * 18.0f + gapX * 17.0f;
+  const float height = groupHeader + cellHeight * 10.0f + gapY * 9.0f;
 
   ImGui::SetNextWindowContentSize(ImVec2(width, height));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-  const bool visible = ImGui::BeginChild(
-      "##ptable_grid", ImVec2(0, 0), ImGuiChildFlags_None,
-      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+  const bool visible = ImGui::BeginChild("##ptable_grid", ImVec2(0.0f, 0.0f),
+                                         ImGuiChildFlags_None,
+                                         ImGuiWindowFlags_HorizontalScrollbar);
   ImGui::PopStyleVar();
   if (!visible) {
     ImGui::EndChild();
@@ -410,16 +417,15 @@ void drawPeriodicTable(AppState& st) {
   const ImVec2 contentOrigin = ImGui::GetCursorPos();
   const ImVec2 origin(contentOrigin.x + labelGutter, contentOrigin.y + groupHeader);
   const ImVec2 contentScreen = ImGui::GetCursorScreenPos();
-  const ImVec2 originScreen(contentScreen.x + labelGutter,
-                            contentScreen.y + groupHeader);
+  const ImVec2 originScreen(contentScreen.x + labelGutter, contentScreen.y + groupHeader);
 
   for (int groupIndex = 1; groupIndex <= 18; ++groupIndex) {
     char label[4];
     std::snprintf(label, sizeof(label), "%d", groupIndex);
     const ImVec2 extent = ImGui::CalcTextSize(label);
     dl->AddText(ImVec2(originScreen.x + (groupIndex - 1) * stepX +
-                               (cellW - extent.x) * 0.5f,
-                       contentScreen.y + (groupHeader - extent.y) * 0.5f),
+                                   (cellWidth - extent.x) * 0.5f,
+                           contentScreen.y + (groupHeader - extent.y) * 0.5f),
                 style::u32(style::col::TextFaint), label);
   }
   for (int periodIndex = 1; periodIndex <= 7; ++periodIndex) {
@@ -427,26 +433,26 @@ void drawPeriodicTable(AppState& st) {
     std::snprintf(label, sizeof(label), "%d", periodIndex);
     const ImVec2 extent = ImGui::CalcTextSize(label);
     dl->AddText(ImVec2(contentScreen.x + (labelGutter - extent.x) * 0.5f,
-                       originScreen.y + (periodIndex - 1) * stepY +
-                           (cellH - extent.y) * 0.5f),
+                           originScreen.y + (periodIndex - 1) * stepY +
+                               (cellHeight - extent.y) * 0.5f),
                 style::u32(style::col::TextFaint), label);
   }
-  const char* detachedLabels[] = {"Ln", "An"};
+  static constexpr const char* detachedLabels[] = {"Ln", "An"};
   for (int i = 0; i < 2; ++i) {
     const ImVec2 extent = ImGui::CalcTextSize(detachedLabels[i]);
     dl->AddText(ImVec2(contentScreen.x + (labelGutter - extent.x) * 0.5f,
-                       originScreen.y + (8 + i) * stepY +
-                           (cellH - extent.y) * 0.5f),
+                           originScreen.y + (8 + i) * stepY +
+                               (cellHeight - extent.y) * 0.5f),
                 style::u32(style::col::TextFaint), detachedLabels[i]);
   }
+
   auto placeholderAt = [&](int group, int period, const char* label, const char* tooltip) {
     const ImVec2 pos(origin.x + (group - 1) * stepX, origin.y + (period - 1) * stepY);
     ImGui::SetCursorPos(pos);
     ImGui::PushID(label);
-    ImGui::InvisibleButton("##placeholder", ImVec2(cellW, cellH));
+    ImGui::InvisibleButton("##placeholder", ImVec2(cellWidth, cellHeight));
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tooltip);
-    const ImVec2 screen = ImGui::GetItemRectMin();
-    drawPlaceholder(dl, screen, ImVec2(cellW, cellH), label);
+    drawPlaceholder(dl, ImGui::GetItemRectMin(), ImVec2(cellWidth, cellHeight), label);
     ImGui::PopID();
   };
   placeholderAt(3, 6, "Ln", "Lanthanides (57-71), shown below");
@@ -465,19 +471,24 @@ void drawPeriodicTable(AppState& st) {
       continue;
     }
 
-    const bool match = matches(element, query);
+    const bool searchMatch = matches(element, query);
     const ImVec2 pos(origin.x + (column - 1) * stepX, origin.y + (row - 1) * stepY);
     ImGui::SetCursorPos(pos);
     ImGui::PushID(static_cast<int>(element.z));
-    ImGui::InvisibleButton("##tile", ImVec2(cellW, cellH));
+    ImGui::InvisibleButton("##tile", ImVec2(cellWidth, cellHeight));
     const bool clicked = ImGui::IsItemClicked();
     const bool hovered = ImGui::IsItemHovered();
-    const float t = widgets::hoverT(ImGui::GetItemID(), hovered);
-    const ImVec2 screen = ImGui::GetItemRectMin();
+    const float hover = widgets::hoverT(ImGui::GetItemID(), hovered);
 
-    const bool selected = st.currentElement == element.z;
-    drawTile(dl, screen, ImVec2(cellW, cellH), element, selected, match, t);
+    drawTile(dl, ImGui::GetItemRectMin(), ImVec2(cellWidth, cellHeight), element,
+             st.currentElement == element.z, !query.empty(), searchMatch, hover, colourMode,
+             minMass, maxMass);
 
+    if (pendingJump == element.z) {
+      ImGui::SetScrollHereX(0.5f);
+      ImGui::SetScrollHereY(0.5f);
+      pendingJump = 0;
+    }
     if (clicked) selectElement(st, element);
     if (hovered) elementTooltip(element);
     ImGui::PopID();

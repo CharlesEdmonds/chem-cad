@@ -81,6 +81,65 @@ std::array<double, 3> shakeDisplacement(const VesselMotion& motion, double timeS
           magnitude * motion.shakeAxis[2]};
 }
 
+void HandFollower::advance(const std::array<double, 3>& handDelta, bool held, double dt) {
+  if (!(dt > 0.0)) return;
+
+  const double naturalHz = held ? heldHz : releasedHz;
+  const double dampingRatio = held ? heldDampingRatio : releasedDampingRatio;
+  const double stiffness = 4.0 * kPi * kPi * naturalHz * naturalHz;
+  const double damping = 2.0 * dampingRatio * std::sqrt(stiffness);
+  const double limit = std::abs(excursionLimit);
+  const double accelerationCap = std::abs(accelerationLimit);
+
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    if (held) {
+      hand[axis] = std::clamp(hand[axis] + handDelta[axis], -limit, limit);
+    } else {
+      // The hand is simply gone on release; the travel home comes from the
+      // return spring acting on the vessel, not from easing the target.
+      hand[axis] = 0.0;
+    }
+
+    double value = stiffness * (hand[axis] - position[axis]) - damping * velocity[axis];
+    value = std::clamp(value, -accelerationCap, accelerationCap);
+    // Semi-implicit Euler: stable for a stiff spring at frame rates a UI sees.
+    velocity[axis] += value * dt;
+    position[axis] += velocity[axis] * dt;
+    acceleration[axis] = value;
+
+    if (!held && std::abs(value) < 1.0e-3 && std::abs(velocity[axis]) < 1.0e-4) {
+      acceleration[axis] = 0.0;
+      velocity[axis] = 0.0;
+      position[axis] = 0.0;
+    }
+  }
+
+  // The per-axis clamp bounds a cube; the fluid must see a bounded magnitude.
+  const double magnitude = std::sqrt(acceleration[0] * acceleration[0] +
+                                     acceleration[1] * acceleration[1] +
+                                     acceleration[2] * acceleration[2]);
+  if (magnitude > accelerationCap) {
+    const double scale = accelerationCap / magnitude;
+    for (double& component : acceleration) component *= scale;
+  }
+}
+
+bool HandFollower::atRest() const {
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    if (position[axis] != 0.0 || velocity[axis] != 0.0 || acceleration[axis] != 0.0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void HandFollower::reset() {
+  hand = {0.0, 0.0, 0.0};
+  position = {0.0, 0.0, 0.0};
+  velocity = {0.0, 0.0, 0.0};
+  acceleration = {0.0, 0.0, 0.0};
+}
+
 FrameAcceleration frameAcceleration(const VesselMotion& motion, double timeS) {
   constexpr std::array<double, 3> kWorldGravity{0.0, 0.0, -9.80665};
   const std::array<double, 3> gravityBody =
