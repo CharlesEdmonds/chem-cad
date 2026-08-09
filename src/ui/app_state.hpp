@@ -15,6 +15,7 @@
 #include "ui/camera.hpp"
 #include "ui/solubility_state.hpp"
 #include "ui/selection_state.hpp"
+#include "gfx/fluid_stage.hpp"
 #include "ui/viewer3d_state.hpp"
 
 namespace chemcad::ui {
@@ -115,7 +116,7 @@ struct PlannerState {
   int maxRoutes = 5;
 };
 
-enum class MainTab { Sketch, Planner, Solubility, Extraction, Toolbox };
+enum class MainTab { Sketch, Planner, Solubility, Extraction, Solvents, Toolbox };
 
 // ---------------------------------------------------------------- app state
 struct AppState {
@@ -176,6 +177,12 @@ struct AppState {
 
   // 3D molecule viewer: turntable angles and the cached conformer.
   Viewer3DState viewer3d;
+
+  // Hand-off between the extraction panel (which may not touch GL) and the
+  // app's render seam, which owns the OpenGL context and renders the 3D fluid
+  // into a framebuffer object the panel composites. Stays inert in the
+  // headless panel tests, where no renderer ever fills it in.
+  gfx::FluidStage fluidStage;
 
   void touch() {
     ++docRevision;

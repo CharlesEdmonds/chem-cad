@@ -17,6 +17,8 @@ foreach(test_src IN LISTS CHEMCAD_TEST_SOURCES)
     chemcad_naming
     chemcad_rxn
     chemcad_sol
+    chemcad_fluid
+    chemcad_gfx
     chemcad_app
     nlohmann_json::nlohmann_json
     ${CHEMCAD_RDKIT_LIBS})

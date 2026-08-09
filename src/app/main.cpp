@@ -22,6 +22,12 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #endif
 
+// Our own GL loader (gfx/gl_api.hpp) declares the GL 3.3 enums and entry
+// points this translation unit needs. GLFW would otherwise drag in the
+// system's GL 1.1 header, whose enum MACROS collide with those declarations,
+// so the platform header is suppressed here and the three legacy calls below
+// go through the loader like everything else.
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #ifdef _WIN32
 #include <GLFW/glfw3native.h>
@@ -31,6 +37,8 @@
 #include "app/screenshot.hpp"
 #include "chem/bridge.hpp"
 #include "core/paths.hpp"
+#include "gfx/fluid_renderer.hpp"
+#include "gfx/gl_api.hpp"
 #include "ui/app_state.hpp"
 #include "ui/theme.hpp"
 #include "ui/ui.hpp"
@@ -44,6 +52,7 @@ constexpr const char* kWinPlanner = "Reaction Planner";
 constexpr const char* kWinSolubility = "Solubility Suite";
 constexpr const char* kWinExtraction = "Extraction Calculator";
 constexpr const char* kWinToolbox = "Toolbox";
+constexpr const char* kWinSolvents = "Solvent Selection";
 constexpr const char* kWinPreview3D = "Preview";
 constexpr const char* kWinTools = "Tools";
 constexpr const char* kWinPTable = "Periodic Table";
@@ -302,9 +311,41 @@ void buildLayoutForTab(ImGuiID dockspaceId, chemcad::ui::MainTab tab) {
   ImGui::DockBuilderDockWindow(kWinSolubility, center);
   ImGui::DockBuilderDockWindow(kWinExtraction, center);
   ImGui::DockBuilderDockWindow(kWinToolbox, center);
+  ImGui::DockBuilderDockWindow(kWinSolvents, center);
   ImGui::DockBuilderFinish(dockspaceId);
 }
 
+
+// Renders the 3D fluid the extraction panel asked for into the renderer's own
+// framebuffer and publishes the resulting texture for the NEXT frame. Called
+// from the render seam with the GL context current; the panel itself never
+// touches GL, which is what keeps the headless panel tests able to run it.
+void renderFluidStage(AppState& state, chemcad::gfx::FluidRenderer& renderer) {
+  chemcad::gfx::FluidStage& stage = state.fluidStage;
+  stage.available = renderer.ready();
+  if (!renderer.ready()) {
+    stage.status = renderer.error().empty() ? "3D renderer unavailable" : renderer.error();
+    stage.texture = 0;
+    stage.requested = false;
+    return;
+  }
+  if (!stage.requested || stage.width <= 0 || stage.height <= 0 || !stage.snapshot) {
+    stage.requested = false;
+    return;
+  }
+  const std::uint32_t texture =
+      renderer.render(*stage.snapshot, stage.camera, stage.width, stage.height, stage.settings);
+  stage.texture = texture;
+  stage.textureWidth = renderer.width();
+  stage.textureHeight = renderer.height();
+  stage.lastFrameMs = renderer.lastFrameMs();
+  char status[192];
+  std::snprintf(status, sizeof(status), "%s | %s | %.1f ms",
+                chemcad::gfx::glVersionString(), chemcad::gfx::glRendererString(),
+                stage.lastFrameMs);
+  stage.status = status;
+  stage.requested = false;
+}
 }  // namespace
 
 int main(int, char**) {
@@ -327,6 +368,20 @@ int main(int, char**) {
   }
   glfwMakeContextCurrent(window);
   glfwSwapInterval(1);
+
+  // The fluid renderer needs modern GL entry points; ImGui's backend keeps its
+  // own private loader and its header says plainly that the rest of the app
+  // must use a different one, so this resolves ours through GLFW. A failure
+  // here is not fatal: the extraction panel falls back to the 2D schematic.
+  chemcad::gfx::FluidRenderer fluidRenderer;
+  // CHEMCAD_NO_FLUID_GL=1 keeps the loader out of the picture entirely, which is
+  // the first thing to try when diagnosing a driver-specific rendering problem.
+  const char* disableFluidGl = std::getenv("CHEMCAD_NO_FLUID_GL");
+  const bool fluidGlAllowed = !(disableFluidGl && *disableFluidGl && *disableFluidGl != '0');
+  if (fluidGlAllowed &&
+      chemcad::gfx::loadGl(reinterpret_cast<chemcad::gfx::GlProcLoader>(glfwGetProcAddress))) {
+    fluidRenderer.initialise();
+  }
 
 #ifdef _WIN32
   // Belt and braces: undecorated windows occasionally composite nothing until
@@ -455,6 +510,14 @@ int main(int, char**) {
     }
     ImGui::End();
 
+    focusTabIfRequested(chemcad::ui::MainTab::Solvents);
+    if (ImGui::Begin(kWinSolvents)) {
+      if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+        state.tab = chemcad::ui::MainTab::Solvents;
+      chemcad::ui::drawSolventSelector(state);
+    }
+    ImGui::End();
+
     focusTabIfRequested(chemcad::ui::MainTab::Toolbox);
     if (ImGui::Begin(kWinToolbox)) {
       if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
@@ -466,6 +529,7 @@ int main(int, char**) {
     // Side panels are workspace-specific: only the panels the active tab can
     // actually use are submitted, so nothing inapplicable clutters the bench.
     const bool moleculePanels = state.tab != chemcad::ui::MainTab::Extraction &&
+                                state.tab != chemcad::ui::MainTab::Solvents &&
                                 state.tab != chemcad::ui::MainTab::Toolbox;
     if (state.tab == chemcad::ui::MainTab::Sketch) {
       if (ImGui::Begin(kWinTools)) chemcad::ui::drawToolPalette(state);
@@ -487,10 +551,19 @@ int main(int, char**) {
     // ---- render
     ImGui::Render();
     glfwGetFramebufferSize(window, &fbw, &fbh);
-    glViewport(0, 0, fbw, fbh);
-    glClearColor(0.043f, 0.055f, 0.075f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    if (chemcad::gfx::glLoaded()) {
+      chemcad::gfx::glViewport(0, 0, fbw, fbh);
+      chemcad::gfx::glClearColor(0.043f, 0.055f, 0.075f, 1.0f);
+      chemcad::gfx::glClear(chemcad::gfx::GL_COLOR_BUFFER_BIT);
+    }
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    // The 3D fluid is rendered here, after ImGui has recorded its draw data
+    // and before the backend submits it: the panel published a request during
+    // submission and drew the PREVIOUS frame's texture, so the stage is always
+    // exactly one frame behind, which is invisible at 60 Hz and keeps every GL
+    // call for the fluid on the main thread inside one seam.
+    renderFluidStage(state, fluidRenderer);
 
     // PNG export must sample the framebuffer before the swap.
     if (state.pendingPngExport.has_value()) {

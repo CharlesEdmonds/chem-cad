@@ -27,6 +27,46 @@ std::string requireString(const nlohmann::json& entry, const char* key, const st
   return entry.at(key).get<std::string>();
 }
 
+bool optionalNumber(const nlohmann::json& entry, const char* key, const std::string& id,
+                    double& destination) {
+  if (!entry.contains(key)) return false;
+  if (!entry.at(key).is_number()) {
+    throw SolError("Solvent '" + id + "' has a non-numeric optional field '" + key + "'");
+  }
+  destination = entry.at(key).get<double>();
+  return true;
+}
+
+bool optionalInteger(const nlohmann::json& entry, const char* key, const std::string& id,
+                     int& destination) {
+  if (!entry.contains(key)) return false;
+  if (!entry.at(key).is_number_integer()) {
+    throw SolError("Solvent '" + id + "' has a non-integer optional field '" + key + "'");
+  }
+  destination = entry.at(key).get<int>();
+  return true;
+}
+
+bool optionalBoolean(const nlohmann::json& entry, const char* key, const std::string& id,
+                     bool& destination) {
+  if (!entry.contains(key)) return false;
+  if (!entry.at(key).is_boolean()) {
+    throw SolError("Solvent '" + id + "' has a non-boolean optional field '" + key + "'");
+  }
+  destination = entry.at(key).get<bool>();
+  return true;
+}
+
+bool optionalString(const nlohmann::json& entry, const char* key, const std::string& id,
+                    std::string& destination) {
+  if (!entry.contains(key)) return false;
+  if (!entry.at(key).is_string()) {
+    throw SolError("Solvent '" + id + "' has a non-string optional field '" + key + "'");
+  }
+  destination = entry.at(key).get<std::string>();
+  return true;
+}
+
 Solvent parseSolvent(const nlohmann::json& entry) {
   if (!entry.is_object()) {
     throw SolError("solvents.json: each solvent entry must be a JSON object");
@@ -63,6 +103,39 @@ Solvent parseSolvent(const nlohmann::json& entry) {
     }
     s.kappaT = entry.at("kappa_t").get<double>();
     s.kappaTSource = entry.value("kappa_t_source", std::string("literature"));
+  }
+
+  // Practical-selection data was added after the original database schema.
+  // Keep every key optional so an older user-provided database remains valid.
+  optionalNumber(entry, "melting_point", id, s.meltingPointC);
+  optionalNumber(entry, "flash_point", id, s.flashPointC);
+  bool hasChem21Rating = optionalInteger(entry, "chem21_safety", id, s.chem21Safety);
+  hasChem21Rating |= optionalInteger(entry, "chem21_health", id, s.chem21Health);
+  hasChem21Rating |=
+      optionalInteger(entry, "chem21_environment", id, s.chem21Environment);
+  hasChem21Rating |= optionalString(entry, "chem21_class", id, s.chem21Class);
+  optionalInteger(entry, "cost_tier", id, s.costTier);
+  optionalBoolean(entry, "peroxide_former", id, s.peroxideFormer);
+  optionalString(entry, "hazard_note", id, s.hazardNote);
+  if (!optionalString(entry, "property_source", id, s.propertySource)) {
+    s.propertySource = hasChem21Rating
+                           ? "CHEM21 rating present; physical-property source not recorded"
+                           : "unrated (no CHEM21 entry)";
+  }
+
+  if ((s.chem21Safety != 0 && (s.chem21Safety < 1 || s.chem21Safety > 10)) ||
+      (s.chem21Health != 0 && (s.chem21Health < 1 || s.chem21Health > 10)) ||
+      (s.chem21Environment != 0 &&
+       (s.chem21Environment < 1 || s.chem21Environment > 10))) {
+    throw SolError("Solvent '" + id + "' has a CHEM21 score outside 1..10");
+  }
+  if (s.costTier < 1 || s.costTier > 4) {
+    throw SolError("Solvent '" + id + "' has a cost_tier outside 1..4");
+  }
+  if (!s.chem21Class.empty() && s.chem21Class != "recommended" &&
+      s.chem21Class != "problematic" && s.chem21Class != "hazardous" &&
+      s.chem21Class != "highly hazardous") {
+    throw SolError("Solvent '" + id + "' has an invalid chem21_class");
   }
 
   // Sanity-check the numbers that the solubility model divides by / relies on

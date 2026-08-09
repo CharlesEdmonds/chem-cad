@@ -148,25 +148,93 @@ std::string formatUnits(double gramsPerMillilitre, double molarMass, int units) 
          kUnitLabels[static_cast<size_t>(clamped)];
 }
 
-// A perceptually ordered ramp (violet -> blue -> teal -> green -> yellow)
-// gives the active ternary layer's under-curve fill useful value depth.
-ImVec4 colorRampF(float t) {
-  static constexpr ImVec4 kStops[] = {
-      {0.231f, 0.114f, 0.494f, 1.0f},
-      {0.129f, 0.404f, 0.674f, 1.0f},
-      {0.204f, 0.635f, 0.573f, 1.0f},
-      {0.612f, 0.792f, 0.220f, 1.0f},
-      {0.992f, 0.906f, 0.145f, 1.0f},
+// Perceptually ordered surface ramp. Keeping the stops in one palette-token
+// table makes the value encoding easy to tune without touching mesh logic.
+ImVec4 surfaceColour(double normalisedValue) {
+  static constexpr std::array<ImVec4, 4> kStops = {
+      style::col::Violet, style::col::Teal, style::col::Accent,
+      style::col::AccentHover};
+  const float t = std::clamp(static_cast<float>(normalisedValue), 0.0f, 1.0f);
+  const float scaled = t * static_cast<float>(kStops.size() - 1);
+  const size_t index = std::min(kStops.size() - 2,
+                                static_cast<size_t>(scaled));
+  const float local = scaled - static_cast<float>(index);
+  const ImVec4& a = kStops[index];
+  const ImVec4& b = kStops[index + 1];
+  return ImVec4(a.x + (b.x - a.x) * local,
+                a.y + (b.y - a.y) * local,
+                a.z + (b.z - a.z) * local, 1.0f);
+}
+
+std::array<float, 4> cachedSurfaceColour(double normalisedValue) {
+  const ImVec4 colour = surfaceColour(normalisedValue);
+  return {colour.x, colour.y, colour.z, colour.w};
+}
+
+float surfaceLambertShade(const std::array<float, 3>& p00,
+                          const std::array<float, 3>& p10,
+                          const std::array<float, 3>& p11,
+                          const std::array<float, 3>& p01) {
+  const auto subtract = [](const std::array<float, 3>& left,
+                           const std::array<float, 3>& right) {
+    return std::array<float, 3>{left[0] - right[0],
+                                left[1] - right[1],
+                                left[2] - right[2]};
   };
-  constexpr int n = static_cast<int>(sizeof(kStops) / sizeof(kStops[0]));
-  t = std::clamp(t, 0.0f, 1.0f);
-  const float scaled = t * static_cast<float>(n - 1);
-  const int idx = std::min(n - 2, static_cast<int>(scaled));
-  const float frac = scaled - static_cast<float>(idx);
-  const ImVec4& c0 = kStops[idx];
-  const ImVec4& c1 = kStops[idx + 1];
-  return ImVec4(c0.x + (c1.x - c0.x) * frac, c0.y + (c1.y - c0.y) * frac,
-               c0.z + (c1.z - c0.z) * frac, 1.0f);
+  const auto cross = [](const std::array<float, 3>& left,
+                        const std::array<float, 3>& right) {
+    return std::array<float, 3>{
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0]};
+  };
+  const std::array<float, 3> frontNormal =
+      cross(subtract(p01, p00), subtract(p10, p00));
+  const std::array<float, 3> backNormal =
+      cross(subtract(p11, p10), subtract(p11, p01));
+  std::array<float, 3> normal{
+      frontNormal[0] + backNormal[0],
+      frontNormal[1] + backNormal[1],
+      frontNormal[2] + backNormal[2]};
+  const float length = std::sqrt(normal[0] * normal[0] +
+                                 normal[1] * normal[1] +
+                                 normal[2] * normal[2]);
+  if (length > 1e-7f) {
+    normal[0] /= length;
+    normal[1] /= length;
+    normal[2] /= length;
+  }
+  constexpr std::array<float, 3> kLight{-0.348f, 0.870f, -0.348f};
+  const float lambert = std::clamp(normal[0] * kLight[0] +
+                                       normal[1] * kLight[1] +
+                                       normal[2] * kLight[2],
+                                   0.0f, 1.0f);
+  return 0.75f + lambert * 0.40f;
+}
+
+ImVec4 shadedSurfaceColour(const std::array<float, 4>& colour, float shade,
+                           float alpha) {
+  return ImVec4(std::clamp(colour[0] * shade, 0.0f, 1.0f),
+                std::clamp(colour[1] * shade, 0.0f, 1.0f),
+                std::clamp(colour[2] * shade, 0.0f, 1.0f),
+                std::clamp(alpha, 0.0f, 1.0f));
+}
+
+bool barycentricPoint(ImVec2 point, ImVec2 a, ImVec2 b, ImVec2 c,
+                      std::array<float, 3>& weights) {
+  const float denominator =
+      (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+  if (std::fabs(denominator) < 1e-7f) return false;
+  weights[0] = ((b.y - c.y) * (point.x - c.x) +
+                (c.x - b.x) * (point.y - c.y)) /
+               denominator;
+  weights[1] = ((c.y - a.y) * (point.x - c.x) +
+                (a.x - c.x) * (point.y - c.y)) /
+               denominator;
+  weights[2] = 1.0f - weights[0] - weights[1];
+  constexpr float kTolerance = -0.002f;
+  return weights[0] >= kTolerance && weights[1] >= kTolerance &&
+         weights[2] >= kTolerance;
 }
 
 // Slot identity colours are shared by mixer rows, plot markers and axes so a
@@ -380,13 +448,14 @@ double requestedPH(const SolubilityState& sb) {
   return sb.pHAuto ? sol::kAutoPH : static_cast<double>(sb.pH);
 }
 
-int ternaryLayerCount(int sweepSteps) {
-  // The existing resolution control chooses both curve detail and stack
-  // density. Five layers remain legible in a narrow card; higher settings add
-  // depth without turning the cube into a wall of nearly identical lines.
-  if (sweepSteps >= 44) return 7;
-  if (sweepSteps >= 23) return 6;
-  return 5;
+std::array<int, 2> ternarySurfaceResolution(int sweepSteps) {
+  const float t =
+      static_cast<float>(std::clamp(sweepSteps, 2, 64) - 2) / 62.0f;
+  const int ratioQuads =
+      std::clamp(static_cast<int>(std::lround(24.0f + t * 24.0f)), 24, 48);
+  const int cQuads =
+      std::clamp(static_cast<int>(std::lround(16.0f + t * 16.0f)), 16, 32);
+  return {ratioQuads, cQuads};  // at most 48 * 32 = 1536 quads
 }
 
 void recomputeSweepIfNeeded(SolubilityState& sb,
@@ -412,74 +481,148 @@ void recomputeSweepIfNeeded(SolubilityState& sb,
   if (signature == sb.sweepSignature) return;
   sb.sweepSignature = signature;
   sb.sweepPeakIndex = -1;
-  sb.ternaryLayers.clear();
+  sb.ternarySurface = {};
   try {
     if (chosen.size() == 3) {
-      const int layerCount = ternaryLayerCount(sb.sweepSteps);
-      sb.ternaryLayers.reserve(static_cast<size_t>(layerCount));
+      TernarySurfaceMesh mesh;
+      const std::array<int, 2> resolution =
+          ternarySurfaceResolution(sb.sweepSteps);
+      mesh.ratioQuads = resolution[0];
+      mesh.cQuads = resolution[1];
+      const int ratioNodes = mesh.ratioQuads + 1;
+      const int cNodes = mesh.cQuads + 1;
+      mesh.nodes.reserve(static_cast<size_t>(ratioNodes) *
+                         static_cast<size_t>(cNodes));
+
       const std::vector<const sol::Solvent*> ab{chosen[0], chosen[1]};
       const sol::Electrolyte* background = activeBackground(sb);
       const double temperature = static_cast<double>(sb.temperatureC);
       const double backgroundM = static_cast<double>(sb.backgroundMolarity);
       const double pH = requestedPH(sb);
-      double globalBest = -1.0;
-      sol::SweepPoint globalPeak;
       std::vector<sol::Component> components{
           {chosen[0], 0.0}, {chosen[1], 0.0}, {chosen[2], 0.0}};
+      double minimum = DBL_MAX;
+      double maximum = -DBL_MAX;
+      double globalBest = -DBL_MAX;
 
-      for (int layerIndex = 0; layerIndex < layerCount; ++layerIndex) {
-        TernaryLayerSweep layer;
-        layer.fractionC =
-            static_cast<float>(layerIndex) / static_cast<float>(layerCount - 1);
-
-        // `sweep` supplies the same stable A:B sampling contract as the binary
-        // graph. Its predictions are replaced with the real three-component
-        // blend at this fixed C slice; the completed slices stay cached behind
-        // the signature above.
-        layer.points = sol::sweep(sb.solute, ab, sb.sweepSteps, temperature,
-                                  background, backgroundM, pH);
-        const double cFraction = static_cast<double>(layer.fractionC);
-        const double abFraction = 1.0 - cFraction;
-        double layerBest = -1.0;
-        for (size_t pointIndex = 0; pointIndex < layer.points.size(); ++pointIndex) {
-          sol::SweepPoint& point = layer.points[pointIndex];
-          const double fractionA = point.fractions[0] * abFraction;
-          const double fractionB = point.fractions[1] * abFraction;
-          point.fractions = {fractionA, fractionB, cFraction};
+      for (int cIndex = 0; cIndex < cNodes; ++cIndex) {
+        const double fractionC =
+            static_cast<double>(cIndex) / static_cast<double>(mesh.cQuads);
+        const double fractionAB = 1.0 - fractionC;
+        std::vector<sol::SweepPoint> row =
+            sol::sweep(sb.solute, ab, mesh.ratioQuads, temperature,
+                       background, backgroundM, pH);
+        for (sol::SweepPoint& point : row) {
+          const double ratioA = point.fractions[0];
+          const double ratioB = point.fractions[1];
+          const double fractionA = ratioA * fractionAB;
+          const double fractionB = ratioB * fractionAB;
+          point.fractions = {fractionA, fractionB, fractionC};
           components[0].volumeFraction = fractionA;
           components[1].volumeFraction = fractionB;
-          components[2].volumeFraction = cFraction;
+          components[2].volumeFraction = fractionC;
           point.prediction =
-              sol::predict(sb.solute, components, temperature, background, backgroundM, pH);
-          const double value = point.prediction.gramsPerMillilitre;
-          if (value > layerBest) {
-            layerBest = value;
-            layer.peakIndex = static_cast<int>(pointIndex);
-          }
+              sol::predict(sb.solute, components, temperature, background,
+                           backgroundM, pH);
+
+          TernarySurfaceNode node;
+          node.point = std::move(point);
+          node.cubeLinear = {static_cast<float>(ratioB), 0.0f,
+                             static_cast<float>(fractionC)};
+          node.cubeLog = node.cubeLinear;
+          const double value = node.point.prediction.gramsPerMillilitre;
+          minimum = std::min(minimum, value);
+          maximum = std::max(maximum, value);
           if (value > globalBest) {
             globalBest = value;
-            globalPeak = point;
+            mesh.peakNode = static_cast<int>(mesh.nodes.size());
           }
+          mesh.nodes.push_back(std::move(node));
         }
-        sb.ternaryLayers.push_back(std::move(layer));
       }
 
-      // The evidence card consumes the legacy global peak cache. Keeping only
-      // the winner avoids duplicating every layered sample in a second vector.
+      mesh.minimum = minimum;
+      mesh.maximum = maximum;
+      if (mesh.maximum - mesh.minimum < 1e-12) {
+        mesh.maximum =
+            mesh.minimum + std::max(1e-9, std::fabs(mesh.minimum) * 0.1 + 1e-9);
+      }
+      mesh.logFloor = std::max(maximum * 1e-6, 1e-12);
+      mesh.logMinimum = std::log10(std::max(minimum, mesh.logFloor));
+      mesh.logMaximum = std::log10(std::max(maximum, mesh.logFloor));
+      if (mesh.logMaximum - mesh.logMinimum < 1e-9) {
+        mesh.logMaximum = mesh.logMinimum + 1.0;
+      }
+
+      for (TernarySurfaceNode& node : mesh.nodes) {
+        const double value = node.point.prediction.gramsPerMillilitre;
+        node.cubeLinear[1] = static_cast<float>(
+            (value - mesh.minimum) / (mesh.maximum - mesh.minimum));
+        node.cubeLog[1] = static_cast<float>(
+            (std::log10(std::max(value, mesh.logFloor)) - mesh.logMinimum) /
+            (mesh.logMaximum - mesh.logMinimum));
+      }
+
+      mesh.quads.reserve(static_cast<size_t>(mesh.ratioQuads) *
+                         static_cast<size_t>(mesh.cQuads));
+      for (int cIndex = 0; cIndex < mesh.cQuads; ++cIndex) {
+        for (int ratioIndex = 0; ratioIndex < mesh.ratioQuads; ++ratioIndex) {
+          const uint32_t n00 = static_cast<uint32_t>(
+              cIndex * ratioNodes + ratioIndex);
+          const uint32_t n10 = n00 + 1;
+          const uint32_t n01 = n00 + static_cast<uint32_t>(ratioNodes);
+          const uint32_t n11 = n01 + 1;
+          TernarySurfaceQuad quad;
+          quad.nodes = {n00, n10, n11, n01};
+          quad.ratioIndex = ratioIndex;
+          quad.cIndex = cIndex;
+          const TernarySurfaceNode& p00 = mesh.nodes[n00];
+          const TernarySurfaceNode& p10 = mesh.nodes[n10];
+          const TernarySurfaceNode& p11 = mesh.nodes[n11];
+          const TernarySurfaceNode& p01 = mesh.nodes[n01];
+          const double linearT =
+              (p00.cubeLinear[1] + p10.cubeLinear[1] +
+               p11.cubeLinear[1] + p01.cubeLinear[1]) *
+              0.25;
+          const double logT =
+              (p00.cubeLog[1] + p10.cubeLog[1] +
+               p11.cubeLog[1] + p01.cubeLog[1]) *
+              0.25;
+          quad.colourLinear = cachedSurfaceColour(linearT);
+          quad.colourLog = cachedSurfaceColour(logT);
+          quad.shadeLinear =
+              surfaceLambertShade(p00.cubeLinear, p10.cubeLinear,
+                                  p11.cubeLinear, p01.cubeLinear);
+          quad.shadeLog =
+              surfaceLambertShade(p00.cubeLog, p10.cubeLog,
+                                  p11.cubeLog, p01.cubeLog);
+          quad.depth =
+              (p00.cubeLinear[2] + p10.cubeLinear[2] +
+               p11.cubeLinear[2] + p01.cubeLinear[2]) *
+              0.25f;
+          mesh.quads.push_back(std::move(quad));
+        }
+      }
+      std::stable_sort(
+          mesh.quads.begin(), mesh.quads.end(),
+          [](const TernarySurfaceQuad& left,
+             const TernarySurfaceQuad& right) {
+            return left.depth > right.depth;
+          });
+
       sb.sweep.clear();
-      if (globalBest >= 0.0) {
-        sb.sweep.push_back(std::move(globalPeak));
+      if (mesh.peakNode >= 0) {
+        sb.sweep.push_back(
+            mesh.nodes[static_cast<size_t>(mesh.peakNode)].point);
         sb.sweepPeakIndex = 0;
       }
+      sb.ternarySurface = std::move(mesh);
     } else {
       sb.sweep = sol::sweep(sb.solute, chosen, sb.sweepSteps,
                             static_cast<double>(sb.temperatureC),
                             activeBackground(sb),
                             static_cast<double>(sb.backgroundMolarity),
                             requestedPH(sb));
-      // Cache the maximum-solubility sample once per sweep -- this is the
-      // co-solvency peak the ratio plot marks, and finding it is work we do
-      // not want to redo on every draw call of an unchanged frame.
       double best = -1.0;
       for (size_t i = 0; i < sb.sweep.size(); ++i) {
         const double v = sb.sweep[i].prediction.gramsPerMillilitre;
@@ -491,7 +634,7 @@ void recomputeSweepIfNeeded(SolubilityState& sb,
     }
   } catch (const sol::SolError& err) {
     sb.sweep.clear();
-    sb.ternaryLayers.clear();
+    sb.ternarySurface = {};
     sb.statusMessage = std::string("Ratio sweep failed: ") + err.what();
   }
 }
@@ -1313,74 +1456,71 @@ void setTernaryComposition(SolubilityState& sb, float fractionAInPair,
 void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a,
                           const sol::Solvent& b, const sol::Solvent& c,
                           ImVec2 canvasSize) {
-  if (sb.ternaryLayers.empty() || sb.ternaryLayers.front().points.empty()) {
-    ImGui::TextDisabled("Not enough data for a layered ternary plot.");
+  const TernarySurfaceMesh& mesh = sb.ternarySurface;
+  if (mesh.nodes.empty() || mesh.quads.empty()) {
+    ImGui::TextDisabled("Not enough data for a ternary surface.");
     return;
   }
 
-  double lo = sb.ternaryLayers.front().points.front().prediction.gramsPerMillilitre;
-  double hi = lo;
-  for (const TernaryLayerSweep& layer : sb.ternaryLayers) {
-    for (const sol::SweepPoint& point : layer.points) {
-      const double value = point.prediction.gramsPerMillilitre;
-      lo = std::min(lo, value);
-      hi = std::max(hi, value);
-    }
-  }
-  lo = std::min(lo, sb.prediction.gramsPerMillilitre);
-  hi = std::max(hi, sb.prediction.gramsPerMillilitre);
-  if (hi - lo < 1e-12) hi = lo + std::max(1e-9, std::fabs(lo) * 0.1 + 1e-9);
-
-  const bool logY = sb.logScale && hi > 0.0;
-  const double logFloor = std::max(hi * 1e-6, 1e-12);
-  double yLo = logY ? std::log10(std::max(lo, logFloor)) : lo;
-  double yHi = logY ? std::log10(hi) : hi;
-  if (yHi - yLo < 1e-9) yHi = yLo + 1.0;
-  const auto mapValue = [&](double value) {
-    return logY ? std::log10(std::max(value, logFloor)) : value;
-  };
-
-  const double total = static_cast<double>(sb.ratios[0]) +
-                       static_cast<double>(sb.ratios[1]) +
-                       static_cast<double>(sb.ratios[2]);
-  const float currentC =
-      total > 1e-9 ? static_cast<float>(static_cast<double>(sb.ratios[2]) / total)
-                   : 0.0f;
-  int activeLayer = 0;
-  float activeDistance = 2.0f;
-  for (size_t i = 0; i < sb.ternaryLayers.size(); ++i) {
-    const float distance = std::fabs(sb.ternaryLayers[i].fractionC - currentC);
-    if (distance < activeDistance) {
-      activeDistance = distance;
-      activeLayer = static_cast<int>(i);
-    }
-  }
-
-  const float fontSize = ImGui::GetFontSize();
-  const float gap = style::metrics().gap;
+  const bool logY = sb.logScale;
+  const double yLo = logY ? mesh.logMinimum : mesh.minimum;
+  const double yHi = logY ? mesh.logMaximum : mesh.maximum;
   const double molarMass = sb.solute.molarMass;
   const std::string unitCaption =
       kUnitLabels[static_cast<size_t>(std::clamp(sb.units, 0, 3))];
+  const auto rawAtHeight = [&](double height) {
+    const double mapped = yLo + (yHi - yLo) * height;
+    return logY ? std::pow(10.0, mapped) : mapped;
+  };
+  const auto normaliseValue = [&](double value) {
+    const double mapped =
+        logY ? std::log10(std::max(value, mesh.logFloor)) : value;
+    return static_cast<float>(
+        std::clamp((mapped - yLo) / std::max(1e-12, yHi - yLo), 0.0, 1.0));
+  };
+  const auto cubePosition =
+      [&](const TernarySurfaceNode& node) -> const std::array<float, 3>& {
+    return logY ? node.cubeLog : node.cubeLinear;
+  };
+
+  const float fontSize = ImGui::GetFontSize();
+  const float gap = style::metrics().gap;
   float widestYLabel = ImGui::CalcTextSize(unitCaption.c_str()).x;
+  float widestLegendLabel = 0.0f;
   for (int i = 0; i <= 4; ++i) {
-    const double mapped = yLo + (yHi - yLo) * (1.0 - static_cast<double>(i) / 4.0);
-    const double raw = logY ? std::pow(10.0, mapped) : mapped;
+    const double raw = rawAtHeight(1.0 - static_cast<double>(i) / 4.0);
     const std::string label =
         formatSolubility(toDisplayUnits(raw, molarMass, sb.units));
-    widestYLabel = std::max(widestYLabel, ImGui::CalcTextSize(label.c_str()).x);
+    widestYLabel =
+        std::max(widestYLabel, ImGui::CalcTextSize(label.c_str()).x);
+    if (i % 2 == 0) {
+      const std::string legendLabel =
+          formatUnits(raw, molarMass, sb.units);
+      widestLegendLabel = std::max(
+          widestLegendLabel, ImGui::CalcTextSize(legendLabel.c_str()).x);
+    }
   }
 
-  // The 28-degree depth vector is fixed; compact layouts reduce its length,
-  // never its angle, so the cube does not shear as the panel is resized.
+  // The depth angle is invariant; resizing changes only its length.
   constexpr float kDepthTan = 0.5317094f;  // tan(28 degrees)
   const float leftPad =
-      std::min(std::max(widestYLabel + gap, fontSize * 4.2f), canvasSize.x * 0.34f);
-  const float rightPad = std::min(fontSize * 3.6f, canvasSize.x * 0.18f);
-  const float topPad = std::min(fontSize * 1.35f, canvasSize.y * 0.12f);
-  const float bottomPad = std::min(fontSize * 3.7f, canvasSize.y * 0.28f);
-  const float innerW = std::max(1.0f, canvasSize.x - leftPad - rightPad);
-  const float innerH = std::max(1.0f, canvasSize.y - topPad - bottomPad);
-  float depthX = std::min(innerW * 0.22f, innerH * 0.24f / kDepthTan);
+      std::min(std::max(widestYLabel + gap, fontSize * 4.2f),
+               canvasSize.x * 0.34f);
+  const float desiredLegend =
+      widestLegendLabel + fontSize * 1.75f + gap;
+  const float rightPad =
+      std::min(std::max(fontSize * 4.8f, desiredLegend),
+               canvasSize.x * 0.28f);
+  const float topPad =
+      std::min(fontSize * 1.35f, canvasSize.y * 0.12f);
+  const float bottomPad =
+      std::min(fontSize * 3.7f, canvasSize.y * 0.28f);
+  const float innerW =
+      std::max(1.0f, canvasSize.x - leftPad - rightPad);
+  const float innerH =
+      std::max(1.0f, canvasSize.y - topPad - bottomPad);
+  float depthX =
+      std::min(innerW * 0.22f, innerH * 0.24f / kDepthTan);
   depthX = std::max(0.0f, std::min(depthX, innerW * 0.42f));
   const float depthY = depthX * kDepthTan;
   const float plotW = std::max(1.0f, innerW - depthX);
@@ -1398,39 +1538,58 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a,
                     style::metrics().radiusMd);
   dl->PushClipRect(origin, canvasMax, true);
 
-  const ImVec2 frontBL(origin.x + leftPad, origin.y + canvasSize.y - bottomPad);
+  const ImVec2 frontBL(origin.x + leftPad,
+                       origin.y + canvasSize.y - bottomPad);
   const ImVec2 frontBR(frontBL.x + plotW, frontBL.y);
   const ImVec2 frontTL(frontBL.x, frontBL.y - plotH);
   const ImVec2 frontTR(frontBR.x, frontTL.y);
   const ImVec2 depth(depthX, -depthY);
   const auto offset = [&](ImVec2 point, float fraction) {
-    return ImVec2(point.x + depth.x * fraction, point.y + depth.y * fraction);
+    return ImVec2(point.x + depth.x * fraction,
+                  point.y + depth.y * fraction);
   };
   const ImVec2 backBL = offset(frontBL, 1.0f);
   const ImVec2 backBR = offset(frontBR, 1.0f);
   const ImVec2 backTL = offset(frontTL, 1.0f);
   const ImVec2 backTR = offset(frontTR, 1.0f);
-  const auto screenAt = [&](const TernaryLayerSweep& layer, float xFraction,
-                            double value) {
-    const float yFraction = static_cast<float>(
-        (mapValue(value) - yLo) / std::max(1e-12, yHi - yLo));
-    const ImVec2 base(
-        frontBL.x + plotW * std::clamp(xFraction, 0.0f, 1.0f),
-        frontBL.y - plotH * std::clamp(yFraction, 0.0f, 1.0f));
-    return offset(base, layer.fractionC);
+  const auto screenAt = [&](float ratioB, float fractionC, float height) {
+    return ImVec2(frontBL.x + plotW * ratioB + depth.x * fractionC,
+                  frontBL.y - plotH * height + depth.y * fractionC);
   };
-  const auto layerPoint = [&](const TernaryLayerSweep& layer, size_t pointIndex,
-                              double value) {
-    const float xFraction =
-        layer.points.size() > 1
-            ? static_cast<float>(pointIndex) /
-                  static_cast<float>(layer.points.size() - 1)
-            : 0.0f;
-    return screenAt(layer, xFraction, value);
+  const auto screenNode = [&](const TernarySurfaceNode& node) {
+    const std::array<float, 3>& position = cubePosition(node);
+    return screenAt(position[0], position[2], position[1]);
+  };
+  const auto surfaceValueAt = [&](float ratioB, float fractionC) {
+    const float ratioCoordinate =
+        std::clamp(ratioB, 0.0f, 1.0f) * mesh.ratioQuads;
+    const float cCoordinate =
+        std::clamp(fractionC, 0.0f, 1.0f) * mesh.cQuads;
+    const int ratioIndex = std::min(
+        mesh.ratioQuads - 1, static_cast<int>(std::floor(ratioCoordinate)));
+    const int cIndex = std::min(
+        mesh.cQuads - 1, static_cast<int>(std::floor(cCoordinate)));
+    const float ratioT = ratioCoordinate - static_cast<float>(ratioIndex);
+    const float cT = cCoordinate - static_cast<float>(cIndex);
+    const size_t rowWidth = static_cast<size_t>(mesh.ratioQuads + 1);
+    const size_t n00 =
+        static_cast<size_t>(cIndex) * rowWidth +
+        static_cast<size_t>(ratioIndex);
+    const size_t n10 = n00 + 1;
+    const size_t n01 = n00 + rowWidth;
+    const size_t n11 = n01 + 1;
+    const double front =
+        mesh.nodes[n00].point.prediction.gramsPerMillilitre *
+            (1.0f - ratioT) +
+        mesh.nodes[n10].point.prediction.gramsPerMillilitre * ratioT;
+    const double back =
+        mesh.nodes[n01].point.prediction.gramsPerMillilitre *
+            (1.0f - ratioT) +
+        mesh.nodes[n11].point.prediction.gramsPerMillilitre * ratioT;
+    return front * (1.0f - cT) + back * cT;
   };
 
-  // Three subtly filled faces and their grids establish volume before any
-  // data is drawn. Curves remain the visual focus.
+  // Three faint faces and their grids establish the cube behind the surface.
   dl->AddQuadFilled(backTL, backTR, backBR, backBL,
                     style::u32(style::col::BgPanel, 0.66f));
   dl->AddQuadFilled(frontTL, backTL, backBL, frontBL,
@@ -1442,224 +1601,249 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a,
     const ImVec2 rearY0(backTL.x, backTL.y + plotH * t);
     const ImVec2 rearY1(backTR.x, backTR.y + plotH * t);
     const ImVec2 frontY(frontTL.x, frontTL.y + plotH * t);
-    dl->AddLine(rearY0, rearY1, style::u32(style::col::Border, 0.28f));
-    dl->AddLine(frontY, rearY0, style::u32(style::col::Border, 0.22f));
-
+    dl->AddLine(rearY0, rearY1,
+                style::u32(style::col::Border, 0.28f));
+    dl->AddLine(frontY, rearY0,
+                style::u32(style::col::Border, 0.22f));
     const ImVec2 frontX(frontBL.x + plotW * t, frontBL.y);
     const ImVec2 backX(backBL.x + plotW * t, backBL.y);
     dl->AddLine(ImVec2(backTL.x + plotW * t, backTL.y), backX,
                 style::u32(style::col::Border, 0.24f));
-    dl->AddLine(frontX, backX, style::u32(style::col::Border, 0.22f));
-
-    const ImVec2 depthL = offset(frontBL, t);
-    const ImVec2 depthR = offset(frontBR, t);
-    dl->AddLine(depthL, depthR, style::u32(style::col::Border, 0.18f));
+    dl->AddLine(frontX, backX,
+                style::u32(style::col::Border, 0.22f));
+    dl->AddLine(offset(frontBL, t), offset(frontBR, t),
+                style::u32(style::col::Border, 0.18f));
   }
 
+  struct SurfacePick {
+    int quad = -1;
+    float ratioA = 0.5f;
+    float fractionC = 0.0f;
+    double value = 0.0;
+    std::array<double, 3> fractions{};
+  };
+  SurfacePick pick;
   const ImVec2 mouse = ImGui::GetMousePos();
-  int hoveredLayer = -1;
-  size_t hoveredPoint = 0;
-  float nearestPointDistanceSq = 1e30f;
   if (hovered) {
-    for (size_t layerIndex = 0; layerIndex < sb.ternaryLayers.size(); ++layerIndex) {
-      const TernaryLayerSweep& layer = sb.ternaryLayers[layerIndex];
-      const ImVec2 layerBase = offset(frontBL, layer.fractionC);
-      const float xFraction =
-          std::clamp((mouse.x - layerBase.x) / std::max(1.0f, plotW), 0.0f, 1.0f);
-      const size_t pointIndex = static_cast<size_t>(std::lround(
-          xFraction * static_cast<float>(layer.points.size() - 1)));
-      const ImVec2 point =
-          layerPoint(layer, pointIndex,
-                     layer.points[pointIndex].prediction.gramsPerMillilitre);
-      const float dx = mouse.x - point.x;
-      const float dy = mouse.y - point.y;
-      const float distanceSq = dx * dx + dy * dy;
-      if (distanceSq < nearestPointDistanceSq) {
-        nearestPointDistanceSq = distanceSq;
-        hoveredLayer = static_cast<int>(layerIndex);
-        hoveredPoint = pointIndex;
+    for (size_t quadIndex = 0; quadIndex < mesh.quads.size(); ++quadIndex) {
+      const TernarySurfaceQuad& quad = mesh.quads[quadIndex];
+      const TernarySurfaceNode& n00 = mesh.nodes[quad.nodes[0]];
+      const TernarySurfaceNode& n10 = mesh.nodes[quad.nodes[1]];
+      const TernarySurfaceNode& n11 = mesh.nodes[quad.nodes[2]];
+      const TernarySurfaceNode& n01 = mesh.nodes[quad.nodes[3]];
+      const std::array<ImVec2, 4> points{
+          screenNode(n00), screenNode(n10), screenNode(n11), screenNode(n01)};
+      std::array<float, 3> weights{};
+      std::array<const TernarySurfaceNode*, 3> triangle{};
+      if (barycentricPoint(mouse, points[0], points[1], points[2], weights)) {
+        triangle = {&n00, &n10, &n11};
+      } else if (barycentricPoint(mouse, points[0], points[2], points[3],
+                                  weights)) {
+        triangle = {&n00, &n11, &n01};
+      } else {
+        continue;
       }
+
+      pick.quad = static_cast<int>(quadIndex);
+      pick.value = 0.0;
+      float ratioB = 0.0f;
+      pick.fractionC = 0.0f;
+      pick.fractions = {};
+      for (size_t i = 0; i < triangle.size(); ++i) {
+        const TernarySurfaceNode& node = *triangle[i];
+        const float weight = weights[i];
+        pick.value +=
+            node.point.prediction.gramsPerMillilitre * weight;
+        ratioB += cubePosition(node)[0] * weight;
+        pick.fractionC += cubePosition(node)[2] * weight;
+      }
+      pick.ratioA = std::clamp(1.0f - ratioB, 0.0f, 1.0f);
+      pick.fractionC = std::clamp(pick.fractionC, 0.0f, 1.0f);
+      const double fractionAB = 1.0 - pick.fractionC;
+      pick.fractions = {
+          static_cast<double>(pick.ratioA) * fractionAB,
+          static_cast<double>(1.0f - pick.ratioA) * fractionAB,
+          static_cast<double>(pick.fractionC)};
     }
-    const float hoverRadius = std::max(10.0f, fontSize * 0.9f);
-    if (nearestPointDistanceSq > hoverRadius * hoverRadius) hoveredLayer = -1;
   }
 
   const auto currentPairFractionA = [&]() {
     const float pairTotal = sb.ratios[0] + sb.ratios[1];
     return pairTotal > 1e-6f ? sb.ratios[0] / pairTotal : 0.5f;
   };
-  bool changedLayer = false;
+  const auto currentFractionC = [&]() {
+    const float total = sb.ratios[0] + sb.ratios[1] + sb.ratios[2];
+    return total > 1e-6f ? sb.ratios[2] / total : 0.0f;
+  };
+  float currentA = currentPairFractionA();
+  float currentC = currentFractionC();
   if (hovered && ImGui::GetIO().MouseWheel != 0.0f) {
-    const int direction = ImGui::GetIO().MouseWheel > 0.0f ? 1 : -1;
-    const int next = std::clamp(activeLayer + direction, 0,
-                                static_cast<int>(sb.ternaryLayers.size()) - 1);
-    if (next != activeLayer) {
-      setTernaryComposition(sb, currentPairFractionA(),
-                            sb.ternaryLayers[static_cast<size_t>(next)].fractionC);
-      activeLayer = next;
-      changedLayer = true;
-    }
+    const float direction = ImGui::GetIO().MouseWheel > 0.0f ? 1.0f : -1.0f;
+    currentC = std::clamp(
+        currentC + direction / static_cast<float>(mesh.cQuads), 0.0f, 1.0f);
+    setTernaryComposition(sb, currentA, currentC);
   }
-  if (clicked && hoveredLayer >= 0 && hoveredLayer != activeLayer) {
-    setTernaryComposition(
-        sb, currentPairFractionA(),
-        sb.ternaryLayers[static_cast<size_t>(hoveredLayer)].fractionC);
-    activeLayer = hoveredLayer;
-    changedLayer = true;
+  if (clicked && pick.quad >= 0) {
+    currentA = pick.ratioA;
+    currentC = pick.fractionC;
+    setTernaryComposition(sb, currentA, currentC);
   }
-  if ((clicked && !changedLayer) || dragging) {
-    const TernaryLayerSweep& active =
-        sb.ternaryLayers[static_cast<size_t>(activeLayer)];
-    const ImVec2 activeBase = offset(frontBL, active.fractionC);
-    const float fractionB =
-        std::clamp((mouse.x - activeBase.x) / std::max(1.0f, plotW), 0.0f, 1.0f);
-    setTernaryComposition(sb, 1.0f - fractionB, active.fractionC);
+  if (dragging) {
+    const float ratioB = std::clamp(
+        (mouse.x - frontBL.x - depth.x * currentC) /
+            std::max(1.0f, plotW),
+        0.0f, 1.0f);
+    currentA = 1.0f - ratioB;
+    setTernaryComposition(sb, currentA, currentC);
   }
 
-  std::array<float, 7> layerHighlight{};
   ImGui::PushID(&sb);
-  for (size_t i = 0; i < sb.ternaryLayers.size(); ++i) {
-    ImGui::PushID(static_cast<int>(i));
-    layerHighlight[i] =
-        widgets::hoverT(ImGui::GetID("active_layer"), static_cast<int>(i) == activeLayer);
-    ImGui::PopID();
-  }
+  const float cubeHover =
+      widgets::hoverT(ImGui::GetID("surface_hover"), hovered);
+  const float cellHover =
+      widgets::hoverT(ImGui::GetID("surface_cell_hover"), pick.quad >= 0);
   ImGui::PopID();
 
   const float drawProgress = sweepDrawProgress(sb);
-  const auto drawLayer = [&](size_t layerIndex) {
-    const TernaryLayerSweep& layer = sb.ternaryLayers[layerIndex];
-    const float highlight = layerHighlight[layerIndex];
-    const float frontBrightness = 1.0f - layer.fractionC;
-    const float baseAlpha = 0.20f + frontBrightness * 0.34f;
-    const float lineAlpha = baseAlpha + (1.0f - baseAlpha) * highlight;
-    const float thickness =
-        0.85f + frontBrightness * 0.45f + highlight * 1.85f;
-    const ImU32 lineColor = style::u32(style::col::Teal, lineAlpha);
-    const ImVec2 baseline = offset(frontBL, layer.fractionC);
-    const float revealX =
-        baseline.x + std::max(0.001f, drawProgress) * plotW;
-    dl->PushClipRect(ImVec2(baseline.x, origin.y),
-                     ImVec2(revealX, canvasMax.y), true);
-
-    for (size_t i = 0; i + 1 < layer.points.size(); ++i) {
-      const ImVec2 p0 =
-          layerPoint(layer, i, layer.points[i].prediction.gramsPerMillilitre);
-      const ImVec2 p1 =
-          layerPoint(layer, i + 1,
-                     layer.points[i + 1].prediction.gramsPerMillilitre);
-      if (highlight > 0.002f) {
-        const ImVec2 b0(p0.x, baseline.y);
-        const ImVec2 b1(p1.x, baseline.y);
-        const float valueT = static_cast<float>(
-            (mapValue(layer.points[i].prediction.gramsPerMillilitre) - yLo) /
-            std::max(1e-12, yHi - yLo));
-        dl->AddQuadFilled(p0, p1, b1, b0,
-                          style::u32(colorRampF(valueT), 0.14f * highlight));
-      }
-      dl->AddLine(p0, p1, lineColor, thickness);
-    }
-    dl->PopClipRect();
-  };
-
-  // Back-to-front outlines preserve the depth order. The active slice is
-  // redrawn last so its eased highlight and fill cannot be hidden.
-  for (size_t reverse = sb.ternaryLayers.size(); reverse > 0; --reverse) {
-    const size_t index = reverse - 1;
-    if (static_cast<int>(index) != activeLayer) drawLayer(index);
-  }
-  drawLayer(static_cast<size_t>(activeLayer));
-
-  const TernaryLayerSweep& active =
-      sb.ternaryLayers[static_cast<size_t>(activeLayer)];
-  const float activeC = active.fractionC;
-  const ImVec2 activeBL = offset(frontBL, activeC);
-  const ImVec2 activeTL = offset(frontTL, activeC);
-
-  if (active.peakIndex >= 0 &&
-      static_cast<size_t>(active.peakIndex) < active.points.size()) {
-    const size_t peakIndex = static_cast<size_t>(active.peakIndex);
+  const int ratioStride = std::max(1, mesh.ratioQuads / 8);
+  const int cStride = std::max(1, mesh.cQuads / 6);
+  for (size_t quadIndex = 0; quadIndex < mesh.quads.size(); ++quadIndex) {
+    const TernarySurfaceQuad& quad = mesh.quads[quadIndex];
     const float path =
-        active.points.size() > 1
-            ? static_cast<float>(peakIndex) /
-                  static_cast<float>(active.points.size() - 1)
-            : 0.0f;
+        (static_cast<float>(quad.ratioIndex) + 0.5f) /
+        static_cast<float>(mesh.ratioQuads);
     const float reveal = markerReveal(drawProgress, path);
+    if (reveal <= 0.0f) continue;
+
+    const TernarySurfaceNode& n00 = mesh.nodes[quad.nodes[0]];
+    const TernarySurfaceNode& n10 = mesh.nodes[quad.nodes[1]];
+    const TernarySurfaceNode& n11 = mesh.nodes[quad.nodes[2]];
+    const TernarySurfaceNode& n01 = mesh.nodes[quad.nodes[3]];
+    const ImVec2 p00 = screenNode(n00);
+    const ImVec2 p10 = screenNode(n10);
+    const ImVec2 p11 = screenNode(n11);
+    const ImVec2 p01 = screenNode(n01);
+    const std::array<float, 4>& cachedColour =
+        logY ? quad.colourLog : quad.colourLinear;
+    const float shade = logY ? quad.shadeLog : quad.shadeLinear;
+    const bool activeQuad = static_cast<int>(quadIndex) == pick.quad;
+    const float hoverLift = activeQuad ? cellHover * 0.08f : 0.0f;
+    const ImVec4 fill =
+        shadedSurfaceColour(cachedColour, shade + hoverLift,
+                            reveal * (0.91f + hoverLift));
+    dl->AddQuadFilled(p00, p10, p11, p01, style::u32(fill));
+
+    const ImU32 isoline =
+        style::u32(shadedSurfaceColour(cachedColour, shade,
+                                       reveal * (0.20f + cubeHover * 0.07f)));
+    if (quad.cIndex % cStride == 0) {
+      dl->AddLine(p00, p10, isoline, style::metrics().hairline);
+    }
+    if (quad.cIndex == mesh.cQuads - 1) {
+      dl->AddLine(p01, p11, isoline, style::metrics().hairline);
+    }
+    if (quad.ratioIndex % ratioStride == 0) {
+      dl->AddLine(p00, p01, isoline, style::metrics().hairline);
+    }
+    if (quad.ratioIndex == mesh.ratioQuads - 1) {
+      dl->AddLine(p10, p11, isoline, style::metrics().hairline);
+    }
+    if (activeQuad && cellHover > 0.002f) {
+      dl->AddQuad(p00, p10, p11, p01,
+                  style::u32(style::col::Text, cellHover * 0.62f),
+                  1.0f + cellHover);
+    }
+  }
+
+  // Current blend: exact surface marker and drop line to the cube base.
+  currentA = currentPairFractionA();
+  currentC = currentFractionC();
+  const float currentB = 1.0f - currentA;
+  const double currentSurfaceValue = surfaceValueAt(currentB, currentC);
+  const float currentHeight = normaliseValue(currentSurfaceValue);
+  const ImVec2 currentBase = screenAt(currentB, currentC, 0.0f);
+  const ImVec2 currentMarker =
+      screenAt(currentB, currentC, currentHeight);
+  const float currentReveal = markerReveal(drawProgress, currentB);
+  if (currentReveal > 0.0f) {
+    const float pulse = markerPulse(1.9f);
+    dl->AddLine(currentBase, currentMarker,
+                style::u32(style::col::Violet, 0.72f * currentReveal),
+                1.35f);
+    dl->AddCircleFilled(currentMarker, 4.4f,
+                        style::u32(style::col::Violet, currentReveal));
+    dl->AddCircle(currentMarker, 6.8f + pulse * 3.5f,
+                  style::u32(style::col::Violet,
+                             currentReveal * (0.66f - pulse * 0.44f)),
+                  0, 1.35f);
+  }
+
+  // The sampled global maximum is distinct from the current blend.
+  if (mesh.peakNode >= 0 &&
+      static_cast<size_t>(mesh.peakNode) < mesh.nodes.size()) {
+    const TernarySurfaceNode& peak =
+        mesh.nodes[static_cast<size_t>(mesh.peakNode)];
+    const std::array<float, 3>& peakCube = cubePosition(peak);
+    const ImVec2 marker = screenNode(peak);
+    const ImVec2 peakBase =
+        screenAt(peakCube[0], peakCube[2], 0.0f);
+    const float reveal = markerReveal(drawProgress, peakCube[0]);
     if (reveal > 0.0f) {
-      const sol::SweepPoint& peak = active.points[peakIndex];
-      const ImVec2 marker =
-          layerPoint(active, peakIndex, peak.prediction.gramsPerMillilitre);
       const float pulse = markerPulse();
-      dl->AddLine(ImVec2(marker.x, activeBL.y), marker,
-                  style::u32(style::col::Accent, 0.68f * reveal), 1.35f);
+      dl->AddLine(peakBase, marker,
+                  style::u32(style::col::Accent, 0.62f * reveal), 1.25f);
       dl->AddCircleFilled(marker, 4.8f,
                           style::u32(style::col::Accent, reveal));
       dl->AddCircle(marker, 7.0f + pulse * 3.5f,
                     style::u32(style::col::Accent,
                                reveal * (0.66f - pulse * 0.44f)),
                     0, 1.35f);
-      const float pairTotal = static_cast<float>(peak.fractions[0] +
-                                                  peak.fractions[1]);
-      const int fractionA =
-          pairTotal > 1e-6f
-              ? static_cast<int>(std::lround(peak.fractions[0] / pairTotal * 100.0))
-              : 0;
       const std::string rawLabel =
-          "peak " + formatUnits(peak.prediction.gramsPerMillilitre, molarMass,
-                                sb.units) +
-          " at A:B " + std::to_string(fractionA) + ":" +
-          std::to_string(100 - fractionA);
-      const std::string label =
-          ellipsizeText(rawLabel, std::max(1.0f, plotW - gap));
+          "peak " +
+          formatUnits(peak.point.prediction.gramsPerMillilitre, molarMass,
+                      sb.units) +
+          " | A " +
+          std::to_string(static_cast<int>(
+              std::lround(peak.point.fractions[0] * 100.0))) +
+          "% / B " +
+          std::to_string(static_cast<int>(
+              std::lround(peak.point.fractions[1] * 100.0))) +
+          "% / C " +
+          std::to_string(static_cast<int>(
+              std::lround(peak.point.fractions[2] * 100.0))) +
+          "%";
+      const float legendBoundary = backBR.x + gap * 0.35f;
+      const float labelWidth =
+          std::max(1.0f, legendBoundary - frontTL.x - gap * 2.0f);
+      const std::string label = ellipsizeText(rawLabel, labelWidth);
       const ImVec2 labelSize = ImGui::CalcTextSize(label.c_str());
+      const float maxLabelX =
+          std::max(frontTL.x + gap * 0.4f,
+                   legendBoundary - labelSize.x - gap * 0.4f);
       const float labelX =
-          std::clamp(marker.x - labelSize.x * 0.5f, origin.x,
-                     std::max(origin.x, canvasMax.x - labelSize.x));
-      float labelY = marker.y - labelSize.y - gap;
-      if (labelY < origin.y) labelY = marker.y + gap * 0.5f;
-      labelY = std::clamp(labelY, origin.y,
-                          std::max(origin.y, canvasMax.y - labelSize.y));
-      dl->AddRectFilled(ImVec2(labelX - 3.0f, labelY - 2.0f),
-                        ImVec2(labelX + labelSize.x + 3.0f,
-                               labelY + labelSize.y + 2.0f),
-                        style::u32(style::col::BgRaised, 0.92f * reveal),
-                        style::metrics().radiusSm);
+          std::clamp(marker.x + gap * 0.55f, frontTL.x + gap * 0.4f,
+                     maxLabelX);
+      const float labelY =
+          std::clamp(marker.y - labelSize.y - gap * 0.65f,
+                     frontTL.y + gap * 0.35f,
+                     std::max(frontTL.y + gap * 0.35f,
+                              frontBL.y - labelSize.y - gap * 0.35f));
+      dl->AddRectFilled(
+          ImVec2(labelX - 3.0f, labelY - 2.0f),
+          ImVec2(labelX + labelSize.x + 3.0f,
+                 labelY + labelSize.y + 2.0f),
+          style::u32(style::col::BgRaised, 0.94f * reveal),
+          style::metrics().radiusSm);
       dl->AddText(ImVec2(labelX, labelY),
                   style::u32(style::col::Accent, reveal), label.c_str());
     }
   }
 
-  const float pairTotal = sb.ratios[0] + sb.ratios[1];
-  if (pairTotal > 1e-6f) {
-    const float fractionB = sb.ratios[1] / pairTotal;
-    const ImVec2 marker =
-        screenAt(active, fractionB, sb.prediction.gramsPerMillilitre);
-    const float reveal = markerReveal(drawProgress, fractionB);
-    if (reveal > 0.0f) {
-      const float pulse = markerPulse(1.9f);
-      dl->AddLine(ImVec2(marker.x, activeTL.y), ImVec2(marker.x, activeBL.y),
-                  style::u32(style::col::Violet, 0.52f * reveal), 1.35f);
-      dl->AddCircleFilled(marker, 4.2f,
-                          style::u32(style::col::Violet, reveal));
-      dl->AddCircle(marker, 6.5f + pulse * 3.2f,
-                    style::u32(style::col::Violet,
-                               reveal * (0.62f - pulse * 0.40f)),
-                    0, 1.25f);
-      const ImVec2 currentSize = ImGui::CalcTextSize("current");
-      const float currentX =
-          std::clamp(marker.x + gap * 0.5f, origin.x,
-                     std::max(origin.x, canvasMax.x - currentSize.x));
-      const float currentY =
-          std::clamp(activeTL.y + 2.0f, origin.y,
-                     std::max(origin.y, canvasMax.y - currentSize.y));
-      dl->AddText(ImVec2(currentX, currentY),
-                  style::u32(style::col::Violet, reveal), "current");
-    }
-  }
-
-  // Cube frame is drawn over the data so every edge remains readable.
-  const ImU32 frontEdge = style::u32(style::col::BorderStrong, 0.95f);
-  const ImU32 backEdge = style::u32(style::col::BorderStrong, 0.58f);
+  // Cube frame remains above the filled surface.
+  const ImU32 frontEdge =
+      style::u32(style::col::BorderStrong, 0.95f);
+  const ImU32 backEdge =
+      style::u32(style::col::BorderStrong, 0.58f);
   dl->AddQuad(frontTL, frontTR, frontBR, frontBL, frontEdge, 1.45f);
   dl->AddQuad(backTL, backTR, backBR, backBL, backEdge, 1.1f);
   dl->AddLine(frontTL, backTL, backEdge, 1.1f);
@@ -1667,17 +1851,17 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a,
   dl->AddLine(frontBR, backBR, backEdge, 1.1f);
   dl->AddLine(frontBL, backBL, frontEdge, 1.35f);
 
-  // Left vertical axis: bare values plus a single non-overlapping unit title.
+  // Solubility axis: bare values with one unit caption.
   for (int i = 0; i <= 4; ++i) {
     const float t = static_cast<float>(i) / 4.0f;
-    const double mapped = yLo + (yHi - yLo) * (1.0 - t);
-    const double value = logY ? std::pow(10.0, mapped) : mapped;
     const std::string label = ellipsizeText(
-        formatSolubility(toDisplayUnits(value, molarMass, sb.units)),
+        formatSolubility(
+            toDisplayUnits(rawAtHeight(1.0 - t), molarMass, sb.units)),
         std::max(1.0f, leftPad - gap * 0.75f));
     const ImVec2 size = ImGui::CalcTextSize(label.c_str());
     const float y = frontTL.y + plotH * t;
-    dl->AddLine(ImVec2(frontTL.x - 3.0f, y), ImVec2(frontTL.x + 3.0f, y),
+    dl->AddLine(ImVec2(frontTL.x - 3.0f, y),
+                ImVec2(frontTL.x + 3.0f, y),
                 style::u32(style::col::BorderStrong));
     dl->AddText(ImVec2(frontTL.x - size.x - gap * 0.65f,
                        y - size.y * 0.5f),
@@ -1686,25 +1870,28 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a,
   const std::string yTitle =
       ellipsizeText("Solubility (" + unitCaption + ")",
                     std::max(1.0f, leftPad - gap * 0.5f));
-  dl->AddText(ImVec2(origin.x + gap * 0.25f, origin.y + gap * 0.25f),
+  dl->AddText(ImVec2(origin.x + gap * 0.25f,
+                     origin.y + gap * 0.25f),
               style::u32(style::col::TextFaint), yTitle.c_str());
 
-  // Front-bottom A:B axis runs from pure A on the left to pure B on the right.
+  // Front-bottom A:B axis, pure A at left and pure B at right.
   const int xSubdivisions = plotW < fontSize * 16.0f ? 2 : 4;
   for (int i = 0; i <= xSubdivisions; ++i) {
-    const float t = static_cast<float>(i) / static_cast<float>(xSubdivisions);
+    const float t =
+        static_cast<float>(i) / static_cast<float>(xSubdivisions);
     const float x = frontBL.x + plotW * t;
     char label[16];
     std::snprintf(label, sizeof(label), "%.0f:%.0f",
                   (1.0f - t) * 100.0f, t * 100.0f);
     const ImVec2 size = ImGui::CalcTextSize(label);
-    dl->AddLine(ImVec2(x, frontBL.y - 3.0f), ImVec2(x, frontBL.y + 3.0f),
+    dl->AddLine(ImVec2(x, frontBL.y - 3.0f),
+                ImVec2(x, frontBL.y + 3.0f),
                 style::u32(style::col::BorderStrong));
-    dl->AddText(ImVec2(
-                    std::clamp(x - size.x * 0.5f, origin.x,
-                               std::max(origin.x, canvasMax.x - size.x)),
-                    frontBL.y + gap * 0.45f),
-                style::u32(style::col::TextDim), label);
+    dl->AddText(
+        ImVec2(std::clamp(x - size.x * 0.5f, origin.x,
+                          std::max(origin.x, canvasMax.x - size.x)),
+               frontBL.y + gap * 0.45f),
+        style::u32(style::col::TextDim), label);
   }
   const std::string pairTitle =
       ellipsizeText("A " + a.name + "  ->  B " + b.name, plotW);
@@ -1713,14 +1900,9 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a,
                      frontBL.y + fontSize + gap * 0.65f),
               style::u32(style::col::TextFaint), pairTitle.c_str());
 
-  // Labels sit on the exterior (left/down) side of the receding edge, never
-  // over a data layer. Showing its midpoint and endpoint remains readable
-  // even when the fixed 28-degree skew has flattened for a narrow card.
-  const int layerCount = static_cast<int>(sb.ternaryLayers.size());
-  const int middleLayer = (layerCount - 1) / 2;
-  for (int i = 0; i < layerCount; ++i) {
-    if (i != middleLayer && i != layerCount - 1) continue;
-    const float fraction = sb.ternaryLayers[static_cast<size_t>(i)].fractionC;
+  // Receding bottom edge: C fraction and solvent identity.
+  for (int i = 1; i <= 2; ++i) {
+    const float fraction = static_cast<float>(i) * 0.5f;
     const ImVec2 tick = offset(frontBL, fraction);
     char label[8];
     std::snprintf(label, sizeof(label), "%.0f%%", fraction * 100.0f);
@@ -1728,44 +1910,109 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a,
                 ImVec2(tick.x + 2.0f, tick.y + 2.0f),
                 style::u32(slotColor(2), 0.72f));
     const ImVec2 labelSize = ImGui::CalcTextSize(label);
-    const float labelX =
-        std::clamp(tick.x - labelSize.x - gap * 0.42f, origin.x,
-                   std::max(origin.x, canvasMax.x - labelSize.x));
-    const float labelY =
-        std::clamp(tick.y + 2.0f, origin.y,
-                   std::max(origin.y, canvasMax.y - labelSize.y));
-    dl->AddText(ImVec2(labelX, labelY), style::u32(style::col::TextDim), label);
+    dl->AddText(
+        ImVec2(std::clamp(tick.x - labelSize.x - gap * 0.42f, origin.x,
+                          std::max(origin.x, canvasMax.x - labelSize.x)),
+               std::clamp(tick.y + 2.0f, origin.y,
+                          std::max(origin.y,
+                                   canvasMax.y - labelSize.y))),
+        style::u32(style::col::TextDim), label);
   }
-  const float cTitleWidth = std::max(1.0f, backBL.x - origin.x - gap);
-  const std::string cTitle = ellipsizeText("C " + c.name, cTitleWidth);
+  const float cTitleWidth =
+      std::max(1.0f, backBL.x - origin.x - gap);
+  const std::string cTitle =
+      ellipsizeText("C " + c.name, cTitleWidth);
   const ImVec2 cTitleSize = ImGui::CalcTextSize(cTitle.c_str());
-  const float cTitleX =
-      std::clamp(backBL.x - cTitleSize.x - gap * 0.45f, origin.x,
-                 std::max(origin.x, canvasMax.x - cTitleSize.x));
-  const float cTitleY =
-      std::clamp(backBL.y + fontSize + gap * 0.45f, origin.y,
-                 std::max(origin.y, canvasMax.y - cTitleSize.y));
-  dl->AddText(ImVec2(cTitleX, cTitleY), style::u32(slotColor(2)),
-              cTitle.c_str());
+  dl->AddText(
+      ImVec2(std::clamp(backBL.x - cTitleSize.x - gap * 0.45f, origin.x,
+                        std::max(origin.x,
+                                 canvasMax.x - cTitleSize.x)),
+             std::clamp(backBL.y + fontSize + gap * 0.45f, origin.y,
+                        std::max(origin.y,
+                                 canvasMax.y - cTitleSize.y))),
+      style::u32(slotColor(2)), cTitle.c_str());
 
-  if (hoveredLayer >= 0) {
-    const TernaryLayerSweep& layer =
-        sb.ternaryLayers[static_cast<size_t>(hoveredLayer)];
-    const sol::SweepPoint& point = layer.points[hoveredPoint];
-    const double abTotal = point.fractions[0] + point.fractions[1];
-    const int fractionA =
-        abTotal > 1e-9
-            ? static_cast<int>(std::lround(point.fractions[0] / abTotal * 100.0))
-            : 0;
+  // Compact value legend beside the cube. It always uses the unshaded ramp.
+  const float legendX = backBR.x + gap * 0.55f;
+  const float stripWidth =
+      std::clamp(fontSize * 0.55f, 5.0f, 10.0f);
+  const float legendTop = frontTL.y;
+  const float legendBottom = frontBL.y;
+  const float legendHeight = std::max(1.0f, legendBottom - legendTop);
+  constexpr int kLegendSegments = 32;
+  for (int i = 0; i < kLegendSegments; ++i) {
+    const float t0 =
+        static_cast<float>(i) / static_cast<float>(kLegendSegments);
+    const float t1 =
+        static_cast<float>(i + 1) / static_cast<float>(kLegendSegments);
+    const float y0 = legendBottom - t0 * legendHeight;
+    const float y1 = legendBottom - t1 * legendHeight;
+    dl->AddRectFilled(ImVec2(legendX, y1),
+                      ImVec2(legendX + stripWidth, y0),
+                      style::u32(surfaceColour((t0 + t1) * 0.5f)));
+  }
+  dl->AddRect(ImVec2(legendX, legendTop),
+              ImVec2(legendX + stripWidth, legendBottom),
+              style::u32(style::col::BorderStrong), 0.0f, 0,
+              style::metrics().hairline);
+  const float legendLabelX = legendX + stripWidth + gap * 0.45f;
+  const float legendLabelWidth =
+      std::max(1.0f, canvasMax.x - legendLabelX - gap * 0.25f);
+  const std::string legendTitle =
+      ellipsizeText("VALUE (" + unitCaption + ")", legendLabelWidth);
+  dl->AddText(ImVec2(legendX, std::max(origin.y, legendTop - fontSize)),
+              style::u32(style::col::TextFaint), legendTitle.c_str());
+  for (int i = 0; i < 3; ++i) {
+    const float t = static_cast<float>(i) * 0.5f;
+    const std::string label = ellipsizeText(
+        formatUnits(rawAtHeight(t), molarMass, sb.units),
+        legendLabelWidth);
+    const ImVec2 labelSize = ImGui::CalcTextSize(label.c_str());
+    const float y =
+        legendBottom - t * legendHeight - labelSize.y * 0.5f;
+    dl->AddLine(ImVec2(legendX + stripWidth, y + labelSize.y * 0.5f),
+                ImVec2(legendX + stripWidth + 3.0f,
+                       y + labelSize.y * 0.5f),
+                style::u32(style::col::BorderStrong));
+    dl->AddText(
+        ImVec2(legendLabelX,
+               std::clamp(y, origin.y,
+                          std::max(origin.y,
+                                   canvasMax.y - labelSize.y))),
+        style::u32(style::col::TextDim), label.c_str());
+  }
+  const float currentLegendT = normaliseValue(currentSurfaceValue);
+  const float currentLegendY =
+      legendBottom - currentLegendT * legendHeight;
+  dl->AddLine(ImVec2(legendX - 2.0f, currentLegendY),
+              ImVec2(legendX + stripWidth + 3.0f, currentLegendY),
+              style::u32(style::col::Violet), 1.6f);
+  dl->AddTriangleFilled(
+      ImVec2(legendX - 2.0f, currentLegendY),
+      ImVec2(legendX - 6.0f, currentLegendY - 3.5f),
+      ImVec2(legendX - 6.0f, currentLegendY + 3.5f),
+      style::u32(style::col::Violet));
+
+  if (pick.quad >= 0) {
     const std::string tip =
-        c.name + " " +
-        std::to_string(static_cast<int>(std::lround(layer.fractionC * 100.0f))) +
-        "% layer  |  A:B " + std::to_string(fractionA) + ":" +
-        std::to_string(100 - fractionA) + "  ->  " +
-        formatUnits(point.prediction.gramsPerMillilitre, molarMass, sb.units);
+        a.name + " " +
+        std::to_string(static_cast<int>(
+            std::lround(pick.fractions[0] * 100.0))) +
+        "%  /  " + b.name + " " +
+        std::to_string(static_cast<int>(
+            std::lround(pick.fractions[1] * 100.0))) +
+        "%  /  " + c.name + " " +
+        std::to_string(static_cast<int>(
+            std::lround(pick.fractions[2] * 100.0))) +
+        "%   ->   " + formatUnits(pick.value, molarMass, sb.units);
     ImGui::SetTooltip("%s", tip.c_str());
   }
 
+  dl->AddRect(origin, canvasMax,
+              style::mix(style::col::Border, style::col::Teal, cubeHover,
+                         0.45f + cubeHover * 0.35f),
+              style::metrics().radiusMd, 0,
+              style::metrics().hairline * (1.0f + cubeHover * 0.5f));
   dl->PopClipRect();
 }
 
@@ -2042,7 +2289,7 @@ void drawSolubilitySuite(AppState& st) {
     recomputeSweepIfNeeded(sb, chosen);
   } else {
     sb.sweep.clear();
-    sb.ternaryLayers.clear();
+    sb.ternarySurface = {};
     sb.sweepSignature.clear();
   }
 
@@ -2056,7 +2303,7 @@ void drawSolubilitySuite(AppState& st) {
     style::popFont(headingFont);
     textDisabledWrapped(
         sb.solventCount == 3
-            ? "Drag the active curve to set A:B. Scroll or click a layer to set solvent C."
+            ? "Drag horizontally to set A:B. Scroll to set C, or click the surface to set both."
             : "Drag directly on the graph to set the working blend.");
 
     constexpr ImGuiTableFlags controlFlags =
@@ -2106,7 +2353,7 @@ void drawSolubilitySuite(AppState& st) {
       style::popFont(emptyFont);
       ImGui::TextWrapped("Draw a molecular structure or switch the Solute card to SMILES. "
                          "Then choose two solvents to unlock the interactive ratio graph, or "
-                         "three solvents for a layered composition cube.");
+                         "three solvents for a colour-mapped composition surface.");
     } else if (!canPredict) {
       ImGui::Spacing();
       widgets::badge("NEEDS SOLVENT", style::col::Teal);

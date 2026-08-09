@@ -16,7 +16,17 @@
       "refractive_index": 1.333,
       "kappa_t": 0.453,
       "kappa_t_source": "NIST WTT",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": 0.0,
+      "flash_point": 0.0,
+      "chem21_safety": 1,
+      "chem21_health": 1,
+      "chem21_environment": 1,
+      "chem21_class": "recommended",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "methanol",
@@ -34,7 +44,17 @@
       "refractive_index": 1.329,
       "kappa_t": 1.21,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": -97.6,
+      "flash_point": 11.0,
+      "chem21_safety": 4,
+      "chem21_health": 7,
+      "chem21_environment": 5,
+      "chem21_class": "recommended",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "optic nerve toxicant",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "ethanol",
@@ -52,7 +72,17 @@
       "refractive_index": 1.361,
       "kappa_t": 1.15,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": -114.1,
+      "flash_point": 13.0,
+      "chem21_safety": 4,
+      "chem21_health": 3,
+      "chem21_environment": 3,
+      "chem21_class": "recommended",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "highly flammable",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "1_propanol",
@@ -70,7 +100,17 @@
       "refractive_index": 1.384,
       "kappa_t": 1.03,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": -126.5,
+      "flash_point": 15.0,
+      "chem21_safety": 4,
+      "chem21_health": 4,
+      "chem21_environment": 3,
+      "chem21_class": "problematic",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "causes serious eye damage",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "2_propanol",
@@ -88,7 +128,17 @@
       "refractive_index": 1.377,
       "kappa_t": 1.24,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": -89.5,
+      "flash_point": 12.0,
+      "chem21_safety": 4,
+      "chem21_health": 3,
+      "chem21_environment": 3,
+      "chem21_class": "recommended",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "highly flammable",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "1_butanol",
@@ -106,7 +156,17 @@
       "refractive_index": 1.399,
       "kappa_t": 0.96,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -89.8,
+      "flash_point": 29.0,
+      "chem21_safety": 3,
+      "chem21_health": 4,
+      "chem21_environment": 3,
+      "chem21_class": "recommended",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "causes serious eye damage",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "tert_butanol",
@@ -124,7 +184,17 @@
       "refractive_index": 1.385,
       "kappa_t": 1.43,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": 25.5,
+      "flash_point": 11.0,
+      "chem21_safety": 4,
+      "chem21_health": 3,
+      "chem21_environment": 3,
+      "chem21_class": "recommended",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "highly flammable",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "ethylene_glycol",
@@ -142,7 +212,17 @@
       "refractive_index": 1.431,
       "kappa_t": 0.37,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": -12.9,
+      "flash_point": 111.0,
+      "chem21_safety": 1,
+      "chem21_health": 2,
+      "chem21_environment": 5,
+      "chem21_class": "recommended",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "kidney toxicant if swallowed",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "glycerol",
@@ -160,7 +240,17 @@
       "refractive_index": 1.474,
       "kappa_t": 0.22,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": 17.8,
+      "flash_point": 160.0,
+      "chem21_safety": 1,
+      "chem21_health": 1,
+      "chem21_environment": 7,
+      "chem21_class": "problematic",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "acetone",
@@ -178,7 +268,17 @@
       "refractive_index": 1.359,
       "kappa_t": 1.27,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": -94.7,
+      "flash_point": -18.0,
+      "chem21_safety": 5,
+      "chem21_health": 3,
+      "chem21_environment": 5,
+      "chem21_class": "recommended",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "highly flammable",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "mek",
@@ -196,7 +296,17 @@
       "refractive_index": 1.379,
       "kappa_t": 1.18,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -86.3,
+      "flash_point": -6.0,
+      "chem21_safety": 5,
+      "chem21_health": 3,
+      "chem21_environment": 3,
+      "chem21_class": "recommended",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "highly flammable",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "ethyl_acetate",
@@ -214,7 +324,17 @@
       "refractive_index": 1.372,
       "kappa_t": 1.13,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -83.6,
+      "flash_point": -4.0,
+      "chem21_safety": 5,
+      "chem21_health": 3,
+      "chem21_environment": 3,
+      "chem21_class": "recommended",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "highly flammable",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "methyl_acetate",
@@ -232,7 +352,17 @@
       "refractive_index": 1.362,
       "kappa_t": 1.25,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -98.0,
+      "flash_point": -10.0,
+      "chem21_safety": 5,
+      "chem21_health": 3,
+      "chem21_environment": 5,
+      "chem21_class": "problematic",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "highly flammable",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "isopropyl_acetate",
@@ -250,7 +380,17 @@
       "refractive_index": 1.377,
       "kappa_t": 1.2,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -73.0,
+      "flash_point": 2.0,
+      "chem21_safety": 4,
+      "chem21_health": 2,
+      "chem21_environment": 3,
+      "chem21_class": "recommended",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "highly flammable",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "diethyl_ether",
@@ -268,7 +408,17 @@
       "refractive_index": 1.353,
       "kappa_t": 1.88,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -116.3,
+      "flash_point": -45.0,
+      "chem21_safety": 10,
+      "chem21_health": 3,
+      "chem21_environment": 7,
+      "chem21_class": "highly hazardous",
+      "cost_tier": 1,
+      "peroxide_former": true,
+      "hazard_note": "extremely flammable; explosive peroxide former",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "thf",
@@ -286,7 +436,17 @@
       "refractive_index": 1.407,
       "kappa_t": 1.05,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": -108.4,
+      "flash_point": -14.0,
+      "chem21_safety": 6,
+      "chem21_health": 7,
+      "chem21_environment": 5,
+      "chem21_class": "problematic",
+      "cost_tier": 2,
+      "peroxide_former": true,
+      "hazard_note": "suspected carcinogen; peroxide former",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "2me_thf",
@@ -302,7 +462,17 @@
       "dielectric": 6.97,
       "boiling_point": 80.0,
       "refractive_index": 1.406,
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -136.0,
+      "flash_point": -11.0,
+      "chem21_safety": 6,
+      "chem21_health": 5,
+      "chem21_environment": 3,
+      "chem21_class": "problematic",
+      "cost_tier": 3,
+      "peroxide_former": true,
+      "hazard_note": "highly flammable; peroxide former",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "dioxane",
@@ -320,7 +490,17 @@
       "refractive_index": 1.422,
       "kappa_t": 0.77,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": 11.8,
+      "flash_point": 12.0,
+      "chem21_safety": 7,
+      "chem21_health": 6,
+      "chem21_environment": 3,
+      "chem21_class": "hazardous",
+      "cost_tier": 2,
+      "peroxide_former": true,
+      "hazard_note": "suspected carcinogen; peroxide former",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "mtbe",
@@ -338,7 +518,17 @@
       "refractive_index": 1.369,
       "kappa_t": 1.47,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -109.0,
+      "flash_point": -28.0,
+      "chem21_safety": 8,
+      "chem21_health": 3,
+      "chem21_environment": 5,
+      "chem21_class": "hazardous",
+      "cost_tier": 1,
+      "peroxide_former": true,
+      "hazard_note": "highly flammable; peroxide former",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "dcm",
@@ -356,7 +546,17 @@
       "refractive_index": 1.424,
       "kappa_t": 1.01,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -96.7,
+      "flash_point": 0.0,
+      "chem21_safety": 1,
+      "chem21_health": 7,
+      "chem21_environment": 7,
+      "chem21_class": "hazardous",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "suspected carcinogen",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "chloroform",
@@ -374,7 +574,17 @@
       "refractive_index": 1.446,
       "kappa_t": 1.02,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -63.5,
+      "flash_point": 0.0,
+      "chem21_safety": 2,
+      "chem21_health": 7,
+      "chem21_environment": 5,
+      "chem21_class": "highly hazardous",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "suspected carcinogen",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "carbon_tetrachloride",
@@ -392,7 +602,17 @@
       "refractive_index": 1.46,
       "kappa_t": 1.08,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -22.9,
+      "flash_point": 0.0,
+      "chem21_safety": 2,
+      "chem21_health": 7,
+      "chem21_environment": 10,
+      "chem21_class": "highly hazardous",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "hepatotoxic and ozone-depleting",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "1_2_dichloroethane",
@@ -410,7 +630,17 @@
       "refractive_index": 1.445,
       "kappa_t": 0.82,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -35.7,
+      "flash_point": 13.0,
+      "chem21_safety": 4,
+      "chem21_health": 10,
+      "chem21_environment": 3,
+      "chem21_class": "highly hazardous",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "carcinogen and inhalation toxicant",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "toluene",
@@ -428,7 +658,17 @@
       "refractive_index": 1.497,
       "kappa_t": 0.92,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -95.0,
+      "flash_point": 4.0,
+      "chem21_safety": 5,
+      "chem21_health": 6,
+      "chem21_environment": 3,
+      "chem21_class": "problematic",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "developmental and neurotoxicity concern",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "benzene",
@@ -446,7 +686,17 @@
       "refractive_index": 1.501,
       "kappa_t": 0.97,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": 5.5,
+      "flash_point": -11.0,
+      "chem21_safety": 6,
+      "chem21_health": 10,
+      "chem21_environment": 3,
+      "chem21_class": "highly hazardous",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "known human carcinogen",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "xylene",
@@ -464,7 +714,17 @@
       "refractive_index": 1.497,
       "kappa_t": 0.85,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -47.9,
+      "flash_point": 25.0,
+      "chem21_safety": 4,
+      "chem21_health": 2,
+      "chem21_environment": 5,
+      "chem21_class": "problematic",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "harmful by inhalation and skin contact",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "chlorobenzene",
@@ -482,7 +742,17 @@
       "refractive_index": 1.524,
       "kappa_t": 0.77,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -45.6,
+      "flash_point": 28.0,
+      "chem21_safety": 3,
+      "chem21_health": 2,
+      "chem21_environment": 7,
+      "chem21_class": "problematic",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "toxic to aquatic life",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "hexane",
@@ -500,7 +770,17 @@
       "refractive_index": 1.375,
       "kappa_t": 1.67,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -95.3,
+      "flash_point": -22.0,
+      "chem21_safety": 8,
+      "chem21_health": 7,
+      "chem21_environment": 7,
+      "chem21_class": "hazardous",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "neurotoxic (2,5-hexanedione)",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "heptane",
@@ -518,7 +798,17 @@
       "refractive_index": 1.388,
       "kappa_t": 1.43,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -90.6,
+      "flash_point": -4.0,
+      "chem21_safety": 6,
+      "chem21_health": 2,
+      "chem21_environment": 7,
+      "chem21_class": "problematic",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "aspiration and aquatic hazards",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "cyclohexane",
@@ -536,7 +826,17 @@
       "refractive_index": 1.426,
       "kappa_t": 1.14,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": 6.5,
+      "flash_point": -20.0,
+      "chem21_safety": 6,
+      "chem21_health": 3,
+      "chem21_environment": 7,
+      "chem21_class": "problematic",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "very toxic to aquatic life",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "pentane",
@@ -554,7 +854,17 @@
       "refractive_index": 1.358,
       "kappa_t": 2.05,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -129.7,
+      "flash_point": -49.0,
+      "chem21_safety": 8,
+      "chem21_health": 3,
+      "chem21_environment": 7,
+      "chem21_class": "hazardous",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "extremely flammable; aspiration hazard",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "petroleum_ether",
@@ -570,7 +880,13 @@
       "dielectric": 1.9,
       "boiling_point": 65.0,
       "refractive_index": 1.375,
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -73.0,
+      "flash_point": -40.0,
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "variable flammable hydrocarbon mixture",
+      "property_source": "unrated (no CHEM21 entry); CRC Handbook 60-80 C fraction (representative mp/fp); cost tier estimated"
     },
     {
       "id": "dmf",
@@ -588,7 +904,17 @@
       "refractive_index": 1.43,
       "kappa_t": 0.65,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": -61.0,
+      "flash_point": 58.0,
+      "chem21_safety": 3,
+      "chem21_health": 9,
+      "chem21_environment": 5,
+      "chem21_class": "hazardous",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "reproductive toxicant",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "dma",
@@ -606,7 +932,17 @@
       "refractive_index": 1.438,
       "kappa_t": 0.62,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": -20.0,
+      "flash_point": 70.0,
+      "chem21_safety": 1,
+      "chem21_health": 9,
+      "chem21_environment": 5,
+      "chem21_class": "hazardous",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "reproductive toxicant",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "dmso",
@@ -624,7 +960,17 @@
       "refractive_index": 1.479,
       "kappa_t": 0.52,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": 18.5,
+      "flash_point": 89.0,
+      "chem21_safety": 1,
+      "chem21_health": 1,
+      "chem21_environment": 5,
+      "chem21_class": "problematic",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "enhances dermal absorption of dissolved chemicals",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "nmp",
@@ -642,7 +988,17 @@
       "refractive_index": 1.47,
       "kappa_t": 0.55,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": -24.4,
+      "flash_point": 91.0,
+      "chem21_safety": 1,
+      "chem21_health": 9,
+      "chem21_environment": 7,
+      "chem21_class": "hazardous",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "reproductive toxicant",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "acetonitrile",
@@ -660,7 +1016,17 @@
       "refractive_index": 1.344,
       "kappa_t": 1.0,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": -45.7,
+      "flash_point": 2.0,
+      "chem21_safety": 4,
+      "chem21_health": 3,
+      "chem21_environment": 3,
+      "chem21_class": "problematic",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "toxic cyanide metabolite",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "nitromethane",
@@ -678,7 +1044,17 @@
       "refractive_index": 1.382,
       "kappa_t": 0.55,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -28.4,
+      "flash_point": 35.0,
+      "chem21_safety": 10,
+      "chem21_health": 2,
+      "chem21_environment": 3,
+      "chem21_class": "highly hazardous",
+      "cost_tier": 3,
+      "peroxide_former": false,
+      "hazard_note": "high decomposition energy",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "pyridine",
@@ -696,7 +1072,17 @@
       "refractive_index": 1.51,
       "kappa_t": 0.73,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": -41.6,
+      "flash_point": 20.0,
+      "chem21_safety": 3,
+      "chem21_health": 2,
+      "chem21_environment": 3,
+      "chem21_class": "hazardous",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "acute toxicant with low exposure limit",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "triethylamine",
@@ -714,7 +1100,17 @@
       "refractive_index": 1.401,
       "kappa_t": 1.25,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -114.7,
+      "flash_point": -7.0,
+      "chem21_safety": 6,
+      "chem21_health": 7,
+      "chem21_environment": 3,
+      "chem21_class": "hazardous",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "corrosive and highly flammable",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "acetic_acid",
@@ -732,7 +1128,17 @@
       "refractive_index": 1.372,
       "kappa_t": 0.91,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": 16.6,
+      "flash_point": 39.0,
+      "chem21_safety": 3,
+      "chem21_health": 7,
+      "chem21_environment": 3,
+      "chem21_class": "problematic",
+      "cost_tier": 1,
+      "peroxide_former": false,
+      "hazard_note": "corrosive",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "formic_acid",
@@ -750,7 +1156,17 @@
       "refractive_index": 1.371,
       "kappa_t": 0.75,
       "kappa_t_source": "literature",
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": 8.4,
+      "flash_point": 49.0,
+      "chem21_safety": 3,
+      "chem21_health": 7,
+      "chem21_environment": 3,
+      "chem21_class": "problematic",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "corrosive",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "tfa",
@@ -766,7 +1182,13 @@
       "dielectric": 8.55,
       "boiling_point": 72.4,
       "refractive_index": 1.285,
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": -15.4,
+      "flash_point": 0.0,
+      "cost_tier": 4,
+      "peroxide_former": false,
+      "hazard_note": "strongly corrosive",
+      "property_source": "unrated (no CHEM21 entry); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "cs2",
@@ -784,7 +1206,17 @@
       "refractive_index": 1.627,
       "kappa_t": 0.95,
       "kappa_t_source": "literature",
-      "water_miscible": false
+      "water_miscible": false,
+      "melting_point": -111.6,
+      "flash_point": -30.0,
+      "chem21_safety": 9,
+      "chem21_health": 7,
+      "chem21_environment": 7,
+      "chem21_class": "highly hazardous",
+      "cost_tier": 2,
+      "peroxide_former": false,
+      "hazard_note": "reproductive and neurotoxic; extremely flammable",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     },
     {
       "id": "hmpa",
@@ -800,7 +1232,17 @@
       "dielectric": 30.0,
       "boiling_point": 233.0,
       "refractive_index": 1.459,
-      "water_miscible": true
+      "water_miscible": true,
+      "melting_point": 7.2,
+      "flash_point": 104.4,
+      "chem21_safety": 1,
+      "chem21_health": 9,
+      "chem21_environment": 7,
+      "chem21_class": "highly hazardous",
+      "cost_tier": 4,
+      "peroxide_former": false,
+      "hazard_note": "carcinogen",
+      "property_source": "CHEM21 2016 (S/H/E/class); NIST Chemistry WebBook/CRC Handbook (mp/fp); cost tier estimated"
     }
   ]
 }
