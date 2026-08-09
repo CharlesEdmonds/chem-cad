@@ -14,6 +14,10 @@
 #include "sol/funnel.hpp"
 #include "sol/solubility.hpp"
 
+namespace chemcad::app {
+class TaskRunner;
+}
+
 namespace chemcad::ui {
 
 // Payload handed from the Solubility Suite to the Extraction Lab: the suite's
@@ -146,7 +150,18 @@ struct SolubilityState {
   // second frame onwards Begin() hides unselected dock tabs correctly, so two
   // consecutive draws mean the panel really is on top.
   sol::Simulation funnel;
-  std::unique_ptr<fluid::Simulation> fluid;
+  // Building the particle simulation runs the interfacial calibration, which
+  // costs seconds the first time a given resolution and material pair is seen
+  // on a machine. It therefore happens on a worker thread and the panel shows
+  // the analytic schematic until it lands; `fluidBuildSignature` is the
+  // configuration the in-flight build was started for, so a build whose inputs
+  // the user has already changed is discarded instead of installed.
+  // shared_ptr, not unique_ptr: TaskRunner completions live in std::function,
+  // which requires a copyable payload.
+  std::shared_ptr<fluid::Simulation> fluid;
+  app::TaskRunner* fluidTasks = nullptr;  // borrowed from AppState each frame
+  bool fluidBuildPending = false;
+  std::size_t fluidBuildSignature = 0;
   int extractionLastDrawnFrame = -1;
   bool fluidConstructionAllowed = false;
   bool funnelRunning = false;

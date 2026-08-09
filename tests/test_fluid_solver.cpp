@@ -532,8 +532,8 @@ TEST_CASE("setQuality recharges consistently and remains deterministic") {
   CHECK(recharged->py == fresh->py);
   CHECK(recharged->pz == fresh->pz);
 
-  changedAfterCharge.setManualAcceleration({0.0, 0.0, -kGravity});
-  configuredFirst.setManualAcceleration({0.0, 0.0, -kGravity});
+  changedAfterCharge.setManualMotion({0.0, 0.0, 0.0}, {0.0, 0.0, -kGravity});
+  configuredFirst.setManualMotion({0.0, 0.0, 0.0}, {0.0, 0.0, -kGravity});
   changedAfterCharge.advance(30.0e-3);
   configuredFirst.advance(30.0e-3);
   const auto advancedA = changedAfterCharge.snapshot();

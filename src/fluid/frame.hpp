@@ -45,8 +45,13 @@ struct VesselMotion {
   double shakeAmplitudeM = 0.05;
   std::array<double, 3> shakeAxis{0.0, 0.0, 1.0};  // unit; z = vertical shake
 
-  // Hand motion: acceleration in world coordinates, m/s^2, already smoothed.
+  // Hand motion: acceleration in world coordinates, m/s^2, already smoothed,
+  // and the world displacement of the vessel that produced it. The solver only
+  // needs the acceleration; the displacement is carried so the renderer can
+  // draw the glassware where the hand actually put it, instead of leaving a
+  // stationary vessel with its contents mysteriously sloshing.
   std::array<double, 3> manualAcceleration{0.0, 0.0, 0.0};
+  std::array<double, 3> manualOffset{0.0, 0.0, 0.0};
 
   // Vessel attitude: tilt about the horizontal axes, and the inversion the
   // user performs to vent or to drain from the neck.
@@ -67,6 +72,11 @@ struct FrameAcceleration {
 //   p(t)   = A sin(2 pi f t) axis
 //   p''(t) = -A (2 pi f)^2 sin(2 pi f t) axis
 std::array<double, 3> shakeAcceleration(const VesselMotion&, double timeS);
+
+// Displacement of the same driven shake, p(t) = A sin(2 pi f t) axis. This is
+// the exact integral of shakeAcceleration, so the drawn vessel and the forcing
+// the fluid feels can never disagree.
+std::array<double, 3> shakeDisplacement(const VesselMotion&, double timeS);
 
 // Assembles the frame terms: rotates gravity into the vessel, subtracts the
 // translational forcing (shake plus hand motion) and carries the rotation

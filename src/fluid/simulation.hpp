@@ -77,8 +77,12 @@ class Simulation {
   // `durationS` at `frequencyHz` and stroke half-amplitude `amplitudeM`.
   void shake(const std::array<double, 3>& axis, double durationS, double frequencyHz,
              double amplitudeM);
-  // Hand motion: world-frame acceleration, already smoothed by the caller.
-  void setManualAcceleration(const std::array<double, 3>&);
+  // Hand motion: the vessel's world displacement and the world-frame
+  // acceleration it produces, both already smoothed by the caller. The solver
+  // uses only the acceleration; the displacement is published in the snapshot
+  // pose so the vessel is drawn where the hand is holding it.
+  void setManualMotion(const std::array<double, 3>& offset,
+                       const std::array<double, 3>& acceleration);
   // Vessel attitude, for tilting and inverting.
   void setPose(const Pose&, const std::array<double, 3>& angularVelocity,
                const std::array<double, 3>& angularAcceleration);

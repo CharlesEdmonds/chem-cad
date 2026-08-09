@@ -414,6 +414,11 @@ int main(int, char**) {
 
   AppState state;
   wireCallbacks(state);
+  // The extraction workspace needs a particle simulation whose interfacial
+  // calibration is expensive the first time a machine sees a given resolution
+  // and material pair. Starting it here puts that on a worker thread while the
+  // user is still on the sketch canvas, so the workspace is ready when opened.
+  chemcad::ui::warmExtractionPhysics(state);
 
   ChromeState chrome;
   chemcad::ui::MainTab layoutTab = state.tab;

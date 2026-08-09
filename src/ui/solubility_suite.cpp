@@ -23,6 +23,7 @@
 #include "sol/solubility.hpp"
 #include "sol/solvent.hpp"
 #include "ui/app_state.hpp"
+#include "ui/charts.hpp"
 #include "ui/solubility_state.hpp"
 #include "ui/theme.hpp"
 #include "ui/ui.hpp"
@@ -949,48 +950,77 @@ void drawScreeningTable(SolubilityState& sb) {
   }
 
   textDisabledWrapped("Click a row to load it as Solvent A.");
-  const float height =
-      std::max(ImGui::GetFontSize() * 7.0f, ImGui::GetContentRegionAvail().y);
-  constexpr ImGuiTableFlags flags =
-      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
-      ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingStretchProp;
-  if (!ImGui::BeginTable("##screen_table", 4, flags, ImVec2(0.0f, height))) return;
-  ImGui::TableSetupScrollFreeze(0, 1);
-  ImGui::TableSetupColumn("Solvent", ImGuiTableColumnFlags_WidthStretch, 0.36f);
-  ImGui::TableSetupColumn("Family", ImGuiTableColumnFlags_WidthStretch, 0.20f);
-  ImGui::TableSetupColumn("Solubility", ImGuiTableColumnFlags_WidthStretch, 0.32f);
-  ImGui::TableSetupColumn("RED", ImGuiTableColumnFlags_WidthStretch, 0.12f);
-  ImGui::TableHeadersRow();
 
+  std::vector<double> displayValues;
+  std::vector<std::string> labels;
+  std::vector<std::string> annotations;
+  displayValues.reserve(sb.screening.size());
+  labels.reserve(sb.screening.size());
+  annotations.reserve(sb.screening.size());
+
+  double bestValue = 0.0;
+  double smallestPositive = 0.0;
   for (const sol::ScreenRow& row : sb.screening) {
-    ImGui::PushID(row.solvent->id.c_str());
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    const std::string solventLabel =
-        ellipsizeText(row.solvent->name, ImGui::GetContentRegionAvail().x);
-    const bool clicked =
-        ImGui::Selectable(solventLabel.c_str(), false,
-                          ImGuiSelectableFlags_SpanAllColumns |
-                              ImGuiSelectableFlags_AllowOverlap);
-    const bool hovered = ImGui::IsItemHovered();
-    drawInteractiveBorder("##screening_row_feedback", style::col::Teal);
-    if (clicked) {
+    const double value =
+        toDisplayUnits(row.prediction.gramsPerMillilitre, sb.solute.molarMass, sb.units);
+    displayValues.push_back(value);
+    labels.push_back(row.solvent->name);
+    if (std::isfinite(value) && value > 0.0) {
+      annotations.push_back(
+          formatUnits(row.prediction.gramsPerMillilitre, sb.solute.molarMass, sb.units));
+      bestValue = std::max(bestValue, value);
+      if (smallestPositive == 0.0 || value < smallestPositive) smallestPositive = value;
+    } else {
+      annotations.emplace_back("--");
+    }
+  }
+
+  double floorLog = 0.0;
+  double logSpan = 0.0;
+  if (bestValue > 0.0) {
+    const double bestLog = std::log10(bestValue);
+    // A two-decade log10 window. Solubility across 45 solvents spans orders of
+    // magnitude, so a linear bar shows only the winner; but a wide window is no
+    // better, because it compresses the handful of solvents anyone would
+    // actually choose between into indistinguishable full-length bars. Two
+    // decades makes the best solvent a full bar, a ten-times-worse one a half
+    // bar, and anything a hundred times worse an empty one -- which is the
+    // honest reading: at that point it is not a candidate.
+    floorLog = std::max(std::log10(smallestPositive), bestLog - 2.0);
+    logSpan = bestLog - floorLog;
+  }
+
+  std::vector<charts::BarRow> bars;
+  bars.reserve(sb.screening.size());
+  for (size_t i = 0; i < sb.screening.size(); ++i) {
+    double scaledValue = 0.0;
+    if (std::isfinite(displayValues[i]) && displayValues[i] > 0.0) {
+      scaledValue = logSpan > 0.0
+                        ? std::clamp((std::log10(displayValues[i]) - floorLog) / logSpan,
+                                     0.0, 1.0)
+                        : 1.0;
+    }
+    bars.push_back({labels[i].c_str(), scaledValue, annotations[i].c_str(),
+                    style::col::Teal,
+                    sb.screening[i].solvent->id == sb.solventIds[0]});
+  }
+
+  const float viewportHeight =
+      std::max(ImGui::GetFontSize() * 7.0f, ImGui::GetContentRegionAvail().y);
+  if (ImGui::BeginChild("##screen_chart_scroll", ImVec2(0.0f, viewportHeight),
+                        ImGuiChildFlags_Borders)) {
+    const float chartHeight =
+        static_cast<float>(bars.size()) * ImGui::GetTextLineHeightWithSpacing();
+    const int clicked = charts::rankedBars(
+        "##screen_ranked_bars", bars.data(), static_cast<int>(bars.size()),
+        ImVec2(ImGui::GetContentRegionAvail().x, chartHeight));
+    if (clicked >= 0) {
+      const sol::ScreenRow& row = sb.screening[static_cast<size_t>(clicked)];
       sb.solventIds[0] = row.solvent->id;
       sb.statusMessage = "Solvent A := " + row.solvent->name;
     }
-    if (hovered) ImGui::SetTooltip("%s\nLoad as Solvent A", row.solvent->name.c_str());
-    ImGui::TableNextColumn();
-    ImGui::TextWrapped("%s", row.solvent->family.c_str());
-    ImGui::TableNextColumn();
-    ImGui::TextWrapped(
-        "%s", formatUnits(row.prediction.gramsPerMillilitre, sb.solute.molarMass, sb.units).c_str());
-    ImGui::TableNextColumn();
-    char red[16];
-    std::snprintf(red, sizeof(red), "%.2f", row.prediction.relativeEnergyDifference);
-    ImGui::TextUnformatted(red);
-    ImGui::PopID();
   }
-  ImGui::EndTable();
+  ImGui::EndChild();
 }
 
 // Kirkwood-Buff integrals, the Yalkowsky ideal term and the Hildebrand

@@ -1,5 +1,6 @@
 #include "fluid/frame.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include "fluid/kernels.hpp"
@@ -51,6 +52,31 @@ std::array<double, 3> shakeAcceleration(const VesselMotion& motion, double timeS
   const double omega = 2.0 * kPi * motion.shakeFrequencyHz;
   const double magnitude =
       -motion.shakeAmplitudeM * omega * omega * std::sin(omega * timeS) / axisNorm;
+  return {magnitude * motion.shakeAxis[0], magnitude * motion.shakeAxis[1],
+          magnitude * motion.shakeAxis[2]};
+}
+
+std::array<double, 3> shakeDisplacement(const VesselMotion& motion, double timeS) {
+  if (!motion.shaking || motion.shakeRemainingS <= 0.0 || motion.shakeAmplitudeM == 0.0 ||
+      motion.shakeFrequencyHz == 0.0) {
+    return {0.0, 0.0, 0.0};
+  }
+
+  const double axisNorm = std::sqrt(motion.shakeAxis[0] * motion.shakeAxis[0] +
+                                    motion.shakeAxis[1] * motion.shakeAxis[1] +
+                                    motion.shakeAxis[2] * motion.shakeAxis[2]);
+  if (axisNorm <= 1.0e-15) return {0.0, 0.0, 0.0};
+
+  const double omega = 2.0 * kPi * motion.shakeFrequencyHz;
+  // The stroke is eased in and out over one period so starting or ending a
+  // shake mid-cycle cannot teleport the vessel; the fluid already sees the
+  // matching acceleration discontinuity as an impulse, which is physical, but a
+  // jump in POSITION would just read as a rendering glitch.
+  const double period = 1.0 / std::abs(motion.shakeFrequencyHz);
+  const double envelope =
+      std::min(1.0, std::min(timeS, motion.shakeRemainingS) / period);
+  const double magnitude =
+      motion.shakeAmplitudeM * envelope * std::sin(omega * timeS) / axisNorm;
   return {magnitude * motion.shakeAxis[0], magnitude * motion.shakeAxis[1],
           magnitude * motion.shakeAxis[2]};
 }

@@ -23,6 +23,7 @@
 #include "sol/funnel.hpp"
 #include "sol/solubility.hpp"
 #include "ui/app_state.hpp"
+#include "ui/charts.hpp"
 #include "ui/solubility_state.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -640,10 +641,21 @@ void drawCrossSection(const fluid::Snapshot& snapshot, const sol::Simulation& ch
   draw->AddRectFilled(regionMin, regionMax, style::u32(style::col::BgSurface));
 
   const VesselGeometry& geo = cachedGeometry(charge);
-  const Transform tf = buildTransform(geo, regionMin, regionSize);
-  drawGroundShadow(draw, geo, tf);
+  const Transform stationary = buildTransform(geo, regionMin, regionSize);
+  // The solver works in vessel coordinates, so a shaken vessel is stationary in
+  // its own frame and only the contents appear to move. Offsetting the
+  // transform by the published world displacement puts the glassware back in
+  // the hand: the vessel travels and the liquid lags inside it, which is what a
+  // shaken separatory funnel actually looks like.
+  Transform tf = stationary;
+  tf.origin.x += static_cast<float>(snapshot.pose.position[0]) * tf.scale;
+  tf.origin.y -= static_cast<float>(snapshot.pose.position[2]) * tf.scale;
+
+  drawGroundShadow(draw, geo, stationary);
   drawVesselGlass(draw, charge, geo, tf);
-  drawGraduation(draw, geo, tf, regionMin);
+  // The graduation is a fixed scale read against the bench, not paint on the
+  // glass, so it stays put while the vessel moves past it.
+  drawGraduation(draw, geo, stationary, regionMin);
   drawBulkBands(draw, snapshot, charge, geo, tf);
   drawLiquidSection(draw, snapshot, charge, geo, tf);
   drawGlassHighlights(draw, charge, geo, tf);
@@ -940,41 +952,101 @@ bool runFluidInteraction(SolubilityState& s, Interaction&& interaction,
   }
 }
 
-bool rechargeFluid(SolubilityState& s, bool forceAttempt = false) {
-  const bool charged = runFluidInteraction(
-      s,
-      [&s] {
-        // Configure a fresh candidate so a failed calibration cannot leave the
-        // panel holding a partially configured Simulation.
-        auto candidate = std::make_unique<fluid::Simulation>();
-        candidate->setVessel(s.funnel.vessel, s.funnel.vesselVolumeMl);
-        candidate->setQuality(
-            kFluidPresets[selectedFluidPreset(s)].quality);
-        candidate->setPhases(fluidMaterials(s.funnel), interfaceTensions(s.funnel));
-        s.fluidManualAcceleration = {0.0, 0.0, 0.0};
-        candidate->setManualAcceleration(s.fluidManualAcceleration);
-        s.fluid = std::move(candidate);
-        s.fluidShakeProgressValid = false;
-        s.fluidShakeStartElapsedS = 0.0;
-        s.fluidShakeEndElapsedS = 0.0;
+// Everything the worker needs, copied off the UI thread so the build touches no
+// panel state while it runs.
+struct FluidBuildRequest {
+  sol::Vessel vessel = sol::Vessel::SeparatoryFunnel;
+  double vesselVolumeMl = 250.0;
+  fluid::QualityProfile quality;
+  std::vector<fluid::PhaseMaterial> materials;
+  std::vector<double> tensions;
+};
+
+struct FluidBuildResult {
+  std::shared_ptr<fluid::Simulation> simulation;
+  std::string error;
+};
+
+// Starts a background build. The panel keeps drawing the analytic schematic
+// until it lands, which is what stops a cold interfacial calibration from
+// freezing the workspace for seconds the first time it is opened.
+void startFluidBuild(SolubilityState& s) {
+  if (s.fluidBuildPending || s.fluidTasks == nullptr) return;
+
+  FluidBuildRequest request;
+  request.vessel = s.funnel.vessel;
+  request.vesselVolumeMl = s.funnel.vesselVolumeMl;
+  request.quality = kFluidPresets[selectedFluidPreset(s)].quality;
+  request.materials = fluidMaterials(s.funnel);
+  request.tensions = interfaceTensions(s.funnel);
+
+  const std::size_t signature = fluidConfigurationSignature(s);
+  s.fluidBuildPending = true;
+  s.fluidBuildSignature = signature;
+  s.fluidManualAcceleration = {0.0, 0.0, 0.0};
+  s.fluidShakeProgressValid = false;
+  s.fluidShakeStartElapsedS = 0.0;
+  s.fluidShakeEndElapsedS = 0.0;
+  s.fluidTasks->run<FluidBuildResult>(
+      [request] {
+        FluidBuildResult result;
+        try {
+          // Configured fully before it is published, so a failed calibration
+          // can never hand the panel a half-built Simulation.
+          auto candidate = std::make_shared<fluid::Simulation>();
+          candidate->setVessel(request.vessel, request.vesselVolumeMl);
+          candidate->setQuality(request.quality);
+          candidate->setPhases(request.materials, request.tensions);
+          candidate->setManualMotion({0.0, 0.0, 0.0}, {0.0, 0.0, 0.0});
+          result.simulation = std::move(candidate);
+        } catch (const std::exception& error) {
+          result.error = error.what();
+        } catch (...) {
+          result.error = "fluid setup failed";
+        }
+        return result;
       },
-      forceAttempt);
-  if (charged) {
-    FluidBoundaryState& state = fluidBoundaryState(s);
+      [&s, signature](FluidBuildResult result) {
+        s.fluidBuildPending = false;
+        // The user may have changed vessel, volumes, solvents or resolution
+        // while this was in flight; that build is for a configuration that no
+        // longer exists, so it is dropped and the next frame asks again.
+        if (signature != fluidConfigurationSignature(s)) return;
+        if (!result.simulation) {
+          recordFluidFailure(s, std::runtime_error(result.error.empty()
+                                                       ? "fluid setup failed"
+                                                       : result.error));
+          return;
+        }
+        s.fluid = std::move(result.simulation);
+        FluidBoundaryState& state = fluidBoundaryState(s);
+        state.unavailable = false;
+        state.reason.clear();
+        state.observedSimulation = s.fluid.get();
+      });
+}
+
+// Drops the current simulation and requests a replacement. Returns whether a
+// build was started; the caller's own charge edit has already taken effect on
+// the analytic funnel, so the panel stays usable while the particles catch up.
+bool rechargeFluid(SolubilityState& s, bool forceAttempt = false) {
+  FluidBoundaryState& state = fluidBoundaryState(s);
+  if (state.unavailable && !forceAttempt) return false;
+  if (forceAttempt) {
     state.unavailable = false;
     state.reason.clear();
   }
-  return charged;
+  s.fluid.reset();
+  state.observedSimulation = nullptr;
+  startFluidBuild(s);
+  return s.fluidBuildPending;
 }
 
 fluid::Simulation* availableFluid(SolubilityState& s) {
   FluidBoundaryState& state = fluidBoundaryState(s);
   if (state.unavailable) return nullptr;
-  if (!s.fluid) {
-    // Deferred until the workspace is active; see fluidConstructionAllowed.
-    if (!s.fluidConstructionAllowed) return nullptr;
-    if (!rechargeFluid(s)) return nullptr;
-  }
+  // Deferred until the workspace is active; see fluidConstructionAllowed.
+  if (!s.fluid && !s.fluidBuildPending && s.fluidConstructionAllowed) startFluidBuild(s);
   return s.fluid.get();
 }
 
@@ -1058,6 +1130,82 @@ double maxDensityDeficit(const Stats& stats) {
   return std::numeric_limits<double>::quiet_NaN();
 }
 
+struct FluidDiagnosticTraces {
+  charts::Trace compression;
+  charts::Trace deficit;
+  charts::Trace realTimeFactor;
+  charts::Trace dispersedFraction;
+  charts::Trace interfacialArea;
+  charts::Trace sauterDiameter;
+  fluid::Simulation* source = nullptr;
+  uint64_t revision = 0;
+  bool hasRevision = false;
+  std::vector<charts::StackSegment> phaseSegments;
+
+  void clear() {
+    compression.clear();
+    deficit.clear();
+    realTimeFactor.clear();
+    dispersedFraction.clear();
+    interfacialArea.clear();
+    sauterDiameter.clear();
+  }
+};
+
+FluidDiagnosticTraces& fluidDiagnosticTraces() {
+  // This panel has one active fluid simulation, so retaining the ring buffers
+  // here avoids coupling frame-rate-only presentation state to SolubilityState.
+  static FluidDiagnosticTraces traces;
+  return traces;
+}
+
+void sampleFluidDiagnostics(FluidDiagnosticTraces& traces,
+                            fluid::Simulation* simulation,
+                            const fluid::Snapshot& snapshot,
+                            const fluid::Solver::Stats& stats,
+                            double compression, double deficit,
+                            double realTimeFactor) {
+  if (traces.source != simulation) {
+    traces.clear();
+    traces.source = simulation;
+    traces.hasRevision = false;
+  }
+
+  const bool completedStep = snapshot.elapsedS > 0.0;
+  if (!completedStep) {
+    if (!traces.hasRevision || traces.revision != snapshot.revision) {
+      traces.clear();
+      traces.revision = snapshot.revision;
+      traces.hasRevision = true;
+    }
+    return;
+  }
+  // UI frames commonly repeat one immutable publication; only revisions are
+  // solver-time samples, so frame rate cannot distort the trace history.
+  if (traces.hasRevision && traces.revision == snapshot.revision) return;
+  if (traces.hasRevision && snapshot.revision < traces.revision) traces.clear();
+
+  traces.revision = snapshot.revision;
+  traces.hasRevision = true;
+  if (stats.substeps > 0) {
+    traces.compression.push(compression);
+    traces.deficit.push(deficit);
+  }
+  traces.realTimeFactor.push(realTimeFactor);
+  if (snapshot.diagnostics.valid) {
+    traces.dispersedFraction.push(snapshot.diagnostics.dispersedFraction);
+    traces.interfacialArea.push(snapshot.diagnostics.interfacialAreaM2 * 1.0e4);
+    traces.sauterDiameter.push(snapshot.diagnostics.sauterDiameterM * 1.0e6);
+  }
+}
+
+void drawFluidMetric(const char* caption, const char* value) {
+  ImGui::TextDisabled("%s", caption);
+  const bool pushed = style::pushFont(style::fonts::mono());
+  ImGui::TextUnformatted(value);
+  style::popFont(pushed);
+}
+
 void drawFluidDiagnostics(SolubilityState& s) {
   const size_t resolutionIndex = selectedFluidPreset(s);
 
@@ -1105,82 +1253,225 @@ void drawFluidDiagnostics(SolubilityState& s) {
   const double compression = maxDensityCompression(stats);
   const double deficit = maxDensityDeficit(stats);
   const fluid::Diagnostics& diagnostics = snapshot->diagnostics;
-  const int columns = ImGui::GetContentRegionAvail().x >= 500.0f ? 3 : 1;
-  constexpr ImGuiTableFlags flags =
+  FluidDiagnosticTraces& traces = fluidDiagnosticTraces();
+  sampleFluidDiagnostics(traces, simulation, *snapshot, stats, compression,
+                         deficit, realTimeFactor);
+
+  const bool compressionAvailable =
+      completedStep && stats.substeps > 0 && std::isfinite(compression);
+  const bool deficitAvailable =
+      completedStep && stats.substeps > 0 && std::isfinite(deficit);
+  const bool rateAvailable =
+      completedStep && std::isfinite(realTimeFactor);
+  const bool dispersedAvailable =
+      completedStep && diagnostics.valid &&
+      std::isfinite(diagnostics.dispersedFraction);
+  const bool sauterAvailable =
+      completedStep && diagnostics.valid &&
+      std::isfinite(diagnostics.sauterDiameterM);
+  const bool areaAvailable =
+      completedStep && diagnostics.valid &&
+      std::isfinite(diagnostics.interfacialAreaM2);
+  const bool surfaceAvailable =
+      completedStep && diagnostics.valid &&
+      std::isfinite(diagnostics.freeSurfaceM);
+
+  char compressionValue[32] = "--";
+  char deficitValue[32] = "--";
+  char rateValue[32] = "--";
+  char dispersedValue[32] = "--";
+  char sauterValue[32] = "--";
+  char areaValue[32] = "--";
+  if (compressionAvailable)
+    std::snprintf(compressionValue, sizeof(compressionValue), "%.2f",
+                  compression * 100.0);
+  if (deficitAvailable)
+    std::snprintf(deficitValue, sizeof(deficitValue), "%.2f", deficit * 100.0);
+  if (rateAvailable)
+    std::snprintf(rateValue, sizeof(rateValue), "%.2f", realTimeFactor);
+  if (dispersedAvailable)
+    std::snprintf(dispersedValue, sizeof(dispersedValue), "%.1f",
+                  diagnostics.dispersedFraction * 100.0);
+  if (sauterAvailable && diagnostics.sauterDiameterM > 0.0)
+    std::snprintf(sauterValue, sizeof(sauterValue), "%.0f",
+                  diagnostics.sauterDiameterM * 1.0e6);
+  else if (sauterAvailable)
+    std::snprintf(sauterValue, sizeof(sauterValue), "No resolved drops");
+  if (areaAvailable)
+    std::snprintf(areaValue, sizeof(areaValue), "%.2f",
+                  diagnostics.interfacialAreaM2 * 1.0e4);
+
+  charts::SparklineStyle compressionStyle;
+  compressionStyle.accent = style::col::Accent;
+  compressionStyle.ceilingValue =
+      kFluidPresets[resolutionIndex].quality.densityTolerance;
+  charts::SparklineStyle deficitStyle;
+  deficitStyle.accent = style::col::Violet;
+  deficitStyle.ceilingValue = 1.0;
+  charts::SparklineStyle rateStyle;
+  rateStyle.accent = style::col::Teal;
+  charts::SparklineStyle dispersedStyle;
+  dispersedStyle.accent = style::col::AccentHover;
+  dispersedStyle.ceilingValue = 1.0;
+  charts::SparklineStyle sauterStyle;
+  sauterStyle.accent = style::col::Violet;
+  charts::SparklineStyle areaStyle;
+  areaStyle.accent = style::col::Teal;
+
+  const float fontSize = ImGui::GetFontSize();
+  const float lineHeight = ImGui::GetTextLineHeightWithSpacing();
+  const float availableWidth = ImGui::GetContentRegionAvail().x;
+  const float minTileWidth = fontSize * 11.0f;
+  const float columnGap = ImGui::GetStyle().ItemSpacing.x;
+  // Fit as many tiles as the width allows, then even the rows out: six
+  // instruments in a four-wide grid leaves a row of two beside a gap, where
+  // three-by-two reads as one instrument cluster.
+  constexpr int kInstrumentCount = 6;
+  const int fitColumns = std::clamp(
+      static_cast<int>((availableWidth + columnGap) / (minTileWidth + columnGap)),
+      1, kInstrumentCount);
+  const int instrumentRows = (kInstrumentCount + fitColumns - 1) / fitColumns;
+  const int instrumentColumns =
+      (kInstrumentCount + instrumentRows - 1) / instrumentRows;
+  constexpr ImGuiTableFlags instrumentFlags =
       ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
-  if (ImGui::BeginTable("##fluid_diagnostics", columns, flags)) {
-    ImGui::TableNextColumn();
-    ImGui::TextDisabled("SUBSTEPS");
-    if (completedStep && stats.substeps > 0)
-      ImGui::Text("%d", stats.substeps);
-    else
-      ImGui::TextUnformatted("Unavailable");
+  if (ImGui::BeginTable("##fluid_instruments", instrumentColumns,
+                        instrumentFlags)) {
+    const float tileHeight = lineHeight * 5.0f;
+    const float meterHeight = fontSize * 0.35f;
 
     ImGui::TableNextColumn();
-    ImGui::TextDisabled("WORST COMPRESSION");
-    if (completedStep && stats.substeps > 0 && std::isfinite(compression))
-      ImGui::Text("%.2f%%", compression * 100.0);
-    else
-      ImGui::TextUnformatted("Unavailable");
+    charts::instrument(
+        "##compression", "WORST COMPRESSION", compressionValue,
+        compressionAvailable ? "%" : "Unavailable", traces.compression,
+        ImVec2(ImGui::GetContentRegionAvail().x, tileHeight), compressionStyle);
+    charts::MeterStyle compressionMeter;
+    compressionMeter.accent = style::col::Accent;
+    const double compressionLimit =
+        kFluidPresets[resolutionIndex].quality.densityTolerance;
+    compressionMeter.warnAt = 0.75;
+    compressionMeter.dangerAt = 1.0;
+    charts::meter(
+        "##compression_headroom",
+        compressionAvailable && compressionLimit > 0.0
+            ? compression / compressionLimit
+            : 0.0,
+        ImVec2(ImGui::GetContentRegionAvail().x, meterHeight),
+        compressionMeter);
 
     ImGui::TableNextColumn();
-    ImGui::TextDisabled("FREE-SURFACE DEFICIT");
-    if (completedStep && stats.substeps > 0 && std::isfinite(deficit))
-      ImGui::Text("%.2f%%", deficit * 100.0);
-    else
-      ImGui::TextUnformatted("Unavailable");
+    charts::instrument(
+        "##deficit", "FREE-SURFACE DEFICIT", deficitValue,
+        deficitAvailable ? "%" : "Unavailable", traces.deficit,
+        ImVec2(ImGui::GetContentRegionAvail().x, tileHeight), deficitStyle);
+    charts::MeterStyle deficitMeter;
+    deficitMeter.accent = style::col::Violet;
+    constexpr double kDeficitLimit = 1.0;
+    deficitMeter.warnAt = 0.75;
+    deficitMeter.dangerAt = 1.0;
+    charts::meter(
+        "##deficit_headroom",
+        deficitAvailable ? deficit / kDeficitLimit : 0.0,
+        ImVec2(ImGui::GetContentRegionAvail().x, meterHeight), deficitMeter);
 
     ImGui::TableNextColumn();
-    ImGui::TextDisabled("REAL-TIME FACTOR");
-    if (completedStep && std::isfinite(realTimeFactor))
-      ImGui::Text("%.2fx", realTimeFactor);
-    else
-      ImGui::TextUnformatted("Unavailable");
+    charts::instrument(
+        "##real_time_factor", "REAL-TIME FACTOR", rateValue,
+        rateAvailable ? "x" : "Unavailable", traces.realTimeFactor,
+        ImVec2(ImGui::GetContentRegionAvail().x, tileHeight), rateStyle);
 
     ImGui::TableNextColumn();
-    ImGui::TextDisabled("DISPERSED");
-    if (completedStep && diagnostics.valid)
-      ImGui::Text("%.1f%%", diagnostics.dispersedFraction * 100.0);
-    else
-      ImGui::TextUnformatted("Unavailable");
+    charts::instrument(
+        "##dispersed", "DISPERSED", dispersedValue,
+        dispersedAvailable ? "%" : "Unavailable", traces.dispersedFraction,
+        ImVec2(ImGui::GetContentRegionAvail().x, tileHeight), dispersedStyle);
 
     ImGui::TableNextColumn();
-    ImGui::TextDisabled("SAUTER d32");
-    if (!completedStep || !diagnostics.valid)
-      ImGui::TextUnformatted("Unavailable");
-    else if (diagnostics.sauterDiameterM > 0.0)
-      ImGui::Text("%.0f um", diagnostics.sauterDiameterM * 1.0e6);
-    else
-      ImGui::TextUnformatted("No resolved drops");
+    charts::instrument(
+        "##sauter", "SAUTER d32", sauterValue,
+        !sauterAvailable
+            ? "Unavailable"
+            : (diagnostics.sauterDiameterM > 0.0 ? "um" : nullptr),
+        traces.sauterDiameter,
+        ImVec2(ImGui::GetContentRegionAvail().x, tileHeight), sauterStyle);
 
     ImGui::TableNextColumn();
-    ImGui::TextDisabled("INTERFACIAL AREA");
-    if (completedStep && diagnostics.valid)
-      ImGui::Text("%.2f cm^2", diagnostics.interfacialAreaM2 * 1.0e4);
-    else
-      ImGui::TextUnformatted("Unavailable");
+    charts::instrument(
+        "##interfacial_area", "INTERFACIAL AREA", areaValue,
+        areaAvailable ? "cm^2" : "Unavailable", traces.interfacialArea,
+        ImVec2(ImGui::GetContentRegionAvail().x, tileHeight), areaStyle);
 
+    ImGui::EndTable();
+  }
+
+  char substepsValue[32] = "Unavailable";
+  if (completedStep && stats.substeps > 0)
+    std::snprintf(substepsValue, sizeof(substepsValue), "%d", stats.substeps);
+  char surfaceValue[32] = "Unavailable";
+  if (surfaceAvailable)
+    std::snprintf(surfaceValue, sizeof(surfaceValue), "%.1f mm",
+                  diagnostics.freeSurfaceM * 1000.0);
+  if (ImGui::BeginTable("##fluid_supporting_metrics", 2, instrumentFlags)) {
     ImGui::TableNextColumn();
-    ImGui::TextDisabled("FREE SURFACE");
-    if (completedStep && diagnostics.valid)
-      ImGui::Text("%.1f mm", diagnostics.freeSurfaceM * 1000.0);
-    else
-      ImGui::TextUnformatted("Unavailable");
+    drawFluidMetric("SUBSTEPS", substepsValue);
+    ImGui::TableNextColumn();
+    drawFluidMetric("FREE SURFACE", surfaceValue);
+    ImGui::EndTable();
+  }
 
-    if (completedStep && diagnostics.valid) {
-      const size_t phaseCount =
-          std::min(diagnostics.phases.size(), s.funnel.phases.size());
+  ImGui::TextDisabled("PHASE BULK VOLUMES");
+  traces.phaseSegments.clear();
+  const size_t phaseCount =
+      completedStep && diagnostics.valid
+          ? std::min(diagnostics.phases.size(), s.funnel.phases.size())
+          : 0;
+  traces.phaseSegments.reserve(phaseCount);
+  for (size_t i = 0; i < phaseCount; ++i) {
+    ImVec4 phaseColour = style::col::Teal;
+    if (i < snapshot->phases.size()) {
+      const fluid::PhaseMaterial& phase = snapshot->phases[i];
+      phaseColour =
+          ImVec4(phase.colour[0], phase.colour[1], phase.colour[2],
+                 phase.colour[3]);
+    }
+    const double bulkMl =
+        diagnostics.phases[i].bulkResolved &&
+                std::isfinite(diagnostics.phases[i].bulkMl)
+            ? std::max(0.0, diagnostics.phases[i].bulkMl)
+            : 0.0;
+    traces.phaseSegments.push_back(
+        {s.funnel.phases[i].label.c_str(), bulkMl, phaseColour});
+  }
+  charts::stackedBar(
+      "##phase_bulk_chart", traces.phaseSegments.data(),
+      static_cast<int>(traces.phaseSegments.size()),
+      ImVec2(ImGui::GetContentRegionAvail().x, lineHeight * 2.0f));
+
+  if (phaseCount == 0) {
+    ImGui::TextUnformatted("Unavailable");
+  } else {
+    const int phaseColumns = std::clamp(
+        static_cast<int>((availableWidth + columnGap) /
+                         (minTileWidth + columnGap)),
+        1, static_cast<int>(phaseCount));
+    if (ImGui::BeginTable("##phase_bulk_values", phaseColumns,
+                          instrumentFlags)) {
       for (size_t i = 0; i < phaseCount; ++i) {
         ImGui::TableNextColumn();
         ImGui::TextDisabled("%s BULK", s.funnel.phases[i].label.c_str());
-        if (diagnostics.phases[i].bulkResolved)
-          ImGui::Text("%.1f mL", diagnostics.phases[i].bulkMl);
-        else
-          ImGui::TextUnformatted("Bulk unresolved");
+        char bulkValue[32] = "Bulk unresolved";
+        if (diagnostics.phases[i].bulkResolved &&
+            std::isfinite(diagnostics.phases[i].bulkMl))
+          std::snprintf(bulkValue, sizeof(bulkValue), "%.1f mL",
+                        diagnostics.phases[i].bulkMl);
+        const bool pushed = style::pushFont(style::fonts::mono());
+        ImGui::TextUnformatted(bulkValue);
+        style::popFont(pushed);
       }
+      ImGui::EndTable();
     }
-    ImGui::EndTable();
   }
+
   ImGui::TextWrapped(
       "A free-surface density deficit is expected in SPH; pressure controls compression.");
 }
@@ -2147,7 +2438,7 @@ void advanceVesselShake(SolubilityState& s, fluid::Simulation& simulation,
   }
 
   runFluidInteraction(
-      s, [&] { simulation.setManualAcceleration(s.fluidManualAcceleration); });
+      s, [&] { simulation.setManualMotion(s.fluidGrabOffsetM, s.fluidManualAcceleration); });
 }
 
 // Tracks the pointer while the left button is held and reports this frame's
@@ -2348,6 +2639,7 @@ void drawFluidStage(AppState& st, SolubilityState& s) {
 
 void drawExtractionLab(AppState& st) {
   SolubilityState& s = st.solubility;
+  s.fluidTasks = &st.tasks;
   // ImGui submits every docked panel on the frame the dock layout is built,
   // before it knows which tab is on top, and reports that panel as focused.
   // From the next frame Begin() hides unselected tabs correctly, so being drawn
@@ -2439,6 +2731,18 @@ void drawExtractionLab(AppState& st) {
     drawFluidStage(st, s);
     widgets::endCard();
   }
+}
+
+// Called once at startup so the first visit to the workspace finds the
+// simulation already built. The build is the same one the panel would start;
+// doing it early means the interfacial calibration, which is only expensive
+// the first time a machine sees a given resolution and material pair, is paid
+// on a worker thread while the user is still looking at the sketch canvas.
+void warmExtractionPhysics(AppState& st) {
+  SolubilityState& s = st.solubility;
+  s.fluidTasks = &st.tasks;
+  seedDefaultPhases(s.funnel);
+  if (!s.fluid && !s.fluidBuildPending) startFluidBuild(s);
 }
 
 }  // namespace chemcad::ui

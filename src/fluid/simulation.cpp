@@ -408,6 +408,14 @@ struct Simulation::Impl {
     next->phases = phases;
     next->diagnostics = latestDiagnostics;
     next->pose = motion.pose;
+    // The solver integrates in vessel coordinates, so a shaken vessel never
+    // moves in its own frame. Publishing where the vessel actually is in the
+    // world lets the renderer move the glassware with the hand instead of
+    // leaving it planted while its contents slosh.
+    const std::array<double, 3> shakeOffset = shakeDisplacement(motion, elapsed);
+    next->pose.position = {shakeOffset[0] + motion.manualOffset[0],
+                           shakeOffset[1] + motion.manualOffset[1],
+                           shakeOffset[2] + motion.manualOffset[2]};
     next->vesselHeightM = boundary.heightM();
     next->maxRadiusM = boundary.maxRadiusM();
     next->particleSpacingM = resolution.spacing;
@@ -577,9 +585,10 @@ void Simulation::shake(const std::array<double, 3>& axis, double durationS,
   ++impl_->requestedShakeGeneration;
 }
 
-void Simulation::setManualAcceleration(
-    const std::array<double, 3>& acceleration) {
+void Simulation::setManualMotion(const std::array<double, 3>& offset,
+                                 const std::array<double, 3>& acceleration) {
   std::lock_guard<std::mutex> lock(impl_->controlMutex);
+  impl_->requestedMotion.manualOffset = offset;
   impl_->requestedMotion.manualAcceleration = acceleration;
 }
 
