@@ -4,23 +4,250 @@
     "name": "Diels-Alder cycloaddition",
     "smarts": "[C:1]=[C:2][C:3]=[C:4].[C:5]=[C:6]>>[C:1]1=[C:2][C:3][C:4][C:5][C:6]1",
     "arity": 2,
-    "reagents": ["heat or Lewis acid"],
+    "reagents": [
+      "heat or Lewis acid"
+    ],
     "conditions": "rt to reflux",
+    "substrate": "conjugated dienes and alkenes",
+    "outcome": "Typically 60-98%; stereospecific cyclohexene formation, often endo-selective.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 10,
     "notes": "Concerted suprafacial [4+2] cycloaddition forms a six-membered ring with predictable stereochemistry.",
-    "tags": ["cycloaddition", "diels-alder", "pericyclic"]
+    "tags": [
+      "cycloaddition",
+      "diels-alder",
+      "pericyclic"
+    ]
   },
   {
     "id": "intramolecular_diels_alder",
     "name": "Intramolecular Diels-Alder reaction",
     "smarts": "[C:1]=[C:2][C:3]=[C:4]~[*:7]~[C:5]=[C:6]>>[C:1]1=[C:2][C:3][C:4]~[*:7]~[C:5][C:6]1",
     "arity": 1,
-    "reagents": ["heat"],
+    "reagents": [
+      "heat"
+    ],
     "conditions": "toluene, reflux",
+    "substrate": "tethered dienes and alkenes",
+    "outcome": "Typically 50-90%; fused or bridged cyclohexenes.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 7,
     "notes": "Tethering diene and dienophile provides rapid access to fused or bridged ring systems.",
-    "tags": ["cycloaddition", "diels-alder", "intramolecular"]
+    "tags": [
+      "cycloaddition",
+      "diels-alder",
+      "intramolecular"
+    ]
+  },
+  {
+    "id": "thermal_azide_alkyne_cycloaddition",
+    "name": "Thermal azide-alkyne cycloaddition",
+    "smarts": "[N-:1]=[N+:2]=[N:3][C:6].[C:4]#[C:5]>>[N:1]1=[N:2][N:3]([C:6])[C:4]=[C:5]1",
+    "arity": 2,
+    "reagents": [
+      "heat"
+    ],
+    "conditions": "toluene, 80-120 C",
+    "substrate": "organic azides and alkynes",
+    "outcome": "Typically 50-90%; mixture of 1,4- and 1,5-substituted triazoles.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 6,
+    "notes": "The uncatalysed Huisgen reaction is broad but often slow and regioisomeric; low-molecular-weight azides require careful handling.",
+    "tags": [
+      "cycloaddition",
+      "huisgen",
+      "triazole"
+    ]
+  },
+  {
+    "id": "copper_catalysed_azide_alkyne_cycloaddition",
+    "name": "Copper-catalysed azide-alkyne cycloaddition",
+    "smarts": "[N-:1]=[N+:2]=[N:3][C:6].[C;H1:4]#[C:5]>>[N:1]1=[N:2][N:3]([C:6])[C:4]=[C:5]1",
+    "arity": 2,
+    "reagents": [
+      "CuSO4",
+      "sodium ascorbate"
+    ],
+    "conditions": "tert-butanol/water, rt",
+    "substrate": "organic azides and terminal alkynes",
+    "outcome": "Typically 75-99%; predominantly 1,4-disubstituted triazole.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "CuAAC is highly chemoselective; exclude copper when sensitive biological or electronic applications demand metal-free material.",
+    "tags": [
+      "cycloaddition",
+      "cuaac",
+      "click"
+    ]
+  },
+  {
+    "id": "strain_promoted_azide_alkyne_cycloaddition",
+    "name": "Strain-promoted azide-alkyne cycloaddition",
+    "smarts": "[N-:1]=[N+:2]=[N:3][C:6].[C:4]#[C:5]>>[N:1]1=[N:2][N:3]([C:6])[C:4]=[C:5]1",
+    "arity": 2,
+    "reagents": [],
+    "conditions": "aqueous or organic solvent, rt",
+    "substrate": "organic azides and cyclooctynes",
+    "outcome": "Typically rapid and high-yielding; triazole regioisomer mixture may form.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Ring strain enables copper-free click ligation; rate depends strongly on the cyclooctyne substituents.",
+    "tags": [
+      "cycloaddition",
+      "spaac",
+      "click"
+    ]
+  },
+  {
+    "id": "photochemical_alkene_2_2_cycloaddition",
+    "name": "Photochemical alkene [2+2] cycloaddition",
+    "smarts": "[C:1]=[C:2].[C:3]=[C:4]>>[C:1]1[C:2][C:3][C:4]1",
+    "arity": 2,
+    "reagents": [
+      "hnu"
+    ],
+    "conditions": "UV irradiation, dilute solution",
+    "substrate": "alkenes",
+    "outcome": "Typically 30-85%; cyclobutane stereochemistry reflects alkene geometry and approach.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 6,
+    "notes": "Photochemical excitation makes the formally forbidden thermal [2+2] pathway accessible; competing polymerization is possible.",
+    "tags": [
+      "cycloaddition",
+      "photochemical",
+      "cyclobutane"
+    ]
+  },
+  {
+    "id": "paterno_buchi_cycloaddition",
+    "name": "Paterno-Buchi cycloaddition",
+    "smarts": "[C:1]=[O:2].[C:3]=[C:4]>>[C:1]1[O:2][C:3][C:4]1",
+    "arity": 2,
+    "reagents": [
+      "hnu"
+    ],
+    "conditions": "UV irradiation, inert solvent",
+    "substrate": "aldehydes or ketones and alkenes",
+    "outcome": "Typically 25-75%; oxetane regio- and stereoselectivity are substrate-dependent.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 5,
+    "notes": "Photoexcited carbonyl addition to an alkene forms an oxetane; triplet sensitization and oxygen exclusion can affect efficiency.",
+    "tags": [
+      "cycloaddition",
+      "photochemical",
+      "oxetane"
+    ]
+  },
+  {
+    "id": "nitrone_alkene_cycloaddition",
+    "name": "Nitrone-alkene cycloaddition",
+    "smarts": "[C:1]=[N+:2]([O-:3])[C:6].[C:4]=[C:5]>>[O:3]1[N:2]([C:6])[C:1][C:4][C:5]1",
+    "arity": 2,
+    "reagents": [
+      "heat"
+    ],
+    "conditions": "toluene, rt to reflux",
+    "substrate": "nitrones and alkenes",
+    "outcome": "Typically 50-90%; isoxazolidine with substrate-controlled regioselectivity.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "This 1,3-dipolar cycloaddition can establish several stereocenters in one step.",
+    "tags": [
+      "cycloaddition",
+      "nitrone",
+      "isoxazolidine"
+    ]
+  },
+  {
+    "id": "nitrile_oxide_alkene_cycloaddition",
+    "name": "Nitrile oxide-alkene cycloaddition",
+    "smarts": "[C:1]#[N+:2][O-:3].[C:4]=[C:5]>>[O:3]1[N:2]=[C:1][C:4][C:5]1",
+    "arity": 2,
+    "reagents": [
+      "base-generated nitrile oxide"
+    ],
+    "conditions": "CH2Cl2 or ether, 0 C to rt",
+    "substrate": "nitrile oxides and alkenes",
+    "outcome": "Typically 50-90%; isoxazoline, sometimes as regioisomers.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Generate the nitrile oxide in situ to limit dimerization to furoxans.",
+    "tags": [
+      "cycloaddition",
+      "nitrile-oxide",
+      "isoxazoline"
+    ]
+  },
+  {
+    "id": "hetero_diels_alder_carbonyl",
+    "name": "Hetero-Diels-Alder reaction",
+    "smarts": "[C:1]=[C:2][C:3]=[C:4].[C:5]=[O:6]>>[C:1]1=[C:2][C:3][C:4][C:5][O:6]1",
+    "arity": 2,
+    "reagents": [
+      "Lewis acid (optional)"
+    ],
+    "conditions": "-78 C to reflux",
+    "substrate": "conjugated dienes and carbonyl compounds",
+    "outcome": "Typically 50-90%; oxygen heterocycle with high stereospecificity.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Electron-rich dienes and activated aldehydes are preferred; Lewis acids can accelerate and improve selectivity.",
+    "tags": [
+      "cycloaddition",
+      "hetero-diels-alder",
+      "oxygen-heterocycle"
+    ]
+  },
+  {
+    "id": "ketene_alkene_2_2_cycloaddition",
+    "name": "Ketene-alkene [2+2] cycloaddition",
+    "smarts": "[C:1]=[C:2]=[O:6].[C:3]=[C:4]>>[C:2]1(=[O:6])[C:1][C:3][C:4]1",
+    "arity": 2,
+    "reagents": [
+      "ketene, generated in situ"
+    ],
+    "conditions": "0 C to rt, anhydrous",
+    "substrate": "ketenes and alkenes",
+    "outcome": "Typically 40-85%; cyclobutanone with substrate-dependent regiochemistry.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 6,
+    "notes": "Ketenes undergo thermally allowed antarafacial/suprafacial [2+2] capture and are usually generated immediately before use.",
+    "tags": [
+      "cycloaddition",
+      "ketene",
+      "cyclobutanone"
+    ]
+  },
+  {
+    "id": "retro_diels_alder",
+    "name": "Retro-Diels-Alder fragmentation",
+    "smarts": "[C:1]1=[C:2][C:3][C:4][C:5][C:6]1>>[C:1]=[C:2][C:3]=[C:4].[C:5]=[C:6]",
+    "arity": 1,
+    "reagents": [
+      "heat"
+    ],
+    "conditions": "150-300 C or flash-vacuum pyrolysis",
+    "substrate": "diels alder adducts",
+    "outcome": "Typically equilibrium-controlled; recovers a conjugated diene and dienophile.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 5,
+    "notes": "Volatile fragment removal or strain release drives cycloreversion; high temperature can cause competing decomposition.",
+    "tags": [
+      "cycloaddition",
+      "retro-diels-alder",
+      "cycloreversion"
+    ]
   }
 ]

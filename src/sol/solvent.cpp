@@ -55,6 +55,16 @@ Solvent parseSolvent(const nlohmann::json& entry) {
   }
   s.waterMiscible = entry.at("water_miscible").get<bool>();
 
+  // Optional Kirkwood-Buff inputs: not every solvent has measured
+  // compressibility; absence just disables the KB readout for that solvent.
+  if (entry.contains("kappa_t")) {
+    if (!entry.at("kappa_t").is_number()) {
+      throw SolError("Solvent '" + id + "' has a non-numeric 'kappa_t'");
+    }
+    s.kappaT = entry.at("kappa_t").get<double>();
+    s.kappaTSource = entry.value("kappa_t_source", std::string("literature"));
+  }
+
   // Sanity-check the numbers that the solubility model divides by / relies on
   // being physically meaningful; a bad data entry should fail loudly here
   // rather than silently corrupting every prediction that touches it.

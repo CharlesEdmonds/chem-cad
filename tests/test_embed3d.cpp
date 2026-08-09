@@ -22,15 +22,20 @@ float distance(const chem::Atom3D& a, const chem::Atom3D& b) {
 
 TEST_CASE("benzene embeds as a flat regular hexagon of aromatic bonds") {
   const chem::Embedded3D model = chem::embed3D(chem::fromSmiles("c1ccccc1"));
-  REQUIRE(model.atoms.size() == 6);   // hydrogens are hidden from the viewer
-  REQUIRE(model.bonds.size() == 6);
+  REQUIRE(model.atoms.size() == 12);  // CPK models keep hydrogens: 6 C + 6 H
+  REQUIRE(model.bonds.size() == 12);
+  int ringBonds = 0;
   for (const chem::Bond3D& b : model.bonds) {
+    const chem::Atom3D& a = model.atoms[static_cast<size_t>(b.a)];
+    const chem::Atom3D& c = model.atoms[static_cast<size_t>(b.b)];
+    if (a.atomicNumber != 6 || c.atomicNumber != 6) continue;  // skip C-H
+    ++ringBonds;
     CHECK(b.order == 4);  // aromatic marker
     // Aromatic C-C sits between single and double bond lengths.
-    const float d = distance(model.atoms[static_cast<size_t>(b.a)],
-                             model.atoms[static_cast<size_t>(b.b)]);
+    const float d = distance(a, c);
     CHECK(d == doctest::Approx(1.39f).epsilon(0.08));
   }
+  CHECK(ringBonds == 6);
   // Aromatic rings are planar.
   for (const chem::Atom3D& a : model.atoms) {
     CHECK(std::fabs(a.z) < 0.15f);
@@ -40,10 +45,13 @@ TEST_CASE("benzene embeds as a flat regular hexagon of aromatic bonds") {
 
 TEST_CASE("acetic acid keeps its bond orders and sane lengths") {
   const chem::Embedded3D model = chem::embed3D(chem::fromSmiles("CC(=O)O"));
-  REQUIRE(model.atoms.size() == 4);  // 2 C + 2 O
-  REQUIRE(model.bonds.size() == 3);
+  REQUIRE(model.atoms.size() == 8);  // 2 C + 2 O + 4 H (hydrogens kept)
+  REQUIRE(model.bonds.size() == 7);
   int singles = 0, doubles = 0;
   for (const chem::Bond3D& b : model.bonds) {
+    const chem::Atom3D& a = model.atoms[static_cast<size_t>(b.a)];
+    const chem::Atom3D& c = model.atoms[static_cast<size_t>(b.b)];
+    if (a.atomicNumber == 1 || c.atomicNumber == 1) continue;  // skip X-H
     if (b.order == 1) ++singles;
     if (b.order == 2) ++doubles;
   }

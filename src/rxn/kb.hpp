@@ -2,7 +2,8 @@
 // Curated named-reaction knowledge base loaded from data/reactions/*.json.
 // Schema (one JSON array of these objects per file):
 //   { "id", "name", "smarts", "arity", "reagents":[], "conditions",
-//     "byproducts":[], "priority", "notes", "tags":[] }
+//     "substrate", "outcome", "source", "byproducts":[], "priority",
+//     "notes", "tags":[] }
 
 #include <string>
 #include <vector>
@@ -16,12 +17,19 @@ struct ReactionTemplate {
   int arity = 1;                         // 1 or 2 reactants
   std::vector<std::string> reagents;
   std::string conditions;
+  std::string substrate;                 // lowercase plural material class
+  std::string outcome;                   // typical yield/selectivity or limitation
+  std::string source;                    // procedure citation or "standard practice"
   std::vector<std::string> byproducts;   // SMILES not expressible in the mapping
   int priority = 5;                      // 1..10, higher preferred
   std::string notes;
   std::vector<std::string> tags;
   std::string sourceFile;                // for diagnostics
 };
+
+// Derives the reaction family from sourceFile's filename (for example,
+// "reduction" from ".../reduction.json").
+std::string reactionType(const ReactionTemplate& reaction);
 
 // Loads and caches every data/reactions/*.json. Throws std::runtime_error when
 // the directory is missing or a file is malformed.

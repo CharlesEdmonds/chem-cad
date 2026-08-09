@@ -270,6 +270,68 @@ void drawMenuBar(AppState& st) {
       if (ImGui::MenuItem("About ChemCAD")) ImGui::OpenPopup("About ChemCAD");
       ImGui::EndMenu();
     }
+
+    // ---- integrated window chrome -------------------------------------
+    // The stretch between the last menu and the caption buttons is the
+    // window's drag handle; the app loop reads it from AppState.
+    {
+      const float barH = ImGui::GetFrameHeight();
+      const ImVec2 winMin = ImGui::GetWindowPos();
+      const float winW = ImGui::GetWindowWidth();
+      const float btnW = barH * 1.55f;
+      const ImVec2 afterMenus = ImGui::GetCursorScreenPos();
+      st.titleDragZone = {afterMenus.x, winMin.y, winMin.x + winW - btnW * 3.0f,
+                          winMin.y + barH};
+
+      GLFWwindow* window = glfwGetCurrentContext();
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      const style::Metrics& m = style::metrics();
+      const ImVec2 mouse = ImGui::GetMousePos();
+
+      const auto captionButton = [&](int index, const char* glyph, bool danger,
+                                     const char* tooltip) -> bool {
+        const ImVec2 bMin(winMin.x + winW - btnW * static_cast<float>(3 - index), winMin.y);
+        const ImVec2 bMax(bMin.x + btnW, bMin.y + barH);
+        const bool hovered = mouse.x >= bMin.x && mouse.x < bMax.x && mouse.y >= bMin.y &&
+                             mouse.y < bMax.y;
+        ImGui::SetCursorScreenPos(bMin);
+        ImGui::PushID(index);
+        ImGui::InvisibleButton("##caption", ImVec2(btnW, barH));
+        const bool clicked = ImGui::IsItemClicked();
+        ImGui::PopID();
+        if (hovered) {
+          dl->AddRectFilled(bMin, bMax,
+                            danger ? style::u32(style::col::Danger, 0.85f)
+                                   : style::u32(style::col::BgRaised));
+          ImGui::SetTooltip("%s", tooltip);
+        }
+        const ImVec2 gSize = ImGui::CalcTextSize(glyph);
+        dl->AddText(ImVec2(bMin.x + (btnW - gSize.x) * 0.5f,
+                           bMin.y + (barH - gSize.y) * 0.5f),
+                    style::u32(hovered && danger ? style::col::OnAccent
+                                                 : style::col::TextDim),
+                    glyph);
+        (void)m;
+        return clicked;
+      };
+
+      if (captionButton(0, "-", false, "Minimize") && window) {
+        glfwIconifyWindow(window);
+      }
+      const bool maximized = window && glfwGetWindowAttrib(window, GLFW_MAXIMIZED);
+      if (captionButton(1, maximized ? "v" : "^", false,
+                        maximized ? "Restore" : "Maximize") &&
+          window) {
+        if (maximized) {
+          glfwRestoreWindow(window);
+        } else {
+          glfwMaximizeWindow(window);
+        }
+      }
+      if (captionButton(2, "x", true, "Close") && window) {
+        glfwSetWindowShouldClose(window, GLFW_TRUE);
+      }
+    }
     ImGui::EndMenuBar();
   }
 

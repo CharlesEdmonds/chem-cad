@@ -14,7 +14,18 @@
 #include "imgui_impl_opengl3.h"
 #include "imgui_internal.h"
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#define GLFW_EXPOSE_NATIVE_WIN32
+#endif
+
 #include <GLFW/glfw3.h>
+#ifdef _WIN32
+#include <GLFW/glfw3native.h>
+#endif
 
 #include "app/project_io.hpp"
 #include "app/screenshot.hpp"
@@ -31,15 +42,126 @@ using chemcad::ui::AppState;
 constexpr const char* kWinSketch = "Sketch";
 constexpr const char* kWinPlanner = "Reaction Planner";
 constexpr const char* kWinSolubility = "Solubility Suite";
-constexpr const char* kWinExtraction = "Extraction Lab";
-constexpr const char* kWinViewer3D = "3D View";
-constexpr const char* kWinPreview3D = "3D Preview";
+constexpr const char* kWinExtraction = "Extraction Calculator";
+constexpr const char* kWinToolbox = "Toolbox";
+constexpr const char* kWinPreview3D = "Preview";
 constexpr const char* kWinTools = "Tools";
 constexpr const char* kWinPTable = "Periodic Table";
 constexpr const char* kWinProps = "Properties";
 
 void glfwErrorCallback(int code, const char* description) {
   std::fprintf(stderr, "[glfw] error %d: %s\n", code, description);
+}
+
+// ------------------------------------------------------- integrated chrome
+// The app renders its own title bar (menu bar + caption buttons), so the OS
+// frame is disabled and window management is implemented here.
+
+std::pair<double, double> screenCursorPos(GLFWwindow* window) {
+#ifdef _WIN32
+  (void)window;
+  POINT p;
+  GetCursorPos(&p);
+  return {static_cast<double>(p.x), static_cast<double>(p.y)};
+#else
+  double cx = 0.0, cy = 0.0;
+  glfwGetCursorPos(window, &cx, &cy);
+  int wx = 0, wy = 0;
+  glfwGetWindowPos(window, &wx, &wy);
+  return {wx + cx, wy + cy};
+#endif
+}
+
+struct ChromeState {
+  bool dragging = false;
+  double grabX = 0.0, grabY = 0.0;  // screen cursor minus window pos at grab
+  int resizeEdges = 0;              // 1 left, 2 right, 4 top, 8 bottom
+  double startCursorX = 0.0, startCursorY = 0.0;
+  int startX = 0, startY = 0, startW = 0, startH = 0;
+};
+
+// Drives window dragging (title bar) and edge resizing for the borderless
+// window. Call once per frame after ImGui content is submitted.
+void pumpWindowChrome(GLFWwindow* window, const AppState& st, ChromeState& chrome) {
+  const ImGuiIO& io = ImGui::GetIO();
+  const auto [cursorX, cursorY] = screenCursorPos(window);
+  int wx = 0, wy = 0, ww = 0, wh = 0;
+  glfwGetWindowPos(window, &wx, &wy);
+  glfwGetWindowSize(window, &ww, &wh);
+  const bool maximized = glfwGetWindowAttrib(window, GLFW_MAXIMIZED) != 0;
+
+  // ---- title-bar drag
+  const auto& zone = st.titleDragZone;
+  const bool inDragZone = zone.x2 > zone.x1 && cursorX >= zone.x1 && cursorX < zone.x2 &&
+                          cursorY >= zone.y1 && cursorY < zone.y2;
+  if (!chrome.dragging && chrome.resizeEdges == 0 && inDragZone && !maximized &&
+      ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)) {
+    chrome.dragging = true;
+    chrome.grabX = cursorX - wx;
+    chrome.grabY = cursorY - wy;
+  }
+  if (chrome.dragging) {
+    if (!io.MouseDown[ImGuiMouseButton_Left]) {
+      chrome.dragging = false;
+    } else {
+      glfwSetWindowPos(window, static_cast<int>(cursorX - chrome.grabX),
+                       static_cast<int>(cursorY - chrome.grabY));
+    }
+    return;  // dragging and resizing never overlap
+  }
+
+  // ---- edge resize
+  constexpr double kEdge = 6.0;
+  int edges = 0;
+  if (!maximized) {
+    const double lx = cursorX - wx, ly = cursorY - wy;
+    if (lx >= 0 && lx < ww && ly >= 0 && ly < wh) {
+      if (lx < kEdge) edges |= 1;
+      if (lx >= ww - kEdge) edges |= 2;
+      if (ly < kEdge) edges |= 4;
+      if (ly >= wh - kEdge) edges |= 8;
+    }
+  }
+  static GLFWcursor* hCursor = nullptr;
+  static GLFWcursor* vCursor = nullptr;
+  if (!hCursor) hCursor = glfwCreateStandardCursor(GLFW_HRESIZE_CURSOR);
+  if (!vCursor) vCursor = glfwCreateStandardCursor(GLFW_VRESIZE_CURSOR);
+  if (chrome.resizeEdges == 0) {
+    const bool horizontal = (edges & 3) != 0;
+    const bool vertical = (edges & 12) != 0;
+    glfwSetCursor(window, horizontal && !vertical ? hCursor
+                              : vertical && !horizontal ? vCursor
+                                                        : nullptr);
+  }
+
+  if (chrome.resizeEdges == 0 && edges != 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+      !ImGui::IsAnyItemHovered()) {
+    chrome.resizeEdges = edges;
+    chrome.startCursorX = cursorX;
+    chrome.startCursorY = cursorY;
+    chrome.startX = wx;
+    chrome.startY = wy;
+    chrome.startW = ww;
+    chrome.startH = wh;
+  }
+  if (chrome.resizeEdges != 0) {
+    if (!io.MouseDown[ImGuiMouseButton_Left]) {
+      chrome.resizeEdges = 0;
+      glfwSetCursor(window, nullptr);
+      return;
+    }
+    const double dx = cursorX - chrome.startCursorX;
+    const double dy = cursorY - chrome.startCursorY;
+    int nx = chrome.startX, ny = chrome.startY, nw = chrome.startW, nh = chrome.startH;
+    if (chrome.resizeEdges & 1) { nx += static_cast<int>(dx); nw -= static_cast<int>(dx); }
+    if (chrome.resizeEdges & 2) { nw += static_cast<int>(dx); }
+    if (chrome.resizeEdges & 4) { ny += static_cast<int>(dy); nh -= static_cast<int>(dy); }
+    if (chrome.resizeEdges & 8) { nh += static_cast<int>(dy); }
+    nw = std::max(nw, 760);
+    nh = std::max(nh, 480);
+    glfwSetWindowPos(window, nx, ny);
+    glfwSetWindowSize(window, nw, nh);
+  }
 }
 
 // Concatenates every fragment into one molecule so exporters see the whole sketch.
@@ -138,36 +260,48 @@ void wireCallbacks(AppState& st) {
   };
 }
 
-// Builds the default dock layout once, then leaves the user in control.
-void buildDefaultLayout(ImGuiID dockspaceId) {
+// Builds the dock layout for the active workspace tab. Each tab gets only the
+// panels that are useful there -- the sketch keeps the full bench (tools,
+// periodic table, preview, properties), the planner and suite keep the
+// molecule panels, and the extraction calculator gets the whole bench top.
+void buildLayoutForTab(ImGuiID dockspaceId, chemcad::ui::MainTab tab) {
+  using chemcad::ui::MainTab;
+  // Window settings persist dock-node ids across sessions and across tab
+  // layouts; without clearing them, panels keep pointing at nodes from an
+  // older layout and render into nothing. The builder below IS the layout,
+  // so stale settings are always safe to drop here.
+  ImGui::ClearIniSettings();
   ImGui::DockBuilderRemoveNode(dockspaceId);
   ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
   ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
 
   ImGuiID center = dockspaceId;
-  // The labelled structure-tool rail needs enough width for command names,
-  // current variants, shortcuts and split-menu affordances. The versioned
-  // dockspace below migrates older two-column layouts into this safer default.
-  const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.16f, nullptr, &center);
-  const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.27f, nullptr, &center);
-  ImGuiID rightBottom = right;
-  const ImGuiID rightTop =
-      ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.40f, nullptr, &rightBottom);
-  ImGuiID rightProps = rightBottom;
-  // Middle slice of the right column: the always-visible 3D preview, between
-  // the periodic table and the property readouts.
-  const ImGuiID rightMid =
-      ImGui::DockBuilderSplitNode(rightBottom, ImGuiDir_Up, 0.46f, nullptr, &rightProps);
 
-  ImGui::DockBuilderDockWindow(kWinTools, left);
+  if (tab == MainTab::Sketch) {
+    const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.16f, nullptr, &center);
+    const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.30f, nullptr, &center);
+    ImGuiID rightBottom = right;
+    const ImGuiID rightTop = ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.44f, nullptr, &rightBottom);
+    ImGuiID rightProps = rightBottom;
+    const ImGuiID rightMid = ImGui::DockBuilderSplitNode(rightBottom, ImGuiDir_Up, 0.50f, nullptr, &rightProps);
+    ImGui::DockBuilderDockWindow(kWinTools, left);
+    ImGui::DockBuilderDockWindow(kWinPTable, rightTop);
+    ImGui::DockBuilderDockWindow(kWinPreview3D, rightMid);
+    ImGui::DockBuilderDockWindow(kWinProps, rightProps);
+  } else if (tab == MainTab::Planner || tab == MainTab::Solubility) {
+    const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
+    ImGuiID rightBottom = right;
+    const ImGuiID rightTop = ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.52f, nullptr, &rightBottom);
+    ImGui::DockBuilderDockWindow(kWinPreview3D, rightTop);
+    ImGui::DockBuilderDockWindow(kWinProps, rightBottom);
+  }
+  // Extraction: full-width workspace, no side panels.
+
   ImGui::DockBuilderDockWindow(kWinSketch, center);
   ImGui::DockBuilderDockWindow(kWinPlanner, center);
   ImGui::DockBuilderDockWindow(kWinSolubility, center);
   ImGui::DockBuilderDockWindow(kWinExtraction, center);
-  ImGui::DockBuilderDockWindow(kWinViewer3D, center);
-  ImGui::DockBuilderDockWindow(kWinPTable, rightTop);
-  ImGui::DockBuilderDockWindow(kWinPreview3D, rightMid);
-  ImGui::DockBuilderDockWindow(kWinProps, rightProps);
+  ImGui::DockBuilderDockWindow(kWinToolbox, center);
   ImGui::DockBuilderFinish(dockspaceId);
 }
 
@@ -183,6 +317,7 @@ int main(int, char**) {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+  glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);  // the app draws its own chrome
 
   GLFWwindow* window = glfwCreateWindow(1600, 1000, "ChemCAD", nullptr, nullptr);
   if (!window) {
@@ -192,6 +327,16 @@ int main(int, char**) {
   }
   glfwMakeContextCurrent(window);
   glfwSwapInterval(1);
+
+#ifdef _WIN32
+  // Belt and braces: undecorated windows occasionally composite nothing until
+  // an explicit SW_SHOW + repaint (observed on Win10 when the shell restored
+  // a stale show state). Cheap and idempotent.
+  if (HWND hwnd = glfwGetWin32Window(window)) {
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+  }
+#endif
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
@@ -215,6 +360,8 @@ int main(int, char**) {
   AppState state;
   wireCallbacks(state);
 
+  ChromeState chrome;
+  chemcad::ui::MainTab layoutTab = state.tab;
   bool layoutBuilt = false;
   while (!glfwWindowShouldClose(window)) {
     glfwPollEvents();
@@ -241,7 +388,7 @@ int main(int, char**) {
     ImGui::SetNextWindowSize(vp->WorkSize);
     ImGui::SetNextWindowViewport(vp->ID);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::Begin("##chemcad_host", nullptr,
                  ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking |
@@ -252,16 +399,16 @@ int main(int, char**) {
 
     chemcad::ui::drawMenuBar(state);
 
-    const ImGuiID dockspaceId = ImGui::GetID("chemcad_dockspace_v3");
-    if (!layoutBuilt) {
+    const ImGuiID dockspaceId = ImGui::GetID("chemcad_dockspace_v4");
+    if (!layoutBuilt || layoutTab != state.tab) {
+      layoutTab = state.tab;
       layoutBuilt = true;
-      if (!ImGui::DockBuilderGetNode(dockspaceId)) buildDefaultLayout(dockspaceId);
+      buildLayoutForTab(dockspaceId, state.tab);
+      // A rebuilt dock tree resets the centre node's visible tab to the first
+      // docked window; pull the user's actual tab back to the front.
+      state.tabChangeRequested = true;
     }
     ImGui::DockSpace(dockspaceId, ImVec2(0, 0), ImGuiDockNodeFlags_None);
-    ImGui::End();
-
-    // ---- panels
-    if (ImGui::Begin(kWinTools)) chemcad::ui::drawToolPalette(state);
     ImGui::End();
 
     // A panel asking for a tab switch sets `tab` + `tabChangeRequested`;
@@ -308,24 +455,34 @@ int main(int, char**) {
     }
     ImGui::End();
 
-    focusTabIfRequested(chemcad::ui::MainTab::Viewer3D);
-    if (ImGui::Begin(kWinViewer3D)) {
+    focusTabIfRequested(chemcad::ui::MainTab::Toolbox);
+    if (ImGui::Begin(kWinToolbox)) {
       if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
-        state.tab = chemcad::ui::MainTab::Viewer3D;
-      chemcad::ui::drawViewer3D(state);
+        state.tab = chemcad::ui::MainTab::Toolbox;
+      chemcad::ui::drawToolbox(state);
     }
     ImGui::End();
 
-    if (ImGui::Begin(kWinPreview3D)) chemcad::ui::drawViewer3D(state);
-    ImGui::End();
-
-    if (ImGui::Begin(kWinPTable)) chemcad::ui::drawPeriodicTable(state);
-    ImGui::End();
-
-    if (ImGui::Begin(kWinProps)) chemcad::ui::drawPropertiesPanel(state);
-    ImGui::End();
+    // Side panels are workspace-specific: only the panels the active tab can
+    // actually use are submitted, so nothing inapplicable clutters the bench.
+    const bool moleculePanels = state.tab != chemcad::ui::MainTab::Extraction &&
+                                state.tab != chemcad::ui::MainTab::Toolbox;
+    if (state.tab == chemcad::ui::MainTab::Sketch) {
+      if (ImGui::Begin(kWinTools)) chemcad::ui::drawToolPalette(state);
+      ImGui::End();
+      if (ImGui::Begin(kWinPTable)) chemcad::ui::drawPeriodicTable(state);
+      ImGui::End();
+    }
+    if (moleculePanels) {
+      if (ImGui::Begin(kWinPreview3D)) chemcad::ui::drawViewer3D(state);
+      ImGui::End();
+      if (ImGui::Begin(kWinProps)) chemcad::ui::drawPropertiesPanel(state);
+      ImGui::End();
+    }
 
     chemcad::ui::drawStatusBar(state);
+
+    pumpWindowChrome(window, state, chrome);
 
     // ---- render
     ImGui::Render();

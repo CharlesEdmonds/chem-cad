@@ -4,47 +4,266 @@
     "name": "Curtius rearrangement",
     "smarts": "[C:1](=[O:2])[N:3]=[N+:4]=[N-:5]>>[N:3]=[C:1]=[O:2]",
     "arity": 1,
-    "reagents": ["heat", "then H2O or ROH"],
+    "reagents": [
+      "heat",
+      "then H2O or ROH"
+    ],
     "conditions": "anhydrous solvent, heat",
-    "byproducts": ["N#N"],
+    "substrate": "acyl azides",
+    "outcome": "Typically 55-90%; isocyanate, then amine or carbamate after trapping.",
+    "source": "standard practice",
+    "byproducts": [
+      "N#N"
+    ],
     "priority": 7,
     "notes": "Acyl azide rearrangement gives an isocyanate with loss of nitrogen; trapping controls the final product.",
-    "tags": ["rearrangement", "curtius", "isocyanate"]
+    "tags": [
+      "rearrangement",
+      "curtius",
+      "isocyanate"
+    ]
   },
   {
     "id": "baeyer_villiger_oxidation",
     "name": "Baeyer-Villiger oxidation",
     "smarts": "[C:1](=[O:2])[C:3]>>[C:1](=[O:2])O[C:3]",
     "arity": 1,
-    "reagents": ["mCPBA"],
+    "reagents": [
+      "mCPBA"
+    ],
     "conditions": "CH2Cl2, 0 C to rt",
-    "byproducts": ["O=C(O)c1cccc(Cl)c1"],
+    "substrate": "ketones",
+    "outcome": "Typically 60-95%; ester or lactone with migration-controlled regiochemistry.",
+    "source": "standard practice",
+    "byproducts": [
+      "O=C(O)c1cccc(Cl)c1"
+    ],
     "priority": 8,
     "notes": "Peracid oxidation inserts oxygen next to the carbonyl; migratory aptitude controls regioselectivity.",
-    "tags": ["rearrangement", "baeyer-villiger", "ester"]
+    "tags": [
+      "rearrangement",
+      "baeyer-villiger",
+      "ester"
+    ]
   },
   {
     "id": "beckmann_rearrangement",
     "name": "Beckmann rearrangement",
     "smarts": "[C:1](=[N:2][O;H1:3])[C:4]>>[C:1](=[O:3])[N:2][C:4]",
     "arity": 1,
-    "reagents": ["H2SO4"],
+    "reagents": [
+      "H2SO4"
+    ],
     "conditions": "concentrated acid, heat",
+    "substrate": "ketoximes",
+    "outcome": "Typically 55-90%; amide or lactam from anti-group migration.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 7,
     "notes": "The group anti to the oxime leaving group migrates to nitrogen to form an amide or lactam.",
-    "tags": ["rearrangement", "beckmann", "amide"]
+    "tags": [
+      "rearrangement",
+      "beckmann",
+      "amide"
+    ]
   },
   {
     "id": "hofmann_rearrangement",
     "name": "Hofmann rearrangement",
     "smarts": "[C:1](=[O:2])[N;H2:3]>>[N:3]",
     "arity": 1,
-    "reagents": ["Br2", "NaOH"],
+    "reagents": [
+      "Br2",
+      "NaOH"
+    ],
     "conditions": "aqueous base, heat",
-    "byproducts": ["O=C=O", "Br"],
+    "substrate": "primary amides",
+    "outcome": "Typically 60-90%; primary amine with one fewer carbon.",
+    "source": "standard practice",
+    "byproducts": [
+      "O=C=O",
+      "Br"
+    ],
     "priority": 6,
     "notes": "A primary amide is converted to an amine containing one fewer carbon.",
-    "tags": ["rearrangement", "hofmann", "amine"]
+    "tags": [
+      "rearrangement",
+      "hofmann",
+      "amine"
+    ]
+  },
+  {
+    "id": "claisen_rearrangement",
+    "name": "Claisen rearrangement",
+    "smarts": "[C:1]=[C:2][O:3][C:4][C:5]=[C:6]>>[C:2](=[O:3])[C:1][C:6][C:5]=[C:4]",
+    "arity": 1,
+    "reagents": [
+      "heat"
+    ],
+    "conditions": "neat or high-boiling solvent, 150-220 C",
+    "substrate": "allyl vinyl ethers",
+    "outcome": "Typically 60-95%; gamma-delta unsaturated carbonyl with predictable bond connectivity.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "The concerted [3,3]-sigmatropic rearrangement is stereospecific and often benefits from a chair-like transition state.",
+    "tags": [
+      "rearrangement",
+      "claisen",
+      "sigmatropic"
+    ]
+  },
+  {
+    "id": "cope_rearrangement",
+    "name": "Cope rearrangement",
+    "smarts": "[C:1]=[C:2][C:3][C:4][C:5]=[C:6]>>[C:1][C:2]=[C:3][C:4]=[C:5][C:6]",
+    "arity": 1,
+    "reagents": [
+      "heat"
+    ],
+    "conditions": "150-300 C",
+    "substrate": "one-five dienes",
+    "outcome": "Equilibrium-controlled; useful yields when strain relief or product conjugation provides a driving force.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "This reversible [3,3]-sigmatropic rearrangement is stereospecific and strongly conformation-dependent.",
+    "tags": [
+      "rearrangement",
+      "cope",
+      "sigmatropic"
+    ]
+  },
+  {
+    "id": "wolff_rearrangement",
+    "name": "Wolff rearrangement",
+    "smarts": "[C:1](=[O:2])[C:3]=[N+:4]=[N-:5]>>[C:3]=[C:1]=[O:2]",
+    "arity": 1,
+    "reagents": [
+      "hnu, heat, or Ag2O"
+    ],
+    "conditions": "ether or alcohol solvent, 0 C to reflux",
+    "substrate": "alpha diazo ketones",
+    "outcome": "Typically 50-90%; ketene trapped as an acid, ester or amide.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Loss of nitrogen and 1,2-migration generate a ketene; the trapping solvent determines the isolated derivative.",
+    "tags": [
+      "rearrangement",
+      "wolff",
+      "ketene"
+    ]
+  },
+  {
+    "id": "lossen_rearrangement",
+    "name": "Lossen rearrangement",
+    "smarts": "[C:1](=[O:2])[N:3][O:4]>>[N:3]=[C:1]=[O:2]",
+    "arity": 1,
+    "reagents": [
+      "activating reagent",
+      "base",
+      "then nucleophile"
+    ],
+    "conditions": "aqueous or organic solvent, 20-100 C",
+    "substrate": "hydroxamic acids",
+    "outcome": "Typically 50-85%; isocyanate, then amine or carbamate after trapping.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 6,
+    "notes": "Activation of the hydroxamate oxygen precedes migration to nitrogen and isocyanate formation.",
+    "tags": [
+      "rearrangement",
+      "lossen",
+      "isocyanate"
+    ]
+  },
+  {
+    "id": "schmidt_ketone_rearrangement",
+    "name": "Schmidt reaction of ketone",
+    "smarts": "[C:1](=[O:2])[C:3]>>[C:1](=[O:2])N[C:3]",
+    "arity": 1,
+    "reagents": [
+      "HN3",
+      "strong acid"
+    ],
+    "conditions": "0-80 C",
+    "substrate": "ketones",
+    "outcome": "Typically 40-80%; amide or lactam with migration-controlled regiochemistry.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 5,
+    "notes": "Hydrazoic acid is highly toxic and explosive; hydrazoic-acid-free variants are preferred where possible.",
+    "tags": [
+      "rearrangement",
+      "schmidt",
+      "amide"
+    ]
+  },
+  {
+    "id": "pinacol_rearrangement",
+    "name": "Pinacol rearrangement",
+    "smarts": "[C:1]([O;H1:2])-[C:3]([O;H1:4])>>[C:1](=[O:2])[C:3]",
+    "arity": 1,
+    "reagents": [
+      "H2SO4 or Lewis acid"
+    ],
+    "conditions": "0 C to reflux",
+    "substrate": "vicinal diols",
+    "outcome": "Typically 50-90%; ketone or aldehyde with migration-selected skeleton.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Protonation, water loss and 1,2-migration occur; migratory aptitude and carbocation stability determine regioselectivity.",
+    "tags": [
+      "rearrangement",
+      "pinacol",
+      "carbonyl"
+    ]
+  },
+  {
+    "id": "benzilic_acid_rearrangement",
+    "name": "Benzilic acid rearrangement",
+    "smarts": "[C:1](=[O:2])[C:3](=[O:4])>>[C:1]([O:2])([C:3](=[O:4])O)",
+    "arity": 1,
+    "reagents": [
+      "KOH",
+      "then H3O+"
+    ],
+    "conditions": "aqueous ethanol, reflux",
+    "substrate": "vicinal diketones",
+    "outcome": "Typically 60-95%; alpha-hydroxy carboxylic acid.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Hydroxide addition and aryl or alkyl migration convert the 1,2-dicarbonyl into an alpha-hydroxy acid.",
+    "tags": [
+      "rearrangement",
+      "benzilic-acid",
+      "alpha-hydroxy-acid"
+    ]
+  },
+  {
+    "id": "arndt_eistert_homologation",
+    "name": "Arndt-Eistert homologation",
+    "smarts": "[C:1](=[O:2])[Cl:3].[CH2:4]=[N+:5]=[N-:6]>>[C:1][C:4](=[O:2])O",
+    "arity": 2,
+    "reagents": [
+      "CH2N2",
+      "Ag2O",
+      "H2O"
+    ],
+    "conditions": "ether, 0 C then warm",
+    "substrate": "acid chlorides",
+    "outcome": "Typically 50-85%; carboxylic acid homologated by one carbon.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 6,
+    "notes": "Diazoketone formation and Wolff rearrangement give a ketene that water traps; diazomethane requires specialized controls.",
+    "tags": [
+      "rearrangement",
+      "arndt-eistert",
+      "homologation"
+    ]
   }
 ]

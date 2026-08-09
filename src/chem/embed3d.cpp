@@ -43,12 +43,12 @@ Embedded3D embed3D(const core::Molecule& molecule) {
 
   const RDKit::Conformer& conformer = working.getConformer();
 
-  // Readout keeps only non-hydrogen atoms, remapping indices as it goes.
+  // Readout keeps every atom -- hydrogens included. A space-filling model
+  // without them is not a CPK model, and ball-and-stick stays honest too.
   Embedded3D result;
   std::vector<int> indexMap(working.getNumAtoms(), -1);
   for (unsigned i = 0; i < working.getNumAtoms(); ++i) {
     const RDKit::Atom* atom = working.getAtomWithIdx(i);
-    if (atom->getAtomicNum() <= 1) continue;
     const RDGeom::Point3D& p = conformer.getAtomPos(i);
     Atom3D out;
     out.atomicNumber = static_cast<uint8_t>(atom->getAtomicNum());

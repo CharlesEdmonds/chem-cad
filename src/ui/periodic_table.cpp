@@ -18,6 +18,8 @@
 namespace chemcad::ui {
 namespace {
 
+const char* categoryDisplayName(const std::string& category);
+
 std::string lower(std::string text) {
   std::transform(text.begin(), text.end(), text.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -28,7 +30,9 @@ bool matches(const ElementData& element, const std::string& query) {
   if (query.empty()) return true;
   const std::string symbol = lower(element.symbol);
   const std::string name = lower(element.name);
-  return symbol.starts_with(query) || name.find(query) != std::string::npos;
+  const std::string category = lower(categoryDisplayName(element.category));
+  return symbol.starts_with(query) || name.find(query) != std::string::npos ||
+         category.find(query) != std::string::npos;
 }
 
 // Category hues. These read as small stripes and tinted symbols on dark
@@ -258,7 +262,7 @@ void drawTile(ImDrawList* dl, ImVec2 min, ImVec2 size, const ElementData& elemen
 
   ImFont* font = ImGui::GetFont();
   const float fs = ImGui::GetFontSize();
-  const float symbolSize = std::min(fs, size.x * 0.56f);
+  const float symbolSize = std::min(fs, size.x * 0.62f);
   const ImU32 symbolCol =
       selected ? style::u32(style::col::Accent, alpha)
                : style::mix(cat, style::col::Text, 0.42f + 0.25f * hoverT, alpha);
@@ -358,9 +362,9 @@ void drawPeriodicTable(AppState& st) {
   const float fs = ImGui::GetFontSize();
   const float gapX = std::max(1.0f, ImGui::GetStyle().ItemSpacing.x * 0.18f);
   const float gapY = std::max(2.0f, ImGui::GetStyle().ItemSpacing.y * 0.32f);
-  const float labelGutter = fs * 1.35f;
-  const float groupHeader = fs * 1.25f;
-  const float preferredW = std::max(fs * 2.10f, 32.0f);
+  const float labelGutter = fs * 1.15f;
+  const float groupHeader = fs * 1.05f;
+  const float preferredW = std::max(fs * 2.60f, 40.0f);
   const float fittedW = (avail.x - labelGutter - 17.0f * gapX) / 18.0f;
   const float cellW = std::clamp(fittedW, fs * 0.92f, preferredW);
   const float fittedH = (avail.y - groupHeader - 9.0f * gapY) / 10.0f;

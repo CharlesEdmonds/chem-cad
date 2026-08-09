@@ -77,6 +77,9 @@ std::vector<ReactionTemplate> loadReactionFile(const std::string& path) {
     reaction.reagents = optionalValue<std::vector<std::string>>(
         entry, "reagents", {}, path, index);
     reaction.conditions = optionalValue<std::string>(entry, "conditions", {}, path, index);
+    reaction.substrate = optionalValue<std::string>(entry, "substrate", {}, path, index);
+    reaction.outcome = optionalValue<std::string>(entry, "outcome", {}, path, index);
+    reaction.source = optionalValue<std::string>(entry, "source", {}, path, index);
     reaction.byproducts = optionalValue<std::vector<std::string>>(
         entry, "byproducts", {}, path, index);
     reaction.priority = optionalValue<int>(entry, "priority", reaction.priority, path, index);
@@ -86,6 +89,10 @@ std::vector<ReactionTemplate> loadReactionFile(const std::string& path) {
     templates.push_back(std::move(reaction));
   }
   return templates;
+}
+
+std::string reactionType(const ReactionTemplate& reaction) {
+  return std::filesystem::path(reaction.sourceFile).stem().string();
 }
 
 const std::vector<ReactionTemplate>& knowledgeBase() {

@@ -4,95 +4,312 @@
     "name": "Grignard addition to formaldehyde",
     "smarts": "[CH2:1]=[O:2].[C:3][Mg][Br]>>[C:1]([O:2])[C:3]",
     "arity": 2,
-    "reagents": ["then H3O+"],
+    "reagents": [
+      "then H3O+"
+    ],
     "conditions": "anhydrous ether, then acidic workup",
+    "substrate": "formaldehydes",
+    "outcome": "Typically 60-90%; one-carbon-homologated primary alcohol.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 9,
     "notes": "Formaldehyde gives a primary alcohol containing one additional carbon.",
-    "tags": ["grignard", "addition", "primary-alcohol"]
+    "tags": [
+      "grignard",
+      "addition",
+      "primary-alcohol"
+    ]
   },
   {
     "id": "grignard_aldehyde_secondary_alcohol",
     "name": "Grignard addition to aldehyde",
     "smarts": "[C;H1:1]=[O:2].[C:3][Mg][Br]>>[C:1]([O:2])[C:3]",
     "arity": 2,
-    "reagents": ["then H3O+"],
+    "reagents": [
+      "then H3O+"
+    ],
     "conditions": "anhydrous ether, then acidic workup",
+    "substrate": "aldehydes",
+    "outcome": "Typically 60-95%; secondary alcohol after workup.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 9,
     "notes": "Aldehydes other than formaldehyde furnish secondary alcohols.",
-    "tags": ["grignard", "addition", "secondary-alcohol"]
+    "tags": [
+      "grignard",
+      "addition",
+      "secondary-alcohol"
+    ]
   },
   {
     "id": "grignard_ketone_tertiary_alcohol",
     "name": "Grignard addition to ketone",
     "smarts": "[C;H0:1]=[O:2].[C:3][Mg][Br]>>[C:1]([O:2])[C:3]",
     "arity": 2,
-    "reagents": ["then H3O+"],
+    "reagents": [
+      "then H3O+"
+    ],
     "conditions": "anhydrous ether, then acidic workup",
+    "substrate": "ketones",
+    "outcome": "Typically 60-95%; tertiary alcohol after workup.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 9,
     "notes": "Ketones furnish tertiary alcohols after aqueous workup.",
-    "tags": ["grignard", "addition", "tertiary-alcohol"]
+    "tags": [
+      "grignard",
+      "addition",
+      "tertiary-alcohol"
+    ]
   },
   {
     "id": "grignard_nitrile_to_ketone",
     "name": "Grignard addition to nitrile",
     "smarts": "[C:1]#[N:2].[C:3][Mg][Br]>>[C:1](=O)[C:3]",
     "arity": 2,
-    "reagents": ["then H3O+"],
+    "reagents": [
+      "then H3O+"
+    ],
     "conditions": "anhydrous ether, then acidic hydrolysis",
-    "byproducts": ["N"],
+    "substrate": "nitriles",
+    "outcome": "Typically 50-85%; ketone after hydrolysis.",
+    "source": "standard practice",
+    "byproducts": [
+      "N"
+    ],
     "priority": 8,
     "notes": "Single addition followed by imine hydrolysis yields a ketone.",
-    "tags": ["grignard", "nitrile", "ketone"]
+    "tags": [
+      "grignard",
+      "nitrile",
+      "ketone"
+    ]
   },
   {
     "id": "suzuki_coupling",
     "name": "Suzuki-Miyaura coupling",
     "smarts": "[c:1][Br:2].[c:3][B](O)O>>[c:1]-[c:3]",
     "arity": 2,
-    "reagents": ["Pd(PPh3)4", "K2CO3"],
+    "reagents": [
+      "Pd(PPh3)4",
+      "K2CO3"
+    ],
     "conditions": "dioxane/water, 80 C",
-    "byproducts": ["B(O)(O)O", "Br"],
+    "substrate": "aryl halides and boronic acids",
+    "outcome": "Typically 70-95%; biaryl with broad functional-group tolerance.",
+    "source": "OrgSyn 75, 61",
+    "byproducts": [
+      "B(O)(O)O",
+      "Br"
+    ],
     "priority": 10,
     "notes": "A robust sp2-sp2 coupling tolerant of many functional groups.",
-    "tags": ["coupling", "suzuki", "aryl"]
+    "tags": [
+      "coupling",
+      "suzuki",
+      "aryl"
+    ]
   },
   {
     "id": "heck_coupling",
     "name": "Heck coupling",
     "smarts": "[c:1][Br:2].[C:3]=[C:4]>>[c:1]-[C:3]=[C:4]",
     "arity": 2,
-    "reagents": ["Pd(OAc)2", "phosphine", "Et3N"],
+    "reagents": [
+      "Pd(OAc)2",
+      "phosphine",
+      "Et3N"
+    ],
     "conditions": "DMF, 80-120 C",
-    "byproducts": ["Br"],
+    "substrate": "aryl halides and alkenes",
+    "outcome": "Typically 55-90%; substituted alkene, commonly E-selective.",
+    "source": "standard practice",
+    "byproducts": [
+      "Br"
+    ],
     "priority": 9,
     "notes": "Couples an aryl halide with an alkene, commonly favoring the E-substituted alkene.",
-    "tags": ["coupling", "heck", "alkene"]
+    "tags": [
+      "coupling",
+      "heck",
+      "alkene"
+    ]
   },
   {
     "id": "sonogashira_coupling",
     "name": "Sonogashira coupling",
     "smarts": "[c:1][Br:2].[C;H1:3]#[C:4]>>[c:1]-[C:3]#[C:4]",
     "arity": 2,
-    "reagents": ["Pd(PPh3)2Cl2", "CuI", "Et3N"],
+    "reagents": [
+      "Pd(PPh3)2Cl2",
+      "CuI",
+      "Et3N"
+    ],
     "conditions": "amine solvent, rt to 60 C",
-    "byproducts": ["Br"],
+    "substrate": "aryl halides and terminal alkynes",
+    "outcome": "Typically 60-95%; aryl alkyne coupling product.",
+    "source": "standard practice",
+    "byproducts": [
+      "Br"
+    ],
     "priority": 9,
     "notes": "Forms an aryl-alkynyl carbon-carbon bond from a terminal alkyne.",
-    "tags": ["coupling", "sonogashira", "alkyne"]
+    "tags": [
+      "coupling",
+      "sonogashira",
+      "alkyne"
+    ]
   },
   {
     "id": "buchwald_hartwig_amination",
     "name": "Buchwald-Hartwig amination",
     "smarts": "[c:1][Br:2].[N;H1,H2:3]>>[c:1][N:3]",
     "arity": 2,
-    "reagents": ["Pd2(dba)3", "BINAP", "NaOtBu"],
+    "reagents": [
+      "Pd2(dba)3",
+      "BINAP",
+      "NaOtBu"
+    ],
     "conditions": "anhydrous toluene, 80-110 C",
-    "byproducts": ["Br"],
+    "substrate": "aryl halides and amines",
+    "outcome": "Typically 60-95%; aryl amine with ligand-dependent scope.",
+    "source": "standard practice",
+    "byproducts": [
+      "Br"
+    ],
     "priority": 9,
     "notes": "Palladium-catalysed C-N coupling gives aryl amines from aryl halides.",
-    "tags": ["coupling", "buchwald-hartwig", "amine"]
+    "tags": [
+      "coupling",
+      "buchwald-hartwig",
+      "amine"
+    ]
+  },
+  {
+    "id": "kumada_coupling",
+    "name": "Kumada coupling",
+    "smarts": "[c:1][Br:2].[C:3][Mg][Br]>>[c:1][C:3]",
+    "arity": 2,
+    "reagents": [
+      "NiCl2(dppp) or Pd catalyst"
+    ],
+    "conditions": "anhydrous ether or THF, 0 C to reflux",
+    "substrate": "aryl halides and grignard reagents",
+    "outcome": "Typically 55-90%; aryl-alkyl or biaryl bond formation.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Fast coupling is offset by low tolerance for protic and strongly electrophilic functional groups.",
+    "tags": [
+      "coupling",
+      "kumada",
+      "grignard"
+    ]
+  },
+  {
+    "id": "negishi_coupling",
+    "name": "Negishi coupling",
+    "smarts": "[c:1][Br:2].[C:3][Zn][Br]>>[c:1][C:3]",
+    "arity": 2,
+    "reagents": [
+      "Pd(PPh3)4 or Ni catalyst"
+    ],
+    "conditions": "anhydrous THF, 0-80 C",
+    "substrate": "aryl halides and organozinc reagents",
+    "outcome": "Typically 60-95%; carbon-carbon coupling with broad electrophile scope.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Organozinc reagents are less basic than Grignard reagents but remain moisture-sensitive.",
+    "tags": [
+      "coupling",
+      "negishi",
+      "organozinc"
+    ]
+  },
+  {
+    "id": "stille_coupling",
+    "name": "Stille coupling",
+    "smarts": "[c:1][Br:2].[c:3][Sn](C)(C)C>>[c:1]-[c:3]",
+    "arity": 2,
+    "reagents": [
+      "Pd(PPh3)4"
+    ],
+    "conditions": "anhydrous DMF or toluene, 60-110 C",
+    "substrate": "aryl halides and organostannanes",
+    "outcome": "Typically 60-95%; biaryl product with good functional-group tolerance.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Organotin residues are toxic and difficult to remove; use an alternative coupling when practical.",
+    "tags": [
+      "coupling",
+      "stille",
+      "organotin"
+    ]
+  },
+  {
+    "id": "hiyama_coupling",
+    "name": "Hiyama coupling",
+    "smarts": "[c:1][Br:2].[c:3][Si](C)(C)C>>[c:1]-[c:3]",
+    "arity": 2,
+    "reagents": [
+      "Pd catalyst",
+      "TBAF"
+    ],
+    "conditions": "THF, 20-80 C",
+    "substrate": "aryl halides and organosilanes",
+    "outcome": "Typically 55-90%; biaryl product after fluoride activation.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Stable organosilanes are activated by fluoride or base; silicon substituents strongly affect transfer efficiency.",
+    "tags": [
+      "coupling",
+      "hiyama",
+      "organosilane"
+    ]
+  },
+  {
+    "id": "organolithium_aldehyde_addition",
+    "name": "Organolithium addition to aldehyde",
+    "smarts": "[C;H1:1]=[O:2].[C:3][Li]>>[C:1]([O:2])[C:3]",
+    "arity": 2,
+    "reagents": [
+      "then H3O+"
+    ],
+    "conditions": "anhydrous ether, -78 to 0 C",
+    "substrate": "aldehydes",
+    "outcome": "Typically 60-95%; secondary alcohol after workup.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Highly basic organolithium reagents require rigorously dry conditions and may deprotonate acidic sites.",
+    "tags": [
+      "organometallic",
+      "organolithium",
+      "secondary-alcohol"
+    ]
+  },
+  {
+    "id": "organolithium_ketone_addition",
+    "name": "Organolithium addition to ketone",
+    "smarts": "[C;H0:1]=[O:2].[C:3][Li]>>[C:1]([O:2])[C:3]",
+    "arity": 2,
+    "reagents": [
+      "then H3O+"
+    ],
+    "conditions": "anhydrous ether, -78 to 0 C",
+    "substrate": "ketones",
+    "outcome": "Typically 60-95%; tertiary alcohol after workup.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Fast nucleophilic addition competes with enolization in hindered or enolizable ketones.",
+    "tags": [
+      "organometallic",
+      "organolithium",
+      "tertiary-alcohol"
+    ]
   }
 ]

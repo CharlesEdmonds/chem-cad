@@ -4,47 +4,262 @@
     "name": "E2 dehydrohalogenation (Zaitsev)",
     "smarts": "[C;H1,H2:1]-[C;X4:2][Br:3]>>[C:1]=[C:2]",
     "arity": 1,
-    "reagents": ["NaOEt"],
+    "reagents": [
+      "NaOEt"
+    ],
     "conditions": "ethanol, heat",
-    "byproducts": ["Br"],
+    "substrate": "secondary alkyl bromides",
+    "outcome": "Typically 60-90%; more substituted alkene usually predominates.",
+    "source": "standard practice",
+    "byproducts": [
+      "Br"
+    ],
     "priority": 9,
     "notes": "A small strong base usually favors the more substituted Zaitsev alkene.",
-    "tags": ["elimination", "e2", "zaitsev"]
+    "tags": [
+      "elimination",
+      "e2",
+      "zaitsev"
+    ]
   },
   {
     "id": "e2_chloride_zaitsev",
     "name": "E2 elimination of alkyl chloride",
     "smarts": "[C;H1,H2:1]-[C;X4:2][Cl:3]>>[C:1]=[C:2]",
     "arity": 1,
-    "reagents": ["NaOEt"],
+    "reagents": [
+      "NaOEt"
+    ],
     "conditions": "ethanol, heat",
-    "byproducts": ["Cl"],
+    "substrate": "secondary alkyl chlorides",
+    "outcome": "Typically 50-85%; antiperiplanar elimination gives an alkene.",
+    "source": "standard practice",
+    "byproducts": [
+      "Cl"
+    ],
     "priority": 8,
     "notes": "Requires an antiperiplanar beta hydrogen and leaving group.",
-    "tags": ["elimination", "e2", "zaitsev"]
+    "tags": [
+      "elimination",
+      "e2",
+      "zaitsev"
+    ]
   },
   {
     "id": "e2_hofmann_bulky_base",
     "name": "E2 dehydrohalogenation (Hofmann)",
     "smarts": "[C;H2,H3:1]-[C;X4:2][Br:3]>>[C:1]=[C:2]",
     "arity": 1,
-    "reagents": ["KOtBu"],
+    "reagents": [
+      "KOtBu"
+    ],
     "conditions": "tert-butanol, heat",
-    "byproducts": ["Br"],
+    "substrate": "alkyl bromides",
+    "outcome": "Typically 50-85%; less substituted alkene is favored.",
+    "source": "standard practice",
+    "byproducts": [
+      "Br"
+    ],
     "priority": 7,
     "notes": "A bulky base preferentially removes the least hindered beta hydrogen.",
-    "tags": ["elimination", "e2", "hofmann"]
+    "tags": [
+      "elimination",
+      "e2",
+      "hofmann"
+    ]
   },
   {
     "id": "acid_dehydration_of_alcohol",
     "name": "Acid-catalysed alcohol dehydration",
     "smarts": "[C;H1,H2:1]-[C;X4:2][O;H1:3]>>[C:1]=[C:2]",
     "arity": 1,
-    "reagents": ["H2SO4 (cat.)"],
+    "reagents": [
+      "H2SO4 (cat.)"
+    ],
     "conditions": "concentrated acid, heat",
-    "byproducts": ["O"],
+    "substrate": "secondary and tertiary alcohols",
+    "outcome": "Typically 50-90%; Zaitsev alkene with rearrangement risk.",
+    "source": "standard practice",
+    "byproducts": [
+      "O"
+    ],
     "priority": 7,
     "notes": "Secondary and tertiary alcohols dehydrate readily; carbocation rearrangements can occur.",
-    "tags": ["elimination", "dehydration", "alkene"]
+    "tags": [
+      "elimination",
+      "dehydration",
+      "alkene"
+    ]
+  },
+  {
+    "id": "e2_iodide_zaitsev",
+    "name": "E2 elimination of alkyl iodide",
+    "smarts": "[C;H1,H2:1]-[C;X4:2][I:3]>>[C:1]=[C:2]",
+    "arity": 1,
+    "reagents": [
+      "NaOEt"
+    ],
+    "conditions": "ethanol, 20-80 C",
+    "substrate": "secondary alkyl iodides",
+    "outcome": "Typically 65-95%; more substituted alkene usually predominates.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Iodide is an excellent leaving group; stereochemistry follows the required antiperiplanar arrangement.",
+    "tags": [
+      "elimination",
+      "e2",
+      "zaitsev"
+    ]
+  },
+  {
+    "id": "e2_tosylate_elimination",
+    "name": "E2 elimination of alkyl tosylate",
+    "smarts": "[C;H1,H2:1]-[C;X4:2][O:3]S(=O)(=O)[c:4]>>[C:1]=[C:2]",
+    "arity": 1,
+    "reagents": [
+      "NaOEt or DBU"
+    ],
+    "conditions": "ethanol or THF, heat",
+    "substrate": "alkyl tosylates",
+    "outcome": "Typically 55-90%; alkene regioselectivity follows base size and conformation.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Sulfonate esters are strong leaving groups; substrate conformation controls antiperiplanar access.",
+    "tags": [
+      "elimination",
+      "e2",
+      "tosylate"
+    ]
+  },
+  {
+    "id": "e2_mesylate_elimination",
+    "name": "E2 elimination of alkyl mesylate",
+    "smarts": "[C;H1,H2:1]-[C;X4:2][O:3]S(=O)(=O)C>>[C:1]=[C:2]",
+    "arity": 1,
+    "reagents": [
+      "DBU"
+    ],
+    "conditions": "CH2Cl2 or THF, rt to reflux",
+    "substrate": "alkyl mesylates",
+    "outcome": "Typically 55-90%; alkene without carbocation rearrangement.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "A non-nucleophilic base favors elimination over substitution while preserving E2 stereospecificity.",
+    "tags": [
+      "elimination",
+      "e2",
+      "mesylate"
+    ]
+  },
+  {
+    "id": "e1_tertiary_halide_elimination",
+    "name": "E1 elimination of tertiary alkyl halide",
+    "smarts": "[C;H1,H2:1]-[C;X4;H0:2][Br:3]>>[C:1]=[C:2]",
+    "arity": 1,
+    "reagents": [
+      "EtOH or H2O"
+    ],
+    "conditions": "polar protic solvent, heat",
+    "substrate": "tertiary alkyl bromides",
+    "outcome": "Typically 40-80%; Zaitsev alkene mixture with rearrangement possible.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 6,
+    "notes": "Ionization forms a carbocation, so substitution competes and stereospecificity is low.",
+    "tags": [
+      "elimination",
+      "e1",
+      "alkene"
+    ]
+  },
+  {
+    "id": "pocl3_alcohol_dehydration",
+    "name": "POCl3-pyridine alcohol dehydration",
+    "smarts": "[C;H1,H2:1]-[C;X4:2][O;H1:3]>>[C:1]=[C:2]",
+    "arity": 1,
+    "reagents": [
+      "POCl3",
+      "pyridine"
+    ],
+    "conditions": "0 C to rt",
+    "substrate": "primary and secondary alcohols",
+    "outcome": "Typically 55-90%; alkene without carbocation rearrangement.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "A phosphorylated leaving group undergoes base-promoted E2 elimination under nonaqueous conditions.",
+    "tags": [
+      "elimination",
+      "dehydration",
+      "alcohol"
+    ]
+  },
+  {
+    "id": "hofmann_quaternary_ammonium_elimination",
+    "name": "Hofmann elimination",
+    "smarts": "[C;H1,H2:1]-[C;X4:2][N+:3](C)(C)C>>[C:1]=[C:2]",
+    "arity": 1,
+    "reagents": [
+      "Ag2O",
+      "H2O",
+      "heat"
+    ],
+    "conditions": "aqueous, then strong heat",
+    "substrate": "quaternary ammonium salts",
+    "outcome": "Typically 40-80%; least substituted alkene usually predominates.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 6,
+    "notes": "Steric and leaving-group effects favor removal of the most accessible beta hydrogen.",
+    "tags": [
+      "elimination",
+      "hofmann",
+      "alkene"
+    ]
+  },
+  {
+    "id": "cope_amine_oxide_elimination",
+    "name": "Cope elimination of amine oxide",
+    "smarts": "[C;H1,H2:1]-[C;X4:2][N+:3](C)(C)[O-:4]>>[C:1]=[C:2]",
+    "arity": 1,
+    "reagents": [
+      "heat"
+    ],
+    "conditions": "80-160 C",
+    "substrate": "tertiary amine oxides",
+    "outcome": "Typically 50-90%; syn alkene elimination through a five-membered transition state.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 6,
+    "notes": "The intramolecular syn elimination proceeds without added base and is strongly conformation-dependent.",
+    "tags": [
+      "elimination",
+      "cope",
+      "amine-oxide"
+    ]
+  },
+  {
+    "id": "zinc_dehalogenation_vicinal_dibromide",
+    "name": "Zinc dehalogenation of vicinal dibromide",
+    "smarts": "[C:1](Br)[C:2](Br)>>[C:1]=[C:2]",
+    "arity": 1,
+    "reagents": [
+      "Zn"
+    ],
+    "conditions": "ethanol or AcOH, reflux",
+    "substrate": "vicinal dibromides",
+    "outcome": "Typically 60-95%; alkene formed by reductive dehalogenation.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Stereochemical outcome depends on substrate geometry and the surface-mediated elimination pathway.",
+    "tags": [
+      "elimination",
+      "dehalogenation",
+      "alkene"
+    ]
   }
 ]

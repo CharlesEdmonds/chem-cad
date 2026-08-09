@@ -4,203 +4,380 @@
     "name": "Fischer esterification",
     "smarts": "[C:1](=[O:2])[OX2H1:3].[OX2H1:4][C:5]>>[C:1](=[O:2])[O:4][C:5]",
     "arity": 2,
-    "reagents": ["H2SO4 (cat.)"],
+    "reagents": [
+      "H2SO4 (cat.)"
+    ],
     "conditions": "reflux",
-    "byproducts": ["O"],
+    "substrate": "carboxylic acids and alcohols",
+    "outcome": "Typically 60-95% at equilibrium when water is removed.",
+    "source": "standard practice",
+    "byproducts": [
+      "O"
+    ],
     "priority": 9,
     "notes": "Equilibrium is driven by excess alcohol or removal of water.",
-    "tags": ["esterification", "carbonyl"]
+    "tags": [
+      "esterification",
+      "carbonyl"
+    ]
   },
   {
     "id": "acidic_ester_hydrolysis",
     "name": "Acidic ester hydrolysis",
     "smarts": "[C:1](=[O:2])[O:3][C:4]>>[C:1](=[O:2])O.[O:3][C:4]",
     "arity": 1,
-    "reagents": ["H2O", "H2SO4 (cat.)"],
+    "reagents": [
+      "H2O",
+      "H2SO4 (cat.)"
+    ],
     "conditions": "aqueous acid, reflux",
+    "substrate": "esters",
+    "outcome": "Typically 70-95% conversion with excess water; reversible.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 8,
     "notes": "Reversible hydrolysis gives a carboxylic acid and an alcohol.",
-    "tags": ["hydrolysis", "ester", "carbonyl"]
+    "tags": [
+      "hydrolysis",
+      "ester",
+      "carbonyl"
+    ]
   },
   {
     "id": "ester_saponification",
     "name": "Ester saponification",
     "smarts": "[C:1](=[O:2])[O:3][C:4]>>[C:1](=[O:2])O.[O:3][C:4]",
     "arity": 1,
-    "reagents": ["NaOH", "then H3O+"],
+    "reagents": [
+      "NaOH",
+      "then H3O+"
+    ],
     "conditions": "aqueous ethanol, reflux",
+    "substrate": "esters",
+    "outcome": "Typically 80-98%; carboxylic acid after acidic workup.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 9,
     "notes": "Irreversible base hydrolysis is followed by acid workup to give the free acid.",
-    "tags": ["hydrolysis", "saponification", "ester"]
+    "tags": [
+      "hydrolysis",
+      "saponification",
+      "ester"
+    ]
   },
   {
     "id": "amide_acid_hydrolysis",
     "name": "Acidic amide hydrolysis",
     "smarts": "[C:1](=[O:2])[N:3]>>[C:1](=[O:2])O.[N:3]",
     "arity": 1,
-    "reagents": ["H3O+"],
+    "reagents": [
+      "H3O+"
+    ],
     "conditions": "aqueous acid, reflux",
+    "substrate": "amides",
+    "outcome": "Typically 60-95% after prolonged heating; acid and ammonium products.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 7,
     "notes": "Strong heating converts an amide to a carboxylic acid and ammonium-derived amine.",
-    "tags": ["hydrolysis", "amide", "carbonyl"]
+    "tags": [
+      "hydrolysis",
+      "amide",
+      "carbonyl"
+    ]
   },
   {
     "id": "amide_base_hydrolysis",
     "name": "Basic amide hydrolysis",
     "smarts": "[C:1](=[O:2])[N:3]>>[C:1](=[O:2])O.[N:3]",
     "arity": 1,
-    "reagents": ["NaOH", "then H3O+"],
+    "reagents": [
+      "NaOH",
+      "then H3O+"
+    ],
     "conditions": "aqueous base, reflux",
+    "substrate": "amides",
+    "outcome": "Typically 60-95% after prolonged heating; acid after workup.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 7,
     "notes": "Base-promoted hydrolysis followed by workup gives the acid and amine products.",
-    "tags": ["hydrolysis", "amide", "carbonyl"]
+    "tags": [
+      "hydrolysis",
+      "amide",
+      "carbonyl"
+    ]
   },
   {
     "id": "dcc_amide_coupling",
     "name": "DCC amide coupling",
     "smarts": "[C:1](=[O:2])[O;H1:3].[N;H1,H2:4]>>[C:1](=[O:2])[N:4]",
     "arity": 2,
-    "reagents": ["DCC", "DMAP (cat.)"],
+    "reagents": [
+      "DCC",
+      "DMAP (cat.)"
+    ],
     "conditions": "CH2Cl2, 0 C to rt",
-    "byproducts": ["O=C(NC1CCCCC1)NC1CCCCC1"],
+    "substrate": "carboxylic acids and amines",
+    "outcome": "Typically 60-90%; amide with urea byproduct.",
+    "source": "standard practice",
+    "byproducts": [
+      "O=C(NC1CCCCC1)NC1CCCCC1"
+    ],
     "priority": 9,
     "notes": "Carbodiimide activation forms the amide under mild, nearly neutral conditions.",
-    "tags": ["coupling", "amide", "dcc"]
+    "tags": [
+      "coupling",
+      "amide",
+      "dcc"
+    ]
   },
   {
     "id": "edc_amide_coupling",
     "name": "EDC amide coupling",
     "smarts": "[C:1](=[O:2])[O;H1:3].[N;H1,H2:4]>>[C:1](=[O:2])[N:4]",
     "arity": 2,
-    "reagents": ["EDC", "HOBt"],
+    "reagents": [
+      "EDC",
+      "HOBt"
+    ],
     "conditions": "DMF or water, 0 C to rt",
-    "byproducts": ["CCNC(=O)NCCCN(C)C"],
+    "substrate": "carboxylic acids and amines",
+    "outcome": "Typically 60-90%; amide under mild conditions.",
+    "source": "standard practice",
+    "byproducts": [
+      "CCNC(=O)NCCCN(C)C"
+    ],
     "priority": 9,
     "notes": "Water-compatible carbodiimide coupling is widely used for amide formation.",
-    "tags": ["coupling", "amide", "edc"]
+    "tags": [
+      "coupling",
+      "amide",
+      "edc"
+    ]
   },
   {
     "id": "acid_chloride_formation_thionyl_chloride",
     "name": "Acid chloride formation with thionyl chloride",
     "smarts": "[C:1](=[O:2])[O;H1:3]>>[C:1](=[O:2])Cl",
     "arity": 1,
-    "reagents": ["SOCl2", "DMF (cat.)"],
+    "reagents": [
+      "SOCl2",
+      "DMF (cat.)"
+    ],
     "conditions": "reflux, anhydrous",
-    "byproducts": ["O=S=O", "Cl"],
+    "substrate": "carboxylic acids",
+    "outcome": "Typically 80-98%; reactive acid chloride after volatile byproducts escape.",
+    "source": "standard practice",
+    "byproducts": [
+      "O=S=O",
+      "Cl"
+    ],
     "priority": 9,
     "notes": "Gaseous sulfur dioxide and hydrogen chloride drive conversion to completion.",
-    "tags": ["acid-chloride", "activation", "carbonyl"]
+    "tags": [
+      "acid-chloride",
+      "activation",
+      "carbonyl"
+    ]
   },
   {
     "id": "acid_chloride_to_ester",
     "name": "Alcoholysis of acid chloride",
     "smarts": "[C:1](=[O:2])[Cl:3].[O;H1:4][C:5]>>[C:1](=[O:2])[O:4][C:5]",
     "arity": 2,
-    "reagents": ["pyridine"],
+    "reagents": [
+      "pyridine"
+    ],
     "conditions": "0 C to rt, anhydrous",
-    "byproducts": ["Cl"],
+    "substrate": "acid chlorides and alcohols",
+    "outcome": "Typically 80-98%; rapid ester formation.",
+    "source": "standard practice",
+    "byproducts": [
+      "Cl"
+    ],
     "priority": 10,
     "notes": "Acid chlorides acylate alcohols rapidly to give esters.",
-    "tags": ["acylation", "ester", "acid-chloride"]
+    "tags": [
+      "acylation",
+      "ester",
+      "acid-chloride"
+    ]
   },
   {
     "id": "acid_chloride_to_amide",
     "name": "Aminolysis of acid chloride",
     "smarts": "[C:1](=[O:2])[Cl:3].[N;H1,H2:4]>>[C:1](=[O:2])[N:4]",
     "arity": 2,
-    "reagents": ["Et3N"],
+    "reagents": [
+      "Et3N"
+    ],
     "conditions": "0 C to rt, anhydrous",
-    "byproducts": ["Cl"],
+    "substrate": "acid chlorides and amines",
+    "outcome": "Typically 80-98%; rapid amide formation.",
+    "source": "standard practice",
+    "byproducts": [
+      "Cl"
+    ],
     "priority": 10,
     "notes": "A second equivalent of base or amine scavenges the hydrogen chloride byproduct.",
-    "tags": ["acylation", "amide", "acid-chloride"]
+    "tags": [
+      "acylation",
+      "amide",
+      "acid-chloride"
+    ]
   },
   {
     "id": "wittig_olefination",
     "name": "Wittig olefination",
     "smarts": "[C:1]=[O:2].[C:3]=[P:4](c1ccccc1)(c1ccccc1)c1ccccc1>>[C:1]=[C:3]",
     "arity": 2,
-    "reagents": ["phosphorus ylide"],
+    "reagents": [
+      "phosphorus ylide"
+    ],
     "conditions": "anhydrous THF, 0 C to rt",
-    "byproducts": ["O=P(c1ccccc1)(c1ccccc1)c1ccccc1"],
+    "substrate": "aldehydes and ketones",
+    "outcome": "Typically 50-95%; alkene geometry depends on ylide stabilization.",
+    "source": "standard practice",
+    "byproducts": [
+      "O=P(c1ccccc1)(c1ccccc1)c1ccccc1"
+    ],
     "priority": 9,
     "notes": "Replaces a carbonyl oxygen with the ylide carbon to form an alkene.",
-    "tags": ["wittig", "olefination", "carbonyl"]
+    "tags": [
+      "wittig",
+      "olefination",
+      "carbonyl"
+    ]
   },
   {
     "id": "aldol_addition",
     "name": "Aldol addition",
     "smarts": "[C;H1,H2:1][C:2]=[O:3].[C:4]=[O:5]>>[C:1]([C:2]=[O:3])[C:4][O:5]",
     "arity": 2,
-    "reagents": ["dilute NaOH"],
+    "reagents": [
+      "dilute NaOH"
+    ],
     "conditions": "aqueous ethanol, 0-10 C",
+    "substrate": "enolizable carbonyl compounds",
+    "outcome": "Typically 50-90%; beta-hydroxy carbonyl, often as stereoisomers.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 8,
     "notes": "Enolate addition produces a beta-hydroxy aldehyde or ketone.",
-    "tags": ["aldol", "carbonyl", "carbon-carbon-bond"]
+    "tags": [
+      "aldol",
+      "carbonyl",
+      "carbon-carbon-bond"
+    ]
   },
   {
     "id": "aldol_condensation",
     "name": "Aldol condensation",
     "smarts": "[C;H1,H2:1][C:2]=[O:3].[C:4]=[O:5]>>[C:1]([C:2]=[O:3])=[C:4]",
     "arity": 2,
-    "reagents": ["NaOH"],
+    "reagents": [
+      "NaOH"
+    ],
     "conditions": "aqueous ethanol, heat",
-    "byproducts": ["O"],
+    "substrate": "enolizable carbonyl compounds",
+    "outcome": "Typically 55-90%; conjugated enone or enal.",
+    "source": "standard practice",
+    "byproducts": [
+      "O"
+    ],
     "priority": 9,
     "notes": "Aldol addition followed by dehydration gives a conjugated enone or enal.",
-    "tags": ["aldol", "condensation", "carbonyl"]
+    "tags": [
+      "aldol",
+      "condensation",
+      "carbonyl"
+    ]
   },
   {
     "id": "claisen_condensation",
     "name": "Claisen condensation",
     "smarts": "[C;H1,H2:1][C:2](=[O:3])[O:4][C:5].[C:6](=[O:7])[O:8][C:9]>>[C:1]([C:2](=[O:3])[O:4][C:5])[C:6](=[O:7]).[O:8][C:9]",
     "arity": 2,
-    "reagents": ["matching alkoxide base"],
+    "reagents": [
+      "matching alkoxide base"
+    ],
     "conditions": "anhydrous alcohol, then acid workup",
+    "substrate": "esters",
+    "outcome": "Typically 50-85%; beta-keto ester after workup.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 8,
     "notes": "Ester enolate acylation affords a beta-keto ester and an alcohol.",
-    "tags": ["claisen", "condensation", "ester"]
+    "tags": [
+      "claisen",
+      "condensation",
+      "ester"
+    ]
   },
   {
     "id": "michael_addition",
     "name": "Michael addition",
     "smarts": "[C;H1,H2:1][C:2]=[O:3].[C:4]=[C:5][C:6]=[O:7]>>[C:1]([C:2]=[O:3])[C:4][C:5][C:6]=[O:7]",
     "arity": 2,
-    "reagents": ["NaOEt or secondary amine catalyst"],
+    "reagents": [
+      "NaOEt or secondary amine catalyst"
+    ],
     "conditions": "ethanol, 0 C to rt",
+    "substrate": "enolates and enones",
+    "outcome": "Typically 60-95%; new beta carbon-carbon bond.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 8,
     "notes": "Conjugate 1,4-addition forms a stabilized carbon-carbon bond at the beta carbon.",
-    "tags": ["michael", "conjugate-addition", "carbonyl"]
+    "tags": [
+      "michael",
+      "conjugate-addition",
+      "carbonyl"
+    ]
   },
   {
     "id": "mannich_reaction",
     "name": "Mannich reaction",
     "smarts": "[C;H1,H2:1][C:2]=[O:3].[C:4]=[N:5]>>[C:1]([C:2]=[O:3])[C:4][N:5]",
     "arity": 2,
-    "reagents": ["acid catalyst"],
+    "reagents": [
+      "acid catalyst"
+    ],
     "conditions": "ethanol, rt to reflux",
+    "substrate": "enolizable carbonyl compounds",
+    "outcome": "Typically 50-85%; beta-amino carbonyl product.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 7,
     "notes": "An enolizable carbonyl adds to an iminium species to give a beta-amino carbonyl.",
-    "tags": ["mannich", "amine", "carbonyl"]
+    "tags": [
+      "mannich",
+      "amine",
+      "carbonyl"
+    ]
   },
   {
     "id": "reductive_amination",
     "name": "Reductive amination",
     "smarts": "[C:1]=[O:2].[N;H1,H2:3]>>[C:1][N:3]",
     "arity": 2,
-    "reagents": ["NaBH(OAc)3"],
+    "reagents": [
+      "NaBH(OAc)3"
+    ],
     "conditions": "CH2Cl2, mildly acidic, rt",
-    "byproducts": ["O"],
+    "substrate": "aldehydes and ketones",
+    "outcome": "Typically 60-95%; amine with limited direct carbonyl reduction.",
+    "source": "standard practice",
+    "byproducts": [
+      "O"
+    ],
     "priority": 10,
     "notes": "In situ imine formation and selective reduction efficiently form C-N bonds.",
-    "tags": ["reductive-amination", "amine", "carbonyl"]
+    "tags": [
+      "reductive-amination",
+      "amine",
+      "carbonyl"
+    ]
   }
 ]

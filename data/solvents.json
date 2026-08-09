@@ -14,6 +14,8 @@
       "dielectric": 80.1,
       "boiling_point": 100.0,
       "refractive_index": 1.333,
+      "kappa_t": 0.453,
+      "kappa_t_source": "NIST WTT",
       "water_miscible": true
     },
     {
@@ -30,6 +32,8 @@
       "dielectric": 32.7,
       "boiling_point": 64.7,
       "refractive_index": 1.329,
+      "kappa_t": 1.21,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -46,6 +50,8 @@
       "dielectric": 24.3,
       "boiling_point": 78.3,
       "refractive_index": 1.361,
+      "kappa_t": 1.15,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -62,6 +68,8 @@
       "dielectric": 20.1,
       "boiling_point": 97.2,
       "refractive_index": 1.384,
+      "kappa_t": 1.03,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -78,6 +86,8 @@
       "dielectric": 19.9,
       "boiling_point": 82.3,
       "refractive_index": 1.377,
+      "kappa_t": 1.24,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -94,6 +104,8 @@
       "dielectric": 17.8,
       "boiling_point": 117.7,
       "refractive_index": 1.399,
+      "kappa_t": 0.96,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -110,6 +122,8 @@
       "dielectric": 12.5,
       "boiling_point": 82.4,
       "refractive_index": 1.385,
+      "kappa_t": 1.43,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -126,6 +140,8 @@
       "dielectric": 37.0,
       "boiling_point": 197.3,
       "refractive_index": 1.431,
+      "kappa_t": 0.37,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -142,6 +158,8 @@
       "dielectric": 42.5,
       "boiling_point": 290.0,
       "refractive_index": 1.474,
+      "kappa_t": 0.22,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -158,6 +176,8 @@
       "dielectric": 20.7,
       "boiling_point": 56.1,
       "refractive_index": 1.359,
+      "kappa_t": 1.27,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -174,6 +194,8 @@
       "dielectric": 18.5,
       "boiling_point": 79.6,
       "refractive_index": 1.379,
+      "kappa_t": 1.18,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -190,6 +212,8 @@
       "dielectric": 6.0,
       "boiling_point": 77.1,
       "refractive_index": 1.372,
+      "kappa_t": 1.13,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -206,6 +230,8 @@
       "dielectric": 6.7,
       "boiling_point": 56.9,
       "refractive_index": 1.362,
+      "kappa_t": 1.25,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -222,6 +248,8 @@
       "dielectric": 6.0,
       "boiling_point": 88.6,
       "refractive_index": 1.377,
+      "kappa_t": 1.2,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -238,6 +266,8 @@
       "dielectric": 4.3,
       "boiling_point": 34.6,
       "refractive_index": 1.353,
+      "kappa_t": 1.88,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -254,6 +284,8 @@
       "dielectric": 7.5,
       "boiling_point": 66.0,
       "refractive_index": 1.407,
+      "kappa_t": 1.05,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -286,6 +318,8 @@
       "dielectric": 2.2,
       "boiling_point": 101.1,
       "refractive_index": 1.422,
+      "kappa_t": 0.77,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -302,6 +336,8 @@
       "dielectric": 4.5,
       "boiling_point": 55.2,
       "refractive_index": 1.369,
+      "kappa_t": 1.47,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -318,6 +354,8 @@
       "dielectric": 8.93,
       "boiling_point": 39.6,
       "refractive_index": 1.424,
+      "kappa_t": 1.01,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -334,6 +372,8 @@
       "dielectric": 4.81,
       "boiling_point": 61.2,
       "refractive_index": 1.446,
+      "kappa_t": 1.02,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -350,6 +390,8 @@
       "dielectric": 2.24,
       "boiling_point": 76.7,
       "refractive_index": 1.46,
+      "kappa_t": 1.08,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -366,6 +408,8 @@
       "dielectric": 10.36,
       "boiling_point": 83.5,
       "refractive_index": 1.445,
+      "kappa_t": 0.82,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -382,6 +426,8 @@
       "dielectric": 2.38,
       "boiling_point": 110.6,
       "refractive_index": 1.497,
+      "kappa_t": 0.92,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -398,6 +444,8 @@
       "dielectric": 2.28,
       "boiling_point": 80.1,
       "refractive_index": 1.501,
+      "kappa_t": 0.97,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -414,6 +462,8 @@
       "dielectric": 2.37,
       "boiling_point": 139.1,
       "refractive_index": 1.497,
+      "kappa_t": 0.85,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -430,6 +480,8 @@
       "dielectric": 5.62,
       "boiling_point": 131.7,
       "refractive_index": 1.524,
+      "kappa_t": 0.77,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -446,6 +498,8 @@
       "dielectric": 1.89,
       "boiling_point": 68.7,
       "refractive_index": 1.375,
+      "kappa_t": 1.67,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -462,6 +516,8 @@
       "dielectric": 1.92,
       "boiling_point": 98.4,
       "refractive_index": 1.388,
+      "kappa_t": 1.43,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -478,6 +534,8 @@
       "dielectric": 2.02,
       "boiling_point": 80.7,
       "refractive_index": 1.426,
+      "kappa_t": 1.14,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -494,6 +552,8 @@
       "dielectric": 1.84,
       "boiling_point": 36.1,
       "refractive_index": 1.358,
+      "kappa_t": 2.05,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -526,6 +586,8 @@
       "dielectric": 36.7,
       "boiling_point": 153.0,
       "refractive_index": 1.43,
+      "kappa_t": 0.65,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -542,6 +604,8 @@
       "dielectric": 37.8,
       "boiling_point": 165.0,
       "refractive_index": 1.438,
+      "kappa_t": 0.62,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -558,6 +622,8 @@
       "dielectric": 46.7,
       "boiling_point": 189.0,
       "refractive_index": 1.479,
+      "kappa_t": 0.52,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -574,6 +640,8 @@
       "dielectric": 32.2,
       "boiling_point": 202.0,
       "refractive_index": 1.47,
+      "kappa_t": 0.55,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -590,6 +658,8 @@
       "dielectric": 37.5,
       "boiling_point": 81.6,
       "refractive_index": 1.344,
+      "kappa_t": 1.0,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -606,6 +676,8 @@
       "dielectric": 35.9,
       "boiling_point": 101.2,
       "refractive_index": 1.382,
+      "kappa_t": 0.55,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -622,6 +694,8 @@
       "dielectric": 12.3,
       "boiling_point": 115.3,
       "refractive_index": 1.51,
+      "kappa_t": 0.73,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -638,6 +712,8 @@
       "dielectric": 2.42,
       "boiling_point": 89.5,
       "refractive_index": 1.401,
+      "kappa_t": 1.25,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {
@@ -654,6 +730,8 @@
       "dielectric": 6.2,
       "boiling_point": 117.9,
       "refractive_index": 1.372,
+      "kappa_t": 0.91,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -670,6 +748,8 @@
       "dielectric": 58.0,
       "boiling_point": 100.8,
       "refractive_index": 1.371,
+      "kappa_t": 0.75,
+      "kappa_t_source": "literature",
       "water_miscible": true
     },
     {
@@ -702,6 +782,8 @@
       "dielectric": 2.64,
       "boiling_point": 46.2,
       "refractive_index": 1.627,
+      "kappa_t": 0.95,
+      "kappa_t_source": "literature",
       "water_miscible": false
     },
     {

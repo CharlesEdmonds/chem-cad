@@ -114,7 +114,7 @@ struct PlannerState {
   int maxRoutes = 5;
 };
 
-enum class MainTab { Sketch, Planner, Solubility, Extraction, Viewer3D };
+enum class MainTab { Sketch, Planner, Solubility, Extraction, Toolbox };
 
 // ---------------------------------------------------------------- app state
 struct AppState {
@@ -139,6 +139,12 @@ struct AppState {
 
   MainTab tab = MainTab::Sketch;
   bool tabChangeRequested = false;  // set with `tab` to force the tab bar
+
+  // Screen-space rect of the menu-bar stretch that acts as the window's drag
+  // handle (between the menus and the caption buttons). Set by drawMenuBar.
+  struct DragZone {
+    float x1 = -1.0f, y1 = 0.0f, x2 = 0.0f, y2 = 0.0f;
+  } titleDragZone;
 
   std::string projectPath;
   bool dirty = false;

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "chem/bridge.hpp"
@@ -99,6 +100,35 @@ void syncModel(AppState& st) {
     vs.formula = props.formula;
     vs.molWeight = props.mw;
     vs.hasModel = true;
+
+    // Flat 2D capture for the Skeleton style: sketch coordinates, centred.
+    vs.sketchAtoms.clear();
+    vs.sketchBonds.clear();
+    std::unordered_map<core::AtomId, int> indexOf;
+    float cx = 0.0f, cy = 0.0f;
+    for (const core::Atom& atom : found->atoms()) {
+      indexOf[atom.id] = static_cast<int>(vs.sketchAtoms.size());
+      vs.sketchAtoms.push_back({atom.atomicNumber, atom.pos.x, atom.pos.y});
+      cx += atom.pos.x;
+      cy += atom.pos.y;
+    }
+    if (!vs.sketchAtoms.empty()) {
+      cx /= static_cast<float>(vs.sketchAtoms.size());
+      cy /= static_cast<float>(vs.sketchAtoms.size());
+      float radius = 0.0f;
+      for (auto& atom : vs.sketchAtoms) {
+        atom.x -= cx;
+        atom.y -= cy;
+        radius = std::max(radius, std::sqrt(atom.x * atom.x + atom.y * atom.y));
+      }
+      vs.sketchRadius = std::max(radius, 1.0f);
+    }
+    for (const core::Bond& bond : found->bonds()) {
+      auto ia = indexOf.find(bond.a), ib = indexOf.find(bond.b);
+      if (ia == indexOf.end() || ib == indexOf.end()) continue;
+      vs.sketchBonds.push_back({ia->second, ib->second, static_cast<int>(bond.order)});
+    }
+    vs.hasSketch = !vs.sketchAtoms.empty();
   } catch (const std::exception& err) {
     vs.errorMessage = err.what();
   }
@@ -192,6 +222,66 @@ void drawBond(ImDrawList* dl, ImVec2 pa, ImVec2 pb, float thick, ImVec4 colorA, 
   }
 }
 
+// Skeleton style: the sketch itself, drawn flat. The 2D depiction rides the
+// same turntable as the 3D styles, so rotating edge-on foreshortens it to a
+// line -- it is a 2D formula and the side view is honestly nothing.
+void drawSkeleton2D(AppState& st, ImVec2 min, ImVec2 max) {
+  Viewer3DState& vs = st.viewer3d;
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 centre((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+  const float fit = std::min(max.x - min.x, max.y - min.y) * 0.42f / vs.sketchRadius;
+  const float scale = fit * vs.zoom;
+  const float perspK = 0.18f / std::max(vs.sketchRadius, 1.0f);
+  const float yaw = vs.yawDeg * kPi / 180.0f;
+  const float pitch = vs.pitchDeg * kPi / 180.0f;
+
+  std::vector<Projected> pts(vs.sketchAtoms.size());
+  for (size_t i = 0; i < vs.sketchAtoms.size(); ++i) {
+    const auto& a = vs.sketchAtoms[i];
+    chem::Atom3D flat;
+    flat.atomicNumber = a.z;
+    flat.x = a.x;
+    flat.y = a.y;
+    flat.z = 0.0f;
+    pts[i] = project(flat, yaw, pitch, centre, scale, perspK);
+  }
+
+  std::vector<const Viewer3DState::SketchBond*> sorted;
+  sorted.reserve(vs.sketchBonds.size());
+  for (const auto& b : vs.sketchBonds) sorted.push_back(&b);
+  std::sort(sorted.begin(), sorted.end(), [&](const auto* x, const auto* y) {
+    return (pts[static_cast<size_t>(x->a)].depth + pts[static_cast<size_t>(x->b)].depth) >
+           (pts[static_cast<size_t>(y->a)].depth + pts[static_cast<size_t>(y->b)].depth);
+  });
+
+  const float thick = std::max(1.2f, scale * 0.028f);
+  for (const auto* b : sorted) {
+    const Projected& pa = pts[static_cast<size_t>(b->a)];
+    const Projected& pb = pts[static_cast<size_t>(b->b)];
+    const float fog = std::clamp(
+        ((pa.depth + pb.depth) * 0.5f / vs.sketchRadius + 1.0f) * 0.5f * 0.4f, 0.0f, 0.45f);
+    const ImVec4 col = shadeAtom(style::col::Text, fog);
+    drawBond(dl, ImVec2(pa.x, pa.y), ImVec2(pb.x, pb.y), thick, col, col,
+             b->order == 4 ? 4 : b->order);
+  }
+
+  // Heteroatoms keep their symbols; carbons stay implicit vertices.
+  const bool mono = style::pushFont(style::fonts::mono());
+  const float labelSize = std::max(9.0f, scale * 0.24f);
+  for (size_t i = 0; i < vs.sketchAtoms.size(); ++i) {
+    const auto& a = vs.sketchAtoms[i];
+    if (a.z == 6) continue;
+    const Projected& p = pts[i];
+    const float fog = std::clamp((p.depth / vs.sketchRadius + 1.0f) * 0.5f * 0.4f, 0.0f, 0.45f);
+    const char* symbol = chem::symbolFor(a.z);
+    ImFont* font = style::fonts::mono() ? style::fonts::mono() : ImGui::GetFont();
+    const ImVec2 extent = font->CalcTextSizeA(labelSize, 10000.0f, 0.0f, symbol);
+    dl->AddText(font, labelSize, ImVec2(p.x - extent.x * 0.5f, p.y - extent.y * 0.5f),
+                style::u32(shadeAtom(elementColor(a.z), fog)), symbol);
+  }
+  style::popFont(mono);
+}
+
 // ---------------------------------------------------------------- drawing
 void drawViewerCanvas(AppState& st, ImVec2 min, ImVec2 max, bool compact = false) {
   Viewer3DState& vs = st.viewer3d;
@@ -211,6 +301,10 @@ void drawViewerCanvas(AppState& st, ImVec2 min, ImVec2 max, bool compact = false
     return;
   }
 
+  const bool skeleton = vs.style == 3 && vs.hasSketch;
+  if (skeleton) {
+    drawSkeleton2D(st, min, max);
+  } else {
   const chem::Embedded3D& model = vs.model;
   const float radius = model.radius;
   const float fit = std::min(max.x - min.x, max.y - min.y) * 0.42f / radius;
@@ -276,7 +370,7 @@ void drawViewerCanvas(AppState& st, ImVec2 min, ImVec2 max, bool compact = false
     const Projected& p = pts[idx];
     const float baseRadius = spacefill ? vdwRadius(atom.atomicNumber)
                                        : covalentRadius(atom.atomicNumber) *
-                                             (licorice ? 0.22f : 0.42f);
+                                             (licorice ? 0.22f : 0.30f);
     const float r = std::max(2.0f, baseRadius * scale * p.persp);
     const float fog = std::clamp((p.depth / radius + 1.0f) * 0.5f * 0.4f, 0.0f, 0.45f);
     drawSphere(dl, ImVec2(p.x, p.y), r, shadeAtom(elementColor(atom.atomicNumber), fog));
@@ -293,17 +387,20 @@ void drawViewerCanvas(AppState& st, ImVec2 min, ImVec2 max, bool compact = false
   if (!compact && hoveredAtom && ImGui::IsItemHovered()) {
     ImGui::SetTooltip("%s", chem::symbolFor(hoveredAtom->atomicNumber));
   }
+  }  // !skeleton
 
   // Caption: identity strip, bottom-left.
+  const size_t atomCount = skeleton ? vs.sketchAtoms.size() : vs.model.atoms.size();
   char caption[96];
   std::snprintf(caption, sizeof(caption), "%s   %.2f g/mol   %zu atoms", vs.formula.c_str(),
-                vs.molWeight, model.atoms.size());
+                vs.molWeight, atomCount);
   dl->AddText(style::fonts::mono(), ImGui::GetFontSize() * 0.9f,
               ImVec2(min.x + m.gap, max.y - m.gap - ImGui::GetFontSize()),
               style::u32(style::col::TextDim), caption);
 
-  // Interaction hint, bottom-right (the corner overlay has no room for it).
-  if (!compact) {
+  // Interaction hint, bottom-right (hidden when the stage is too narrow to
+  // keep it clear of the caption).
+  if (!compact && max.x - min.x > 380.0f) {
     const char* hint = "drag to rotate  |  wheel to zoom  |  double-click resets";
     const ImVec2 hintSize = ImGui::CalcTextSize(hint);
     dl->AddText(ImVec2(max.x - m.gap - hintSize.x, max.y - m.gap - hintSize.y),
@@ -321,17 +418,18 @@ void drawViewer3D(AppState& st) {
     vs.yawDeg = std::fmod(vs.yawDeg + ImGui::GetIO().DeltaTime * 25.0f, 360.0f);
   }
 
-  // Control row: packs on one line when the panel is wide, stacks when the
-  // docked preview column narrows.
-  static const char* kStyles[] = {"Ball and stick", "Licorice", "Space-filling"};
-  const float rowW = 170.0f + ImGui::CalcTextSize("Auto-rotate").x + 30.0f + 90.0f;
-  const bool oneRow = ImGui::GetContentRegionAvail().x >= rowW;
-  ImGui::SetNextItemWidth(std::min(170.0f, ImGui::GetContentRegionAvail().x));
-  ImGui::Combo("##v3d_style", &vs.style, kStyles, 3);
+  // Control row: compact single line so the docked preview keeps its stage
+  // area; stacks only when the column gets very narrow.
+  static const char* kStyles[] = {"Ball and stick", "Licorice", "Space-filling", "Skeleton"};
+  const float availW = ImGui::GetContentRegionAvail().x;
+  const float rowW = 132.0f + ImGui::CalcTextSize("Auto-rotate").x + 26.0f + 76.0f;
+  const bool oneRow = availW >= rowW;
+  ImGui::SetNextItemWidth(std::min(132.0f, availW));
+  ImGui::Combo("##v3d_style", &vs.style, kStyles, 4);
   if (oneRow) ImGui::SameLine();
   ImGui::Checkbox("Auto-rotate", &vs.autoRotate);
   if (oneRow) ImGui::SameLine();
-  if (widgets::ghostButton("Reset view")) {
+  if (widgets::ghostButton("Reset")) {
     vs.yawDeg = 35.0f;
     vs.pitchDeg = -18.0f;
     vs.zoom = 1.0f;
@@ -340,7 +438,7 @@ void drawViewer3D(AppState& st) {
 
   ImVec2 size = ImGui::GetContentRegionAvail();
   size.x = std::max(size.x, 60.0f);
-  size.y = std::max(size.y, 200.0f);
+  size.y = std::max(size.y, 120.0f);
   ImGui::InvisibleButton("##v3d_canvas", size);
   const ImVec2 min = ImGui::GetItemRectMin();
   const ImVec2 max = ImGui::GetItemRectMax();

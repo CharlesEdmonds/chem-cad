@@ -24,6 +24,20 @@ struct Viewer3DState {
   std::string formula;    // display caption, computed alongside the embed
   double molWeight = 0.0;
   std::string errorMessage;
+
+  // Flat 2D depiction of the same molecule (sketch coordinates), used by the
+  // Skeleton style: it is the sketch, and edge-on it collapses like a sheet.
+  struct SketchAtom {
+    uint8_t z = 6;
+    float x = 0.0f, y = 0.0f;
+  };
+  struct SketchBond {
+    int a = 0, b = 0, order = 1;
+  };
+  std::vector<SketchAtom> sketchAtoms;
+  std::vector<SketchBond> sketchBonds;
+  float sketchRadius = 1.0f;
+  bool hasSketch = false;
 };
 
 }  // namespace chemcad::ui

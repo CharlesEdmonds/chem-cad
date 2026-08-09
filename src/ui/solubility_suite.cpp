@@ -1,7 +1,7 @@
 // Solubility Suite: solute + solvent inputs on the left rail, the prediction
 // and the solubility-vs-composition graph dominant on the right. Pure
 // solvents are screened in a ranked table; a chosen blend can be handed to
-// the Extraction Lab. Renders inside an already-open window; never owns one.
+// the Extraction Calculator. Renders inside an already-open window; never owns one.
 
 #include "imgui.h"
 
@@ -17,6 +17,7 @@
 
 #include "chem/bridge.hpp"
 #include "core/model.hpp"
+#include "sol/kirkwood_buff.hpp"
 #include "sol/solubility.hpp"
 #include "sol/solvent.hpp"
 #include "ui/app_state.hpp"
@@ -126,6 +127,101 @@ ImVec4 slotColor(int index) {
     case 1: return style::col::Accent;
     default: return style::col::Violet;
   }
+}
+
+const sol::Electrolyte* activeBackground(const SolubilityState& sb);
+
+struct TimedSignature {
+  std::string value;
+  double startedAt = 0.0;
+};
+
+float sweepDrawProgress(const SolubilityState& sb) {
+  static std::unordered_map<const SolubilityState*, TimedSignature> states;
+  TimedSignature& state = states[&sb];
+  if (state.value != sb.sweepSignature) {
+    state.value = sb.sweepSignature;
+    state.startedAt = ImGui::GetTime();
+  }
+  constexpr double kDrawSeconds = 0.30;
+  const float linear = static_cast<float>(
+      std::clamp((ImGui::GetTime() - state.startedAt) / kDrawSeconds, 0.0, 1.0));
+  const float remaining = 1.0f - linear;
+  return 1.0f - remaining * remaining * remaining;
+}
+
+std::string predictionSignature(const SolubilityState& sb) {
+  std::string signature;
+  signature.reserve(128);
+  signature += std::to_string(sb.soluteVersion);
+  signature += '|';
+  signature += std::to_string(static_cast<int>(sb.temperatureC * 100.0f));
+  signature += '|';
+  for (int i = 0; i < sb.solventCount; ++i) {
+    signature += sb.solventIds[static_cast<size_t>(i)];
+    signature += ':';
+    signature += std::to_string(
+        static_cast<int>(sb.ratios[static_cast<size_t>(i)] * 10000.0f));
+    signature += '|';
+  }
+  if (const sol::Electrolyte* background = activeBackground(sb)) {
+    signature += background->id;
+    signature += ':';
+    signature += std::to_string(static_cast<int>(sb.backgroundMolarity * 1000.0f));
+  }
+  return signature;
+}
+
+float predictionFlashAlpha(const SolubilityState& sb, bool canPredict) {
+  static std::unordered_map<const SolubilityState*, TimedSignature> states;
+  TimedSignature& state = states[&sb];
+  if (!canPredict) {
+    state.value.clear();
+    state.startedAt = 0.0;
+    return 0.0f;
+  }
+  const std::string signature = predictionSignature(sb);
+  if (state.value != signature) {
+    state.value = signature;
+    state.startedAt = ImGui::GetTime();
+  }
+  constexpr double kFlashSeconds = 0.40;
+  const double elapsed = ImGui::GetTime() - state.startedAt;
+  if (elapsed >= kFlashSeconds) return 0.0f;
+  const float phase = static_cast<float>(elapsed / kFlashSeconds);
+  return std::sin(phase * 3.14159265f);
+}
+
+float markerPulse(float phaseOffset = 0.0f) {
+  constexpr float kCycleSeconds = 1.20f;
+  const float phase =
+      static_cast<float>(ImGui::GetTime()) * (2.0f * 3.14159265f / kCycleSeconds) +
+      phaseOffset;
+  return 0.5f + 0.5f * std::sin(phase);
+}
+
+float markerReveal(float drawProgress, float pathProgress) {
+  constexpr float kRevealWindow = 0.08f;
+  return std::clamp((drawProgress - pathProgress + kRevealWindow) / kRevealWindow,
+                    0.0f, 1.0f);
+}
+
+void drawInteractiveBorder(const char* animationId, ImVec4 accent) {
+  const bool hovered = ImGui::IsItemHovered();
+  const bool held = ImGui::IsItemActive();
+  ImGui::PushID(animationId);
+  const float hover = widgets::hoverT(ImGui::GetID("hover"), hovered || held);
+  const float press = widgets::hoverT(ImGui::GetID("press"), held);
+  ImGui::PopID();
+
+  const style::Metrics& metrics = style::metrics();
+  const ImVec2 min = ImGui::GetItemRectMin();
+  const ImVec2 max = ImGui::GetItemRectMax();
+  const float inset = press * std::max(1.0f, metrics.hairline * 1.5f);
+  ImGui::GetWindowDrawList()->AddRect(
+      ImVec2(min.x + inset, min.y + inset), ImVec2(max.x - inset, max.y - inset),
+      style::mix(style::col::Border, accent, hover), metrics.radiusSm, 0,
+      metrics.hairline * (1.0f + 0.8f * hover + 0.5f * press));
 }
 
 // -------------------------------------------------------------- solute cache
@@ -298,7 +394,8 @@ float headlineCardHeight(int subLines) {
 }
 
 void drawHeadlineReadout(const char* label, const std::string& value,
-                         const std::string& subValue, ImVec4 accent, ImVec2 size) {
+                         const std::string& subValue, ImVec4 accent, ImVec2 size,
+                         float flashAlpha) {
   const style::Metrics& m = style::metrics();
   const ImVec2 min = ImGui::GetCursorScreenPos();
   ImGui::Dummy(size);
@@ -317,6 +414,10 @@ void drawHeadlineReadout(const char* label, const std::string& value,
   float y = min.y + pad;
   dl->AddText(style::fonts::mono(), valueFontSize, ImVec2(min.x + pad, y),
              style::u32(style::col::Text), value.c_str());
+  if (flashAlpha > 0.0f) {
+    dl->AddText(style::fonts::mono(), valueFontSize, ImVec2(min.x + pad, y),
+                style::u32(accent, flashAlpha * 0.72f), value.c_str());
+  }
   y += valueFontSize + lineGap;
   if (!subValue.empty()) {
     dl->AddText(style::fonts::mono(), subFontSize, ImVec2(min.x + pad, y), style::u32(accent),
@@ -541,9 +642,9 @@ void drawScreeningTable(SolubilityState& sb) {
                                     ImGuiTableFlags_ScrollY | ImGuiTableFlags_NoSavedSettings;
   if (!ImGui::BeginTable("##screen_table", 4, flags, ImVec2(0.0f, height))) return;
   ImGui::TableSetupScrollFreeze(0, 1);
-  ImGui::TableSetupColumn("Solvent", ImGuiTableColumnFlags_WidthStretch, 0.40f);
-  ImGui::TableSetupColumn("Family", ImGuiTableColumnFlags_WidthStretch, 0.24f);
-  ImGui::TableSetupColumn("Solubility", ImGuiTableColumnFlags_WidthStretch, 0.24f);
+  ImGui::TableSetupColumn("Solvent", ImGuiTableColumnFlags_WidthStretch, 0.36f);
+  ImGui::TableSetupColumn("Family", ImGuiTableColumnFlags_WidthStretch, 0.20f);
+  ImGui::TableSetupColumn("Solubility", ImGuiTableColumnFlags_WidthStretch, 0.32f);
   ImGui::TableSetupColumn("RED", ImGuiTableColumnFlags_WidthStretch, 0.12f);
   ImGui::TableHeadersRow();
 
@@ -551,13 +652,17 @@ void drawScreeningTable(SolubilityState& sb) {
     ImGui::PushID(row.solvent->id.c_str());
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
-    if (ImGui::Selectable(row.solvent->name.c_str(), false,
+    const bool clicked =
+        ImGui::Selectable(row.solvent->name.c_str(), false,
                           ImGuiSelectableFlags_SpanAllColumns |
-                              ImGuiSelectableFlags_AllowOverlap)) {
+                              ImGuiSelectableFlags_AllowOverlap);
+    const bool hovered = ImGui::IsItemHovered();
+    drawInteractiveBorder("##screening_row_feedback", style::col::Teal);
+    if (clicked) {
       sb.solventIds[0] = row.solvent->id;
       sb.statusMessage = "Solvent A := " + row.solvent->name;
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", "Load as Solvent A");
+    if (hovered) ImGui::SetTooltip("%s", "Load as Solvent A");
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(row.solvent->family.c_str());
     ImGui::TableNextColumn();
@@ -572,9 +677,80 @@ void drawScreeningTable(SolubilityState& sb) {
   ImGui::EndTable();
 }
 
+// Kirkwood-Buff integrals, the Yalkowsky ideal term and the Hildebrand
+// parameters behind the current number: the model showing its working.
+void drawTheoryReadout(SolubilityState& sb, const std::vector<const sol::Solvent*>& chosen) {
+  std::vector<sol::Component> components;
+  for (size_t i = 0; i < chosen.size() && i < sb.ratios.size(); ++i) {
+    if (chosen[i]) components.push_back({chosen[i], sb.ratios[i]});
+  }
+  if (components.empty()) {
+    ImGui::TextDisabled("Pick a solvent to see the theory readout.");
+    return;
+  }
+
+  const sol::KBResult kb = sol::kirkwoodBuff(sb.solute, components, sb.temperatureC);
+  const sol::Mixture mixture = sol::blend(components);
+  const auto hildebrand = [](const sol::Hansen& h) {
+    return std::sqrt(h.dispersion * h.dispersion + h.polar * h.polar +
+                     h.hydrogenBond * h.hydrogenBond);
+  };
+  const double deltaSolute = hildebrand(sb.solute.hansen);
+  const double deltaSolvent = hildebrand(mixture.hansen);
+
+  const bool mono = style::pushFont(style::fonts::mono());
+  ImGui::Text("Kirkwood-Buff   G11 %+8.1f cm3/mol   G12 %+8.1f cm3/mol   ln gamma %+.2f",
+              kb.g11, kb.g12, kb.lnGammaInf);
+  style::popFont(mono);
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip(
+        "G11 = R T kappa_T - V1 (fluctuation-theory identity; kappa_T measured)\n"
+        "G12 = G11 - V1 ln gamma (Ben-Naim inversion of KB theory)\n"
+        "G12 > G11 means the solute is preferentially solvated.");
+  }
+  ImGui::TextDisabled("kappa_T %.3f GPa^-1 (%s)", kb.kappaT,
+                      kb.kappaKnown ? (kb.kappaSource.empty() ? "literature"
+                                                              : kb.kappaSource.c_str())
+                                    : "no data: incompressible limit");
+
+  ImGui::Spacing();
+  const bool mono2 = style::pushFont(style::fonts::mono());
+  ImGui::Text("Yalkowsky       ln x_ideal %+.2f   x_ideal %.4g   dS_fus %.1f J/mol K",
+              kb.lnIdeal, sb.prediction.idealMoleFraction, sb.solute.entropyOfFusion);
+  style::popFont(mono2);
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip(
+        "Ideal solubility: ln x = -dS_fus (Tm - T) / (R T)\n"
+        "General Solubility Equation (aqueous share):\n"
+        "  log S [mol/L] = 0.5 - 0.01 (Tm[C] - 25) - logP");
+  }
+
+  const bool mono3 = style::pushFont(style::fonts::mono());
+  ImGui::Text("Hildebrand      solute %.1f   solvent %.1f   |d| %.1f MPa^0.5", deltaSolute,
+              deltaSolvent, std::fabs(deltaSolute - deltaSolvent));
+  style::popFont(mono3);
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip("Total Hildebrand parameter: d^2 = dD^2 + dP^2 + dH^2");
+  }
+
+  // Honest uncertainty: measured on the anchor validation set (see
+  // tests/test_kb_accuracy.cpp). Anchored pairs are measured, not estimated.
+  ImGui::Spacing();
+  if (sb.prediction.anchored) {
+    widgets::badge("MEASURED", style::col::Success);
+    ImGui::SameLine();
+    ImGui::TextDisabled("literature value, no model uncertainty applied");
+  } else {
+    const double value = sb.prediction.gramsPerMillilitre;
+    ImGui::TextDisabled("95%% interval %.3g - %.3g g/mL (model sigma 0.75 log on the "
+                        "validation set)",
+                        value / 30.0, value * 30.0);
+  }
+}
+
 // ---------------------------------------------------------- hero + results
 
-void drawResultHero(SolubilityState& sb) {
+void drawResultHero(SolubilityState& sb, float flashAlpha) {
   const sol::Prediction& p = sb.prediction;
   const float avail = ImGui::GetContentRegionAvail().x;
   const float spacing = ImGui::GetStyle().ItemSpacing.x;
@@ -592,7 +768,7 @@ void drawResultHero(SolubilityState& sb) {
                               ? formatUnits(gPerMl, sb.solute.molarMass, 0)
                               : formatUnits(gPerMl, sb.solute.molarMass, 3);
   drawHeadlineReadout("PREDICTED SOLUBILITY", headline, sub, style::col::Accent,
-                      ImVec2(headlineW, headlineH));
+                      ImVec2(headlineW, headlineH), flashAlpha);
 
   char moleFrac[32];
   std::snprintf(moleFrac, sizeof(moleFrac), "%.4g", p.moleFraction);
@@ -669,6 +845,29 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
           ? &sb.sweep[static_cast<size_t>(sb.sweepPeakIndex)]
           : nullptr;
 
+  const double molarMass = sb.solute.molarMass;
+  const std::string unitCaption =
+      kUnitLabels[static_cast<size_t>(std::clamp(sb.units, 0, 3))];
+  float widestAxisLabel = ImGui::CalcTextSize(unitCaption.c_str()).x;
+  for (int i = 0; i <= 4; ++i) {
+    const float t = static_cast<float>(i) / 4.0f;
+    const double mapped = yLo + (yHi - yLo) * (1.0 - t);
+    const double value = logY ? std::pow(10.0, mapped) : mapped;
+    const std::string label =
+        formatSolubility(toDisplayUnits(value, molarMass, sb.units));
+    widestAxisLabel = std::max(widestAxisLabel, ImGui::CalcTextSize(label.c_str()).x);
+  }
+  const float padR =
+      std::min(20.0f * uiScale(), std::max(0.0f, canvasSize.x * 0.18f));
+  const float desiredPadL =
+      std::max(62.0f * uiScale(), widestAxisLabel + 12.0f * uiScale());
+  const float padL =
+      std::min(desiredPadL, std::max(0.0f, canvasSize.x - padR - 1.0f));
+  const float padB =
+      std::min(46.0f * uiScale(), std::max(0.0f, canvasSize.y * 0.35f));
+  const float padT =
+      std::min(16.0f * uiScale(), std::max(0.0f, canvasSize.y - padB - 1.0f));
+
   const ImVec2 origin = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("##binary_plot", canvasSize);
   const bool hovered = ImGui::IsItemHovered();
@@ -677,10 +876,8 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
   // graph is the ratio control, the parts sliders just display it.
   if (ImGui::IsItemClicked() ||
       (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left))) {
-    const float padLClick = 62.0f * uiScale();
-    const float padRClick = 20.0f * uiScale();
-    float t = (ImGui::GetMousePos().x - (origin.x + padLClick)) /
-              std::max(1.0f, canvasSize.x - padLClick - padRClick);
+    float t = (ImGui::GetMousePos().x - (origin.x + padL)) /
+              std::max(1.0f, canvasSize.x - padL - padR);
     t = std::clamp(t, 0.0f, 1.0f);
     sb.ratios[0] = t;
     sb.ratios[1] = 1.0f - t;
@@ -690,10 +887,8 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
   dl->AddRectFilled(origin, ImVec2(origin.x + canvasSize.x, origin.y + canvasSize.y),
                     style::u32(style::col::BgSurface), style::metrics().radiusMd);
 
-  const float padL = 62.0f * uiScale();
-  const float padR = 20.0f * uiScale();
-  const float padT = 16.0f * uiScale();
-  const float padB = 46.0f * uiScale();
+  // Axis padding accounts for the widest formatted tick and unit caption,
+  // preventing scientific-notation values from clipping at compact widths.
   const ImVec2 plotMin(origin.x + padL, origin.y + padT);
   const ImVec2 plotMax(origin.x + canvasSize.x - padR, origin.y + canvasSize.y - padB);
   dl->AddRectFilled(plotMin, plotMax, style::u32(style::col::BgPanel));
@@ -705,7 +900,6 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
     const float y = plotMax.y - t * (plotMax.y - plotMin.y);
     return ImVec2(x, y);
   };
-  const double molarMass = sb.solute.molarMass;
   const auto unitLabel = [&](double v) { return formatUnits(v, molarMass, sb.units); };
 
   // x-axis ticks: volume % of solvent A, 0/25/50/75/100.
@@ -734,7 +928,6 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
                style::u32(style::col::TextDim), label.c_str());
   }
   // Unit caption, top-left of the axis.
-  const std::string unitCaption = kUnitLabels[static_cast<size_t>(std::clamp(sb.units, 0, 3))];
   dl->AddText(ImVec2(plotMin.x - ImGui::CalcTextSize(unitCaption.c_str()).x - 6.0f * uiScale(),
                      plotMin.y - 16.0f * uiScale()),
               style::u32(style::col::TextFaint), unitCaption.c_str());
@@ -751,6 +944,10 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
   // Shaded area under the curve -- one quad per segment rather than a single
   // convex fill, so the rise-then-fall co-solvency shape fills correctly
   // even though the region under a peaked curve is not convex.
+  const float drawProgress = sweepDrawProgress(sb);
+  const float revealX =
+      plotMin.x + std::max(0.001f, drawProgress) * (plotMax.x - plotMin.x);
+  dl->PushClipRect(plotMin, ImVec2(revealX, plotMax.y), true);
   for (size_t i = 0; i + 1 < sorted.size(); ++i) {
     const ImVec2 p0 = toScreen(sorted[i]->fractions[0], sorted[i]->prediction.gramsPerMillilitre);
     const ImVec2 p1 =
@@ -770,27 +967,40 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
   } else if (points.size() == 1) {
     dl->AddCircleFilled(points.front(), 3.5f, style::u32(style::col::Teal));
   }
+  dl->PopClipRect();
 
   // Mark the co-solvency maximum: drop-line, filled marker, and a
   // composition + value label.
   if (peak) {
     const ImVec2 peakPt = toScreen(peak->fractions[0], peak->prediction.gramsPerMillilitre);
-    dl->AddLine(ImVec2(peakPt.x, plotMax.y), peakPt, style::u32(style::col::Accent, 0.7f), 1.5f);
-    dl->AddCircleFilled(peakPt, 5.5f, style::u32(style::col::Accent));
-    dl->AddCircle(peakPt, 8.5f, style::u32(style::col::Accent), 0, 1.5f);
+    const float reveal =
+        markerReveal(drawProgress, static_cast<float>(peak->fractions[0]));
+    if (reveal > 0.0f) {
+      const float pulse = markerPulse();
+      dl->AddLine(ImVec2(peakPt.x, plotMax.y), peakPt,
+                  style::u32(style::col::Accent, 0.7f * reveal), 1.5f);
+      dl->AddCircleFilled(peakPt, 5.5f, style::u32(style::col::Accent, reveal));
+      dl->AddCircle(peakPt, 8.5f + pulse * 4.0f,
+                    style::u32(style::col::Accent,
+                               reveal * (0.70f - pulse * 0.48f)),
+                    0, 1.5f);
 
-    const std::string peakLabel =
-        "peak " + unitLabel(peak->prediction.gramsPerMillilitre) + " at " +
-        std::to_string(static_cast<int>(std::lround(peak->fractions[0] * 100.0))) + "% " + a.name;
-    const ImVec2 peakLabelSize = ImGui::CalcTextSize(peakLabel.c_str());
-    float lx = std::clamp(peakPt.x - peakLabelSize.x * 0.5f, plotMin.x,
-                          plotMax.x - peakLabelSize.x);
-    float ly = peakPt.y - peakLabelSize.y - 10.0f * uiScale();
-    if (ly < plotMin.y) ly = peakPt.y + 10.0f * uiScale();
-    dl->AddRectFilled(ImVec2(lx - 4.0f, ly - 2.0f),
-                      ImVec2(lx + peakLabelSize.x + 4.0f, ly + peakLabelSize.y + 2.0f),
-                      style::u32(style::col::BgRaised, 0.9f), 3.0f);
-    dl->AddText(ImVec2(lx, ly), style::u32(style::col::Accent), peakLabel.c_str());
+      const std::string peakLabel =
+          "peak " + unitLabel(peak->prediction.gramsPerMillilitre) + " at " +
+          std::to_string(static_cast<int>(std::lround(peak->fractions[0] * 100.0))) +
+          "% " + a.name;
+      const ImVec2 peakLabelSize = ImGui::CalcTextSize(peakLabel.c_str());
+      const float labelMaxX = std::max(plotMin.x, plotMax.x - peakLabelSize.x);
+      float lx = std::clamp(peakPt.x - peakLabelSize.x * 0.5f, plotMin.x, labelMaxX);
+      float ly = peakPt.y - peakLabelSize.y - 10.0f * uiScale();
+      if (ly < plotMin.y) ly = peakPt.y + 10.0f * uiScale();
+      dl->AddRectFilled(ImVec2(lx - 4.0f, ly - 2.0f),
+                        ImVec2(lx + peakLabelSize.x + 4.0f,
+                               ly + peakLabelSize.y + 2.0f),
+                        style::u32(style::col::BgRaised, 0.9f * reveal), 3.0f);
+      dl->AddText(ImVec2(lx, ly), style::u32(style::col::Accent, reveal),
+                  peakLabel.c_str());
+    }
   }
 
   // Mark the current working ratio -- a distinct colour from the peak so
@@ -799,11 +1009,19 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
   if (totalRatio > 1e-9) {
     const double fracA = static_cast<double>(sb.ratios[0]) / totalRatio;
     const ImVec2 marker = toScreen(fracA, sb.prediction.gramsPerMillilitre);
-    dl->AddLine(ImVec2(marker.x, plotMin.y), ImVec2(marker.x, plotMax.y),
-               style::u32(style::col::Violet, 0.55f), 1.5f);
-    dl->AddCircleFilled(marker, 4.5f, style::u32(style::col::Violet));
-    dl->AddText(ImVec2(marker.x + 6.0f, plotMin.y + 2.0f), style::u32(style::col::Violet),
-               "current");
+    const float reveal = markerReveal(drawProgress, static_cast<float>(fracA));
+    if (reveal > 0.0f) {
+      const float pulse = markerPulse(1.9f);
+      dl->AddLine(ImVec2(marker.x, plotMin.y), ImVec2(marker.x, plotMax.y),
+                  style::u32(style::col::Violet, 0.55f * reveal), 1.5f);
+      dl->AddCircleFilled(marker, 4.5f, style::u32(style::col::Violet, reveal));
+      dl->AddCircle(marker, 7.0f + pulse * 3.5f,
+                    style::u32(style::col::Violet,
+                               reveal * (0.66f - pulse * 0.44f)),
+                    0, 1.35f);
+      dl->AddText(ImVec2(marker.x + 6.0f, plotMin.y + 2.0f),
+                  style::u32(style::col::Violet, reveal), "current");
+    }
   }
 
   if (hovered) {
@@ -931,6 +1149,9 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol:
 
   const int steps = sb.sweepSteps;
   const TernaryGrid grid = buildTernaryGrid(sb.sweep, steps);
+  const float drawProgress = sweepDrawProgress(sb);
+  const float revealY = top + std::max(0.001f, drawProgress) * height;
+  dl->PushClipRect(origin, ImVec2(origin.x + canvasSize.x, revealY), true);
   for (int i = 0; i < steps; ++i) {
     for (int j = 0; i + j < steps; ++j) {
       const sol::SweepPoint* p00 = gridAt(grid, i, j);
@@ -959,6 +1180,7 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol:
       }
     }
   }
+  dl->PopClipRect();
 
   dl->AddTriangle(vA, vB, vC, style::u32(style::col::BorderStrong), 1.6f);
 
@@ -970,13 +1192,56 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol:
              b.name.c_str());
   dl->AddText(ImVec2(vC.x + 4.0f, vC.y + 4.0f), style::u32(slotColor(2)), c.name.c_str());
 
-  const double totalRatio = static_cast<double>(sb.ratios[0]) + static_cast<double>(sb.ratios[1]) +
+  const sol::SweepPoint* peak =
+      (sb.sweepPeakIndex >= 0 &&
+       static_cast<size_t>(sb.sweepPeakIndex) < sb.sweep.size())
+          ? &sb.sweep[static_cast<size_t>(sb.sweepPeakIndex)]
+          : nullptr;
+  if (peak) {
+    const ImVec2 peakMarker =
+        toScreen(peak->fractions[0], peak->fractions[1], peak->fractions[2]);
+    const float pathProgress =
+        std::clamp((peakMarker.y - top) / std::max(1.0f, height), 0.0f, 1.0f);
+    const float reveal = markerReveal(drawProgress, pathProgress);
+    if (reveal > 0.0f) {
+      const float pulse = markerPulse();
+      dl->AddCircleFilled(peakMarker, 5.5f,
+                          style::u32(style::col::Accent, reveal));
+      dl->AddCircle(peakMarker, 8.5f + pulse * 4.0f,
+                    style::u32(style::col::Accent,
+                               reveal * (0.70f - pulse * 0.48f)),
+                    0, 1.5f);
+      const char* peakLabel = "peak";
+      const ImVec2 labelSize = ImGui::CalcTextSize(peakLabel);
+      const float labelX =
+          std::clamp(peakMarker.x + 7.0f, origin.x,
+                     std::max(origin.x, origin.x + canvasSize.x - labelSize.x));
+      dl->AddText(ImVec2(labelX, peakMarker.y - labelSize.y - 5.0f),
+                  style::u32(style::col::Accent, reveal), peakLabel);
+    }
+  }
+
+  const double totalRatio = static_cast<double>(sb.ratios[0]) +
+                            static_cast<double>(sb.ratios[1]) +
                             static_cast<double>(sb.ratios[2]);
   if (totalRatio > 1e-9) {
-    const ImVec2 marker = toScreen(sb.ratios[0] / totalRatio, sb.ratios[1] / totalRatio,
+    const ImVec2 marker = toScreen(sb.ratios[0] / totalRatio,
+                                   sb.ratios[1] / totalRatio,
                                    sb.ratios[2] / totalRatio);
-    dl->AddCircleFilled(marker, 5.0f, style::u32(style::col::Accent));
-    dl->AddCircle(marker, 8.0f, style::u32(style::col::Accent), 0, 1.5f);
+    const float pathProgress =
+        std::clamp((marker.y - top) / std::max(1.0f, height), 0.0f, 1.0f);
+    const float reveal = markerReveal(drawProgress, pathProgress);
+    if (reveal > 0.0f) {
+      const float pulse = markerPulse(1.9f);
+      dl->AddCircleFilled(marker, 5.0f,
+                          style::u32(style::col::Violet, reveal));
+      dl->AddCircle(marker, 8.0f + pulse * 3.5f,
+                    style::u32(style::col::Violet,
+                               reveal * (0.66f - pulse * 0.44f)),
+                    0, 1.35f);
+      dl->AddText(ImVec2(marker.x + 7.0f, marker.y + 4.0f),
+                  style::u32(style::col::Violet, reveal), "current");
+    }
   }
 
   // Legend: vertical gradient bar with min/max labels.
@@ -1063,7 +1328,11 @@ void drawPeakEvidenceCard(AppState& st, const std::vector<const sol::Solvent*>& 
       composition += "%";
     }
     ImGui::TextWrapped("%s", composition.c_str());
-    if (widgets::ghostButton("Apply peak ratio", ImVec2(ImGui::GetContentRegionAvail().x, 0.0f))) {
+    const bool applyPeak =
+        widgets::ghostButton("Apply peak ratio",
+                             ImVec2(ImGui::GetContentRegionAvail().x, 0.0f));
+    drawInteractiveBorder("##peak_apply_feedback", style::col::Teal);
+    if (applyPeak) {
       for (int i = 0; i < sb.solventCount; ++i) {
         sb.ratios[static_cast<size_t>(i)] =
             static_cast<float>(peak->fractions[static_cast<size_t>(i)]);
@@ -1115,8 +1384,12 @@ void drawPeakEvidenceCard(AppState& st, const std::vector<const sol::Solvent*>& 
   const bool canSend = sb.soluteValid && solventsOk && chosen.size() >= 2 && chosen[0] &&
                        chosen[1];
   if (!canSend) ImGui::BeginDisabled();
-  if (widgets::primaryButton("Send to Extraction Lab",
-                             ImVec2(ImGui::GetContentRegionAvail().x, 0.0f))) {
+  const bool sendToExtraction =
+      widgets::primaryButton("Send to Extraction Calculator",
+                             ImVec2(ImGui::GetContentRegionAvail().x, 0.0f));
+  const bool extractionHovered = ImGui::IsItemHovered();
+  drawInteractiveBorder("##extraction_handoff_feedback", style::col::AccentHover);
+  if (sendToExtraction) {
     const double r0 = std::max(0.0, static_cast<double>(sb.ratios[0]));
     const double r1 = std::max(0.0, static_cast<double>(sb.ratios[1]));
     const double sum = std::max(r0 + r1, 1e-9);
@@ -1129,9 +1402,9 @@ void drawPeakEvidenceCard(AppState& st, const std::vector<const sol::Solvent*>& 
     imp.soluteMassMg = 100.0;
     st.tab = MainTab::Extraction;
     st.tabChangeRequested = true;
-    sb.statusMessage = "Blend sent to the Extraction Lab";
+    sb.statusMessage = "Blend sent to the Extraction Calculator";
   }
-  if (ImGui::IsItemHovered())
+  if (extractionHovered)
     ImGui::SetTooltip("%s", "Load this blend into the separatory-funnel simulation");
   if (!canSend) ImGui::EndDisabled();
 
@@ -1258,6 +1531,7 @@ void drawSolubilitySuite(AppState& st) {
   } else {
     sb.prediction = sol::Prediction{};
   }
+  const float predictionFlash = predictionFlashAlpha(sb, canPredict);
 
   const bool haveAllSlots =
       solventsOk &&
@@ -1281,10 +1555,17 @@ void drawSolubilitySuite(AppState& st) {
 
     constexpr ImGuiTableFlags controlFlags =
         ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings;
-    if (ImGui::BeginTable("##composition_controls", 3, controlFlags)) {
-      ImGui::TableSetupColumn("##grid_col", ImGuiTableColumnFlags_WidthStretch, 0.38f);
-      ImGui::TableSetupColumn("##units_col", ImGuiTableColumnFlags_WidthStretch, 0.28f);
-      ImGui::TableSetupColumn("##scale_col", ImGuiTableColumnFlags_WidthStretch, 0.34f);
+    const bool stackControls =
+        ImGui::GetContentRegionAvail().x < ImGui::GetFontSize() * 30.0f;
+    const int controlColumns = stackControls ? 1 : 3;
+    if (ImGui::BeginTable("##composition_controls", controlColumns, controlFlags)) {
+      if (stackControls) {
+        ImGui::TableSetupColumn("##stacked_controls", ImGuiTableColumnFlags_WidthStretch);
+      } else {
+        ImGui::TableSetupColumn("##grid_col", ImGuiTableColumnFlags_WidthStretch, 0.38f);
+        ImGui::TableSetupColumn("##units_col", ImGuiTableColumnFlags_WidthStretch, 0.28f);
+        ImGui::TableSetupColumn("##scale_col", ImGuiTableColumnFlags_WidthStretch, 0.34f);
+      }
       ImGui::TableNextRow();
 
       ImGui::TableNextColumn();
@@ -1353,10 +1634,22 @@ void drawSolubilitySuite(AppState& st) {
                          style::col::BgSurface)) {
     widgets::sectionHeader("Current prediction", style::col::Accent);
     if (canPredict) {
-      drawResultHero(sb);
+      drawResultHero(sb, predictionFlash);
     } else {
       ImGui::TextDisabled("Prediction readouts will appear when the solute and solvent blend are "
                           "complete.");
+    }
+    widgets::endCard();
+  }
+
+  ImGui::Spacing();
+  if (widgets::beginCard("##theory_card", ImVec2(0.0f, 0.0f), style::col::BgSurface)) {
+    widgets::sectionHeader("Theory readout", style::col::Violet);
+    if (canPredict) {
+      drawTheoryReadout(sb, chosen);
+    } else {
+      ImGui::TextDisabled("Kirkwood-Buff integrals, the Yalkowsky ideal term and the "
+                          "Hildebrand parameters appear with a complete blend.");
     }
     widgets::endCard();
   }

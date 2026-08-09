@@ -4,83 +4,298 @@
     "name": "Friedel-Crafts acylation",
     "smarts": "[c;H1:1].[C:2](=[O:3])[Cl:4]>>[c:1][C:2]=[O:3]",
     "arity": 2,
-    "reagents": ["AlCl3"],
+    "reagents": [
+      "AlCl3"
+    ],
     "conditions": "anhydrous CH2Cl2, 0 C to rt",
-    "byproducts": ["Cl"],
+    "substrate": "arenes",
+    "outcome": "Typically 60-90%; monoacylation without carbocation rearrangement.",
+    "source": "standard practice",
+    "byproducts": [
+      "Cl"
+    ],
     "priority": 9,
     "notes": "Acylium substitution gives an aryl ketone without carbocation rearrangement.",
-    "tags": ["friedel-crafts", "acylation", "aromatic"]
+    "tags": [
+      "friedel-crafts",
+      "acylation",
+      "aromatic"
+    ]
   },
   {
     "id": "friedel_crafts_alkylation",
     "name": "Friedel-Crafts alkylation",
     "smarts": "[c;H1:1].[C;X4:2][Cl:3]>>[c:1][C:2]",
     "arity": 2,
-    "reagents": ["AlCl3"],
+    "reagents": [
+      "AlCl3"
+    ],
     "conditions": "anhydrous solvent, 0 C to rt",
-    "byproducts": ["Cl"],
+    "substrate": "arenes",
+    "outcome": "Typically 40-80%; rearrangement and polyalkylation can lower selectivity.",
+    "source": "standard practice",
+    "byproducts": [
+      "Cl"
+    ],
     "priority": 7,
     "notes": "Carbocation rearrangement and polyalkylation may occur; strongly deactivated rings do not react.",
-    "tags": ["friedel-crafts", "alkylation", "aromatic"]
+    "tags": [
+      "friedel-crafts",
+      "alkylation",
+      "aromatic"
+    ]
   },
   {
     "id": "aromatic_nitration",
     "name": "Electrophilic aromatic nitration",
     "smarts": "[c;H1:1]>>[c:1][N+](=O)[O-]",
     "arity": 1,
-    "reagents": ["HNO3", "H2SO4"],
+    "reagents": [
+      "HNO3",
+      "H2SO4"
+    ],
     "conditions": "0-55 C",
-    "byproducts": ["O"],
+    "substrate": "arenes",
+    "outcome": "Typically 60-95%; regioselectivity follows substituent directing effects.",
+    "source": "standard practice",
+    "byproducts": [
+      "O"
+    ],
     "priority": 9,
     "notes": "The nitronium ion substitutes an aromatic hydrogen; substituents control regioselectivity.",
-    "tags": ["eas", "nitration", "aromatic"]
+    "tags": [
+      "eas",
+      "nitration",
+      "aromatic"
+    ]
   },
   {
     "id": "aromatic_bromination",
     "name": "Electrophilic aromatic bromination",
     "smarts": "[c;H1:1]>>[c:1]Br",
     "arity": 1,
-    "reagents": ["Br2", "FeBr3"],
+    "reagents": [
+      "Br2",
+      "FeBr3"
+    ],
     "conditions": "CH2Cl2, rt",
-    "byproducts": ["Br"],
+    "substrate": "arenes",
+    "outcome": "Typically 70-95%; ring substitution follows directing effects.",
+    "source": "standard practice",
+    "byproducts": [
+      "Br"
+    ],
     "priority": 9,
     "notes": "Lewis-acid activation of bromine enables electrophilic aromatic substitution.",
-    "tags": ["eas", "halogenation", "aromatic"]
+    "tags": [
+      "eas",
+      "halogenation",
+      "aromatic"
+    ]
   },
   {
     "id": "aromatic_chlorination",
     "name": "Electrophilic aromatic chlorination",
     "smarts": "[c;H1:1]>>[c:1]Cl",
     "arity": 1,
-    "reagents": ["Cl2", "FeCl3"],
+    "reagents": [
+      "Cl2",
+      "FeCl3"
+    ],
     "conditions": "CH2Cl2, rt",
-    "byproducts": ["Cl"],
+    "substrate": "arenes",
+    "outcome": "Typically 60-90%; ring substitution follows directing effects.",
+    "source": "standard practice",
+    "byproducts": [
+      "Cl"
+    ],
     "priority": 8,
     "notes": "The ring undergoes electrophilic chlorination with regiochemistry set by existing substituents.",
-    "tags": ["eas", "halogenation", "aromatic"]
+    "tags": [
+      "eas",
+      "halogenation",
+      "aromatic"
+    ]
   },
   {
     "id": "aromatic_sulfonation",
     "name": "Electrophilic aromatic sulfonation",
     "smarts": "[c;H1:1]>>[c:1]S(=O)(=O)O",
     "arity": 1,
-    "reagents": ["fuming H2SO4"],
+    "reagents": [
+      "fuming H2SO4"
+    ],
     "conditions": "40-100 C",
-    "byproducts": ["O"],
+    "substrate": "arenes",
+    "outcome": "Typically 60-95%; reversible arylsulfonic acid formation.",
+    "source": "standard practice",
+    "byproducts": [
+      "O"
+    ],
     "priority": 7,
     "notes": "Sulfonation is reversible; hot dilute acid can remove the sulfonic acid group.",
-    "tags": ["eas", "sulfonation", "aromatic"]
+    "tags": [
+      "eas",
+      "sulfonation",
+      "aromatic"
+    ]
   },
   {
     "id": "gattermann_koch_formylation",
     "name": "Gattermann-Koch formylation",
     "smarts": "[c;H1:1]>>[c:1]C=O",
     "arity": 1,
-    "reagents": ["CO", "HCl", "AlCl3", "CuCl"],
+    "reagents": [
+      "CO",
+      "HCl",
+      "AlCl3",
+      "CuCl"
+    ],
     "conditions": "pressurized CO, 25-60 C",
+    "substrate": "activated arenes",
+    "outcome": "Typically 40-75%; installs an aromatic aldehyde group.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 5,
     "notes": "Introduces a formyl group onto activated aromatic rings.",
-    "tags": ["eas", "formylation", "aromatic"]
+    "tags": [
+      "eas",
+      "formylation",
+      "aromatic"
+    ]
+  },
+  {
+    "id": "aromatic_iodination",
+    "name": "Electrophilic aromatic iodination",
+    "smarts": "[c;H1:1]>>[c:1]I",
+    "arity": 1,
+    "reagents": [
+      "I2",
+      "HNO3"
+    ],
+    "conditions": "AcOH, 20-80 C",
+    "substrate": "activated arenes",
+    "outcome": "Typically 50-85%; aryl iodide with substituent-controlled regiochemistry.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 6,
+    "notes": "An oxidant removes iodide and drives the otherwise reversible electrophilic substitution.",
+    "tags": [
+      "eas",
+      "iodination",
+      "aromatic"
+    ]
+  },
+  {
+    "id": "aniline_diazotization",
+    "name": "Diazotization of aniline",
+    "smarts": "[c:1][N;H2:2]>>[c:1][N+:2]#N",
+    "arity": 1,
+    "reagents": [
+      "NaNO2",
+      "HCl"
+    ],
+    "conditions": "aqueous, 0-5 C",
+    "substrate": "anilines",
+    "outcome": "Typically high conversion to an arenediazonium salt used in situ.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Keep arenediazonium salts cold and dilute; many isolated dry salts are shock-sensitive.",
+    "tags": [
+      "aromatic",
+      "diazotization",
+      "aniline"
+    ]
+  },
+  {
+    "id": "sandmeyer_chlorination",
+    "name": "Sandmeyer chlorination",
+    "smarts": "[c:1][N+:2]#[N:3]>>[c:1]Cl",
+    "arity": 1,
+    "reagents": [
+      "CuCl",
+      "HCl"
+    ],
+    "conditions": "aqueous, 0 C then warm",
+    "substrate": "arenediazonium salts",
+    "outcome": "Typically 50-85%; aryl chloride with loss of nitrogen.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Copper(I) chloride replaces the diazonium group; the salt is normally generated and consumed without isolation.",
+    "tags": [
+      "aromatic",
+      "sandmeyer",
+      "chlorination"
+    ]
+  },
+  {
+    "id": "sandmeyer_cyanation",
+    "name": "Sandmeyer cyanation",
+    "smarts": "[c:1][N+:2]#[N:3]>>[c:1]C#N",
+    "arity": 1,
+    "reagents": [
+      "CuCN",
+      "KCN"
+    ],
+    "conditions": "aqueous or polar solvent, 0-80 C",
+    "substrate": "arenediazonium salts",
+    "outcome": "Typically 45-80%; aryl nitrile with loss of nitrogen.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Cyanide handling and acidic diazonium conditions require strict segregation and ventilation.",
+    "tags": [
+      "aromatic",
+      "sandmeyer",
+      "cyanation"
+    ]
+  },
+  {
+    "id": "kolbe_schmitt_carboxylation",
+    "name": "Kolbe-Schmitt carboxylation",
+    "smarts": "[c;H1:1]>>[c:1]C(=O)O",
+    "arity": 1,
+    "reagents": [
+      "NaOH",
+      "CO2",
+      "then H3O+"
+    ],
+    "conditions": "pressurized CO2, 120-180 C",
+    "substrate": "phenoxides",
+    "outcome": "Typically 50-80%; mainly ortho-hydroxybenzoic acid after workup.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Regioselectivity depends on counterion, temperature and pressure; sodium phenoxide commonly favors salicylate.",
+    "tags": [
+      "aromatic",
+      "carboxylation",
+      "phenol"
+    ]
+  },
+  {
+    "id": "reimer_tiemann_formylation",
+    "name": "Reimer-Tiemann formylation",
+    "smarts": "[c;H1:1]>>[c:1]C=O",
+    "arity": 1,
+    "reagents": [
+      "CHCl3",
+      "NaOH",
+      "then H3O+"
+    ],
+    "conditions": "aqueous base, 60-80 C",
+    "substrate": "phenols",
+    "outcome": "Typically 30-70%; ortho-hydroxybenzaldehyde usually predominates.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 6,
+    "notes": "Dichlorocarbene-derived formylation is most useful on phenols and can give para isomer as a minor product.",
+    "tags": [
+      "aromatic",
+      "formylation",
+      "phenol"
+    ]
   }
 ]

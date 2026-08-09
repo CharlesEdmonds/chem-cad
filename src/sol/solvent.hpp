@@ -31,6 +31,8 @@ struct Solvent {
   double dielectric = 0.0;
   double boilingPoint = 0.0;  // deg C
   double refractiveIndex = 0.0;
+  double kappaT = 0.0;        // isothermal compressibility, GPa^-1 at 25 C
+  std::string kappaTSource;   // "NIST WTT" | "literature" | "" when unknown
   bool waterMiscible = false;
 };
 

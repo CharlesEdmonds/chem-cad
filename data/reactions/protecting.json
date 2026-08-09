@@ -4,59 +4,415 @@
     "name": "Cyclic acetal protection",
     "smarts": "[C:1]=[O:2].[O;H1:3][C:4][C:5][O;H1:6]>>[C:1]1[O:3][C:4][C:5][O:6]1",
     "arity": 2,
-    "reagents": ["ethylene glycol", "p-TsOH (cat.)"],
+    "reagents": [
+      "ethylene glycol",
+      "p-TsOH (cat.)"
+    ],
     "conditions": "toluene, reflux, Dean-Stark trap",
-    "byproducts": ["O"],
+    "substrate": "aldehydes and ketones",
+    "outcome": "Typically 70-95%; acid-stable-to-base cyclic acetal or ketal.",
+    "source": "standard practice",
+    "byproducts": [
+      "O"
+    ],
     "priority": 9,
     "notes": "Removal of water drives formation of a five-membered cyclic acetal or ketal.",
-    "tags": ["protecting-group", "acetal", "carbonyl"]
+    "tags": [
+      "protecting-group",
+      "acetal",
+      "carbonyl"
+    ]
   },
   {
     "id": "cyclic_acetal_deprotection",
     "name": "Cyclic acetal deprotection",
     "smarts": "[C:1]1[O:2][C:3][C:4][O:5]1>>[C:1]=O.[O:2][C:3][C:4][O:5]",
     "arity": 1,
-    "reagents": ["dilute HCl", "H2O"],
+    "reagents": [
+      "dilute HCl",
+      "H2O"
+    ],
     "conditions": "aqueous THF, rt to reflux",
+    "substrate": "cyclic acetals",
+    "outcome": "Typically 75-98%; regenerated aldehyde or ketone.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 9,
     "notes": "Aqueous acid regenerates the carbonyl compound and ethylene glycol.",
-    "tags": ["deprotection", "acetal", "carbonyl"]
+    "tags": [
+      "deprotection",
+      "acetal",
+      "carbonyl"
+    ]
   },
   {
     "id": "epoxide_opening_acidic_water",
     "name": "Acid-catalysed epoxide hydrolysis",
     "smarts": "[C:1]1[O:2][C:3]1>>[C:1]([O])[C:3][O:2]",
     "arity": 1,
-    "reagents": ["H2O", "H+ (cat.)"],
+    "reagents": [
+      "H2O",
+      "H+ (cat.)"
+    ],
     "conditions": "aqueous acid, rt",
+    "substrate": "epoxides",
+    "outcome": "Typically 60-95%; anti vicinal diol with attack at the more substituted carbon.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 8,
     "notes": "Water attacks the more substituted epoxide carbon with anti ring opening.",
-    "tags": ["epoxide", "ring-opening", "acid"]
+    "tags": [
+      "epoxide",
+      "ring-opening",
+      "acid"
+    ]
   },
   {
     "id": "epoxide_opening_basic_hydroxide",
     "name": "Base-promoted epoxide hydrolysis",
     "smarts": "[C:1]1[O:2][C:3]1>>[C:1]([O])[C:3][O:2]",
     "arity": 1,
-    "reagents": ["NaOH", "H2O"],
+    "reagents": [
+      "NaOH",
+      "H2O"
+    ],
     "conditions": "aqueous, rt to reflux",
+    "substrate": "epoxides",
+    "outcome": "Typically 60-95%; anti vicinal diol with attack at the less substituted carbon.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 8,
     "notes": "Hydroxide attacks the less substituted epoxide carbon by an SN2 pathway.",
-    "tags": ["epoxide", "ring-opening", "base"]
+    "tags": [
+      "epoxide",
+      "ring-opening",
+      "base"
+    ]
   },
   {
     "id": "epoxide_opening_with_alcohol",
     "name": "Alcohol opening of epoxide",
     "smarts": "[C:1]1[O:2][C:3]1.[O;H1:4][C:5]>>[C:1]([O:4][C:5])[C:3][O:2]",
     "arity": 2,
-    "reagents": ["BF3.OEt2"],
+    "reagents": [
+      "BF3.OEt2"
+    ],
     "conditions": "alcohol solvent, 0 C to rt",
+    "substrate": "epoxides and alcohols",
+    "outcome": "Typically 55-90%; beta-alkoxy alcohol with anti opening.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 7,
     "notes": "Lewis-acid activation allows an alcohol nucleophile to give a beta-alkoxy alcohol.",
-    "tags": ["epoxide", "ring-opening", "ether"]
+    "tags": [
+      "epoxide",
+      "ring-opening",
+      "ether"
+    ]
+  },
+  {
+    "id": "tbs_ether_protection",
+    "name": "TBS ether protection",
+    "smarts": "[O;H1:1][C:2]>>[O:1]([C:2])[Si](C)(C)C(C)(C)C",
+    "arity": 1,
+    "reagents": [
+      "TBSCl",
+      "imidazole"
+    ],
+    "conditions": "DMF, 0 C to rt",
+    "substrate": "alcohols",
+    "outcome": "Typically 75-98%; tert-butyldimethylsilyl ether.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "TBS ethers tolerate many bases and nucleophiles but are cleaved by fluoride and sufficiently strong acid.",
+    "tags": [
+      "protecting-group",
+      "tbs",
+      "alcohol"
+    ]
+  },
+  {
+    "id": "tbs_ether_deprotection",
+    "name": "TBS ether deprotection",
+    "smarts": "[O:1]([C:2])[Si](C)(C)C(C)(C)C>>[O:1][C:2]",
+    "arity": 1,
+    "reagents": [
+      "TBAF"
+    ],
+    "conditions": "THF, 0 C to rt",
+    "substrate": "tbs ethers",
+    "outcome": "Typically 80-99%; regenerated alcohol.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "Fluoride cleaves the silicon-oxygen bond; prolonged exposure may affect other silyl groups.",
+    "tags": [
+      "deprotection",
+      "tbs",
+      "alcohol"
+    ]
+  },
+  {
+    "id": "mom_ether_protection",
+    "name": "MOM ether protection",
+    "smarts": "[O;H1:1][C:2]>>[O:1]([C:2])COC",
+    "arity": 1,
+    "reagents": [
+      "MOMCl",
+      "DIPEA"
+    ],
+    "conditions": "CH2Cl2, 0 C to rt",
+    "substrate": "alcohols",
+    "outcome": "Typically 70-95%; methoxymethyl ether.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "MOM chloride is toxic and potentially carcinogenic; use a closed, ventilated system and avoid when a safer protecting group suffices.",
+    "tags": [
+      "protecting-group",
+      "mom",
+      "alcohol"
+    ]
+  },
+  {
+    "id": "mom_ether_deprotection",
+    "name": "MOM ether deprotection",
+    "smarts": "[O:1]([C:2])COC>>[O:1][C:2]",
+    "arity": 1,
+    "reagents": [
+      "dilute HCl"
+    ],
+    "conditions": "aqueous THF, rt to reflux",
+    "substrate": "mom ethers",
+    "outcome": "Typically 70-95%; regenerated alcohol.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "Acid lability allows removal, but other acetals and acid-sensitive groups may also be cleaved.",
+    "tags": [
+      "deprotection",
+      "mom",
+      "alcohol"
+    ]
+  },
+  {
+    "id": "thp_ether_protection",
+    "name": "THP ether protection",
+    "smarts": "[O;H1:1][C:2]>>[O:1]([C:2])C1CCCCO1",
+    "arity": 1,
+    "reagents": [
+      "3,4-dihydro-2H-pyran",
+      "p-TsOH (cat.)"
+    ],
+    "conditions": "CH2Cl2, 0 C to rt",
+    "substrate": "alcohols",
+    "outcome": "Typically 70-95%; tetrahydropyranyl ether, often as diastereomers.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 7,
+    "notes": "THP protection is inexpensive and base-stable but introduces a new stereocenter and broad NMR signals.",
+    "tags": [
+      "protecting-group",
+      "thp",
+      "alcohol"
+    ]
+  },
+  {
+    "id": "thp_ether_deprotection",
+    "name": "THP ether deprotection",
+    "smarts": "[O:1]([C:2])C1CCCCO1>>[O:1][C:2]",
+    "arity": 1,
+    "reagents": [
+      "p-TsOH (cat.)",
+      "H2O"
+    ],
+    "conditions": "MeOH, rt",
+    "substrate": "thp ethers",
+    "outcome": "Typically 80-98%; regenerated alcohol.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Mild aqueous acid cleaves THP ethers; monitor substrates containing other acid-labile acetals.",
+    "tags": [
+      "deprotection",
+      "thp",
+      "alcohol"
+    ]
+  },
+  {
+    "id": "acetate_ester_protection",
+    "name": "Acetate protection of alcohol",
+    "smarts": "[O;H1:1][C:2]>>[O:1]([C:2])C(=O)C",
+    "arity": 1,
+    "reagents": [
+      "Ac2O",
+      "pyridine",
+      "DMAP (cat.)"
+    ],
+    "conditions": "CH2Cl2, 0 C to rt",
+    "substrate": "alcohols",
+    "outcome": "Typically 80-99%; acetate ester.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Acetates tolerate mild acid but are cleaved by hydrolysis, transesterification and strong nucleophiles.",
+    "tags": [
+      "protecting-group",
+      "acetate",
+      "alcohol"
+    ]
+  },
+  {
+    "id": "acetate_ester_deprotection",
+    "name": "Acetate deprotection",
+    "smarts": "[O:1]([C:2])C(=O)C>>[O:1][C:2]",
+    "arity": 1,
+    "reagents": [
+      "K2CO3"
+    ],
+    "conditions": "MeOH, 0 C to rt",
+    "substrate": "acetate esters",
+    "outcome": "Typically 80-99%; regenerated alcohol.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Mild methanolic base often removes O-acetates selectively; other base-sensitive esters may also react.",
+    "tags": [
+      "deprotection",
+      "acetate",
+      "alcohol"
+    ]
+  },
+  {
+    "id": "boc_amine_protection",
+    "name": "Boc protection of amine",
+    "smarts": "[N;H1,H2:1][C:2]>>[N:1]([C:2])C(=O)OC(C)(C)C",
+    "arity": 1,
+    "reagents": [
+      "Boc2O",
+      "Et3N"
+    ],
+    "conditions": "CH2Cl2 or aqueous dioxane, 0 C to rt",
+    "substrate": "amines",
+    "outcome": "Typically 80-99%; Boc carbamate.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "Boc carbamates tolerate base and many nucleophiles but are readily cleaved by acid.",
+    "tags": [
+      "protecting-group",
+      "boc",
+      "amine"
+    ]
+  },
+  {
+    "id": "boc_amine_deprotection",
+    "name": "Boc deprotection",
+    "smarts": "[N:1]([C:2])C(=O)OC(C)(C)C>>[N:1][C:2]",
+    "arity": 1,
+    "reagents": [
+      "TFA"
+    ],
+    "conditions": "CH2Cl2, 0 C to rt",
+    "substrate": "boc carbamates",
+    "outcome": "Typically 85-99%; amine salt, free amine after basification.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 9,
+    "notes": "Carbon dioxide and isobutene are released; acid-sensitive groups may not survive the standard treatment.",
+    "tags": [
+      "deprotection",
+      "boc",
+      "amine"
+    ]
+  },
+  {
+    "id": "cbz_amine_protection",
+    "name": "Cbz protection of amine",
+    "smarts": "[N;H1,H2:1][C:2]>>[N:1]([C:2])C(=O)OCc1ccccc1",
+    "arity": 1,
+    "reagents": [
+      "CbzCl",
+      "NaHCO3"
+    ],
+    "conditions": "aqueous dioxane, 0 C to rt",
+    "substrate": "amines",
+    "outcome": "Typically 75-95%; benzyloxycarbonyl carbamate.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Cbz carbamates are usually acid-stable and are removed by hydrogenolysis.",
+    "tags": [
+      "protecting-group",
+      "cbz",
+      "amine"
+    ]
+  },
+  {
+    "id": "cbz_amine_deprotection",
+    "name": "Cbz hydrogenolysis",
+    "smarts": "[N:1]([C:2])C(=O)OCc1ccccc1>>[N:1][C:2]",
+    "arity": 1,
+    "reagents": [
+      "H2",
+      "Pd/C"
+    ],
+    "conditions": "EtOAc or MeOH, rt",
+    "substrate": "cbz carbamates",
+    "outcome": "Typically 80-99%; free amine or its salt.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Hydrogenolysis can also reduce alkenes, alkynes, benzyl ethers and other hydrogenolysis-sensitive groups.",
+    "tags": [
+      "deprotection",
+      "cbz",
+      "amine"
+    ]
+  },
+  {
+    "id": "benzyl_ether_protection",
+    "name": "Benzyl ether protection",
+    "smarts": "[O;H1:1][C:2]>>[O:1]([C:2])Cc1ccccc1",
+    "arity": 1,
+    "reagents": [
+      "BnBr",
+      "NaH"
+    ],
+    "conditions": "anhydrous THF or DMF, 0 C to rt",
+    "substrate": "alcohols",
+    "outcome": "Typically 70-95%; benzyl ether.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Benzyl ethers tolerate many acidic and basic steps but can be cleaved during catalytic hydrogenation.",
+    "tags": [
+      "protecting-group",
+      "benzyl",
+      "alcohol"
+    ]
+  },
+  {
+    "id": "benzyl_ether_deprotection",
+    "name": "Benzyl ether hydrogenolysis",
+    "smarts": "[O:1]([C:2])Cc1ccccc1>>[O:1][C:2]",
+    "arity": 1,
+    "reagents": [
+      "H2",
+      "Pd/C"
+    ],
+    "conditions": "EtOAc or EtOH, rt",
+    "substrate": "benzyl ethers",
+    "outcome": "Typically 80-99%; regenerated alcohol.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Other reducible groups may react; catalyst poisoning can make hydrogenolysis incomplete.",
+    "tags": [
+      "deprotection",
+      "benzyl",
+      "alcohol"
+    ]
   }
 ]

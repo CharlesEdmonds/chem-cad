@@ -4,83 +4,283 @@
     "name": "Hydrobromination of alkene",
     "smarts": "[C;H1,H2:1]=[C:2]>>[C:1]([Br])[C:2]",
     "arity": 1,
-    "reagents": ["HBr"],
+    "reagents": [
+      "HBr"
+    ],
     "conditions": "0 C to rt",
+    "substrate": "alkenes",
+    "outcome": "Typically 70-95%; Markovnikov bromide, with rearrangement possible.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 9,
     "notes": "Electrophilic addition gives the Markovnikov bromide in the absence of peroxides.",
-    "tags": ["addition", "alkene", "markovnikov"]
+    "tags": [
+      "addition",
+      "alkene",
+      "markovnikov"
+    ]
   },
   {
     "id": "hcl_addition_markovnikov",
     "name": "Hydrochlorination of alkene",
     "smarts": "[C;H1,H2:1]=[C:2]>>[C:1]([Cl])[C:2]",
     "arity": 1,
-    "reagents": ["HCl"],
+    "reagents": [
+      "HCl"
+    ],
     "conditions": "0 C to rt",
+    "substrate": "alkenes",
+    "outcome": "Typically 60-90%; Markovnikov chloride, with rearrangement possible.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 8,
     "notes": "Protonation precedes chloride capture and may permit carbocation rearrangement.",
-    "tags": ["addition", "alkene", "markovnikov"]
+    "tags": [
+      "addition",
+      "alkene",
+      "markovnikov"
+    ]
   },
   {
     "id": "alkene_acid_hydration",
     "name": "Acid-catalysed alkene hydration",
     "smarts": "[C;H1,H2:1]=[C:2]>>[C:1]([O])[C:2]",
     "arity": 1,
-    "reagents": ["H2O", "H2SO4 (cat.)"],
+    "reagents": [
+      "H2O",
+      "H2SO4 (cat.)"
+    ],
     "conditions": "dilute aqueous acid",
+    "substrate": "alkenes",
+    "outcome": "Typically 50-90%; Markovnikov alcohol, with rearrangement risk.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 8,
     "notes": "Gives the Markovnikov alcohol; rearrangement is possible for carbocation intermediates.",
-    "tags": ["addition", "hydration", "markovnikov"]
+    "tags": [
+      "addition",
+      "hydration",
+      "markovnikov"
+    ]
   },
   {
     "id": "alkene_bromination",
     "name": "Bromination of alkene",
     "smarts": "[C:1]=[C:2]>>[C:1]([Br])[C:2]([Br])",
     "arity": 1,
-    "reagents": ["Br2"],
+    "reagents": [
+      "Br2"
+    ],
     "conditions": "CH2Cl2, 0 C to rt",
+    "substrate": "alkenes",
+    "outcome": "Typically 80-98%; anti vicinal dibromide.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 9,
     "notes": "A bromonium ion gives anti addition of bromine across the double bond.",
-    "tags": ["addition", "alkene", "halogenation"]
+    "tags": [
+      "addition",
+      "alkene",
+      "halogenation"
+    ]
   },
   {
     "id": "hydroboration_oxidation",
     "name": "Hydroboration-oxidation",
     "smarts": "[C:1]=[C;H1,H2:2]>>[C:1][C:2]O",
     "arity": 1,
-    "reagents": ["1. BH3-THF", "2. H2O2, NaOH"],
+    "reagents": [
+      "1. BH3-THF",
+      "2. H2O2, NaOH"
+    ],
     "conditions": "0 C to rt",
+    "substrate": "alkenes",
+    "outcome": "Typically 70-95%; syn anti-Markovnikov alcohol.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 9,
     "notes": "Syn hydration places OH at the less substituted carbon without rearrangement.",
-    "tags": ["addition", "hydration", "anti-markovnikov"]
+    "tags": [
+      "addition",
+      "hydration",
+      "anti-markovnikov"
+    ]
   },
   {
     "id": "alkene_syn_dihydroxylation",
     "name": "Syn dihydroxylation",
     "smarts": "[C:1]=[C:2]>>[C:1]([O])[C:2]([O])",
     "arity": 1,
-    "reagents": ["OsO4 (cat.)", "NMO"],
+    "reagents": [
+      "OsO4 (cat.)",
+      "NMO"
+    ],
     "conditions": "tert-butanol/water, rt",
+    "substrate": "alkenes",
+    "outcome": "Typically 70-95%; syn vicinal diol.",
+    "source": "standard practice",
     "byproducts": [],
     "priority": 7,
     "notes": "Concerted addition affords a cis-1,2-diol.",
-    "tags": ["addition", "oxidation", "diol"]
+    "tags": [
+      "addition",
+      "oxidation",
+      "diol"
+    ]
   },
   {
     "id": "alkene_epoxidation_mcpba",
     "name": "mCPBA epoxidation",
     "smarts": "[C:1]=[C:2]>>[C:1]1[O][C:2]1",
     "arity": 1,
-    "reagents": ["mCPBA"],
+    "reagents": [
+      "mCPBA"
+    ],
     "conditions": "CH2Cl2, 0 C to rt",
-    "byproducts": ["O=C(O)c1cccc(Cl)c1"],
+    "substrate": "alkenes",
+    "outcome": "Typically 70-95%; stereospecific epoxide formation.",
+    "source": "standard practice",
+    "byproducts": [
+      "O=C(O)c1cccc(Cl)c1"
+    ],
     "priority": 9,
     "notes": "Stereospecific oxygen transfer preserves the alkene's relative substituent geometry.",
-    "tags": ["addition", "epoxide", "oxidation"]
+    "tags": [
+      "addition",
+      "epoxide",
+      "oxidation"
+    ]
+  },
+  {
+    "id": "hbr_addition_radical",
+    "name": "Peroxide-promoted HBr addition",
+    "smarts": "[C:1]=[C;H1,H2:2]>>[C:1][C:2]Br",
+    "arity": 1,
+    "reagents": [
+      "HBr",
+      "ROOR"
+    ],
+    "conditions": "light or gentle heat, 0 C to rt",
+    "substrate": "alkenes",
+    "outcome": "Typically 55-90%; anti-Markovnikov bromide without carbocation rearrangement.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Radical-chain hydrobromination is reliable for HBr; HCl and HI do not give the same useful peroxide effect.",
+    "tags": [
+      "addition",
+      "alkene",
+      "anti-markovnikov"
+    ]
+  },
+  {
+    "id": "oxymercuration_demercuration",
+    "name": "Oxymercuration-demercuration",
+    "smarts": "[C;H1,H2:1]=[C:2]>>[C:1](O)[C:2]",
+    "arity": 1,
+    "reagents": [
+      "1. Hg(OAc)2, H2O",
+      "2. NaBH4"
+    ],
+    "conditions": "aqueous THF, 0 C to rt",
+    "substrate": "alkenes",
+    "outcome": "Typically 65-90%; Markovnikov alcohol with little rearrangement.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Mercurinium-ion hydration avoids a freely rearranging carbocation; organomercury waste requires controlled disposal.",
+    "tags": [
+      "addition",
+      "hydration",
+      "markovnikov"
+    ]
+  },
+  {
+    "id": "alkene_chlorination",
+    "name": "Chlorination of alkene",
+    "smarts": "[C:1]=[C:2]>>[C:1](Cl)[C:2]Cl",
+    "arity": 1,
+    "reagents": [
+      "Cl2"
+    ],
+    "conditions": "CH2Cl2, -20 C to rt",
+    "substrate": "alkenes",
+    "outcome": "Typically 70-95%; anti vicinal dichloride.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Chloronium-ion formation gives predominantly anti addition; exclude light when allylic chlorination is unwanted.",
+    "tags": [
+      "addition",
+      "alkene",
+      "halogenation"
+    ]
+  },
+  {
+    "id": "alkene_bromohydrin_formation",
+    "name": "Bromohydrin formation",
+    "smarts": "[C:1]=[C:2]>>[C:1](Br)[C:2]O",
+    "arity": 1,
+    "reagents": [
+      "Br2",
+      "H2O"
+    ],
+    "conditions": "aqueous solvent, 0 C to rt",
+    "substrate": "alkenes",
+    "outcome": "Typically 60-90%; anti bromohydrin with OH at the more substituted carbon.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Water opens the bromonium ion; regiochemistry can become less selective for nearly symmetric alkenes.",
+    "tags": [
+      "addition",
+      "halohydrin",
+      "alkene"
+    ]
+  },
+  {
+    "id": "mercuric_alkyne_hydration",
+    "name": "Mercuric-ion hydration of terminal alkyne",
+    "smarts": "[C:1]#[C;H1:2]>>[C:1](=O)[C:2]",
+    "arity": 1,
+    "reagents": [
+      "HgSO4",
+      "H2SO4",
+      "H2O"
+    ],
+    "conditions": "aqueous acid, 40-80 C",
+    "substrate": "terminal alkynes",
+    "outcome": "Typically 60-90%; Markovnikov hydration gives a methyl ketone.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "The initially formed enol tautomerizes to the ketone; mercury waste requires controlled disposal.",
+    "tags": [
+      "addition",
+      "alkyne",
+      "hydration"
+    ]
+  },
+  {
+    "id": "alkyne_hydroboration_oxidation",
+    "name": "Hydroboration-oxidation of terminal alkyne",
+    "smarts": "[C:1]#[C;H1:2]>>[C:1][C:2]=O",
+    "arity": 1,
+    "reagents": [
+      "1. 9-BBN",
+      "2. H2O2, NaOH"
+    ],
+    "conditions": "THF, 0 C to rt",
+    "substrate": "terminal alkynes",
+    "outcome": "Typically 60-90%; anti-Markovnikov hydration gives an aldehyde.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "A bulky borane suppresses double hydroboration; the enol formed on oxidation tautomerizes to the aldehyde.",
+    "tags": [
+      "addition",
+      "alkyne",
+      "anti-markovnikov"
+    ]
   }
 ]

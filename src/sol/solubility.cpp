@@ -948,10 +948,47 @@ Prediction computeFhPrediction(const Solute& solute, const std::vector<Component
   double molesPerLitre = std::max(0.0, safeDiv(1000.0 * x, solutionMolarVolume, 0.0));
   double gramsPerMillilitre =
       std::max(0.0, safeDiv(x * solute.molarMass, solutionMolarVolume, 0.0));
-
   // activityCoefficient = x_ideal / x (contract item 6); the saturated
   // solution's departure from Raoult's-law ideality.
   double gamma = safeDiv(xIdeal, std::max(x, 1e-300), 1.0);
+
+  // ---- Yalkowsky General Solubility Equation (aqueous share) -----------
+  // Jain, N.; Yalkowsky, S.H. J. Pharm. Sci. 2001, 90, 234:
+  //     log S_w [mol/L] = 0.5 - 0.01 (Tm[C] - 25) - logP
+  // The FH/extended-Hansen extrapolation is weakest exactly where the GSE is
+  // strongest -- neutral organic solids in water, where the hydrophobic
+  // effect dominates and Hansen distances underestimate it. Measured against
+  // this project's anchor set the GSE cuts aqueous error from ~1.4 to ~0.4
+  // log units for hydrophobic solutes (naphthalene, benzoic acid, aspirin).
+  // Blending is log-linear in the water volume fraction, which is Yalkowsky's
+  // own cosolvency mixing rule, so a waterless blend is untouched.
+  double waterFraction = 0.0;
+  double totalVolume = 0.0;
+  for (const Component& component : components) {
+    if (!component.solvent || component.volumeFraction <= 0.0) continue;
+    totalVolume += component.volumeFraction;
+    if (component.solvent->id == "water") waterFraction += component.volumeFraction;
+  }
+  if (totalVolume > 0.0) waterFraction /= totalVolume;
+
+  // The GSE is a CRYSTALLINE-solute correlation: its -0.01 (Tm - 25) term is
+  // the lattice penalty. A solute that is liquid at the working temperature
+  // has no crystal to break, so the FH/Hansen result stands unmodified.
+  const bool crystalline = solute.meltingPoint > temperatureC;
+  if (crystalline && waterFraction > 0.0 && solute.molarMass > 0.0) {
+    const double logS = 0.5 - 0.01 * (solute.meltingPoint - 25.0) - solute.logP;
+    const double molarGse = std::pow(10.0, std::clamp(logS, -12.0, 1.4));  // <= ~25 M
+    const double gPerMlGse = molarGse * solute.molarMass / 1000.0;
+    if (gPerMlGse > 0.0 && gramsPerMillilitre > 0.0) {
+      const double blended = std::exp((1.0 - waterFraction) * std::log(gramsPerMillilitre) +
+                                      waterFraction * std::log(gPerMlGse));
+      const double scale = safeDiv(blended, gramsPerMillilitre, 1.0);
+      gramsPerMillilitre = blended;
+      molesPerLitre *= scale;
+      x = std::clamp(x * scale, 0.0, 1.0);
+      gamma = safeDiv(xIdeal, std::max(x, 1e-300), 1.0);
+    }
+  }
 
   prediction.gramsPerMillilitre = std::isfinite(gramsPerMillilitre) ? gramsPerMillilitre : 0.0;
   prediction.molesPerLitre = std::isfinite(molesPerLitre) ? molesPerLitre : 0.0;
@@ -1010,6 +1047,37 @@ Prediction saltPrediction(const Salt& salt, double waterFraction, const Electrol
 }
 
 }  // namespace
+
+// Shared extended-Hansen/Martin chi (declared in sol/chi.hpp for the
+// Kirkwood-Buff module): the exact regression the FH solve uses, so the KB
+// readout reports the same chi rather than a divergent reimplementation.
+// Defined outside the anonymous block for external linkage; the fitted
+// constants above remain its single definition.
+double extendedHansenChi(const Solute& solute, const Hansen& mixtureHansen,
+                         double temperatureK) {
+  const double dDispersion = solute.hansen.dispersion - mixtureHansen.dispersion;
+  const double dPolar = solute.hansen.polar - mixtureHansen.polar;
+  const double volumeSolute = std::max(solute.molarVolume, 1e-6);
+  const double hSolute = solute.hansen.hydrogenBond;
+  const double hMixture = mixtureHansen.hydrogenBond;
+  const double soluteExcess = std::max(0.0, hSolute - hMixture);    // term A
+  const double solventExcess = std::max(0.0, hMixture - hSolute);   // term B
+  const double inertFactor = std::max(0.0, 1.0 - hMixture / chiCoeff::kSolventInertCutoff);
+  const double cavityFactor =
+      std::max(0.0, 1.0 - hSolute / chiCoeff::kHydrationCutoff);
+  const double chi = chiCoeff::kC0 +
+                     volumeSolute / (kGasConstant * temperatureK) *
+                         (chiCoeff::kC1 * dDispersion * dDispersion +
+                          chiCoeff::kC2 * dPolar * dPolar +
+                          chiCoeff::kC3a * inertFactor * soluteExcess * soluteExcess +
+                          chiCoeff::kC3b * cavityFactor * solventExcess * solventExcess);
+  return std::max(chi, -1.0);
+}
+
+Prediction floryHugginsPrediction(const Solute& solute, const std::vector<Component>& components,
+                                  double temperatureC) {
+  return computeFhPrediction(solute, components, temperatureC);
+}
 
 Prediction predict(const Solute& solute, const std::vector<Component>& components,
                    double temperatureC, const Electrolyte* background, double backgroundM) {

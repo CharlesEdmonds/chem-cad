@@ -4,107 +4,272 @@
     "name": "SN2 hydrolysis of alkyl bromide",
     "smarts": "[C;X4:1][Br:2]>>[C:1]O",
     "arity": 1,
-    "reagents": ["NaOH"],
+    "reagents": [
+      "NaOH"
+    ],
     "conditions": "aqueous, reflux",
-    "byproducts": ["Br"],
+    "substrate": "primary alkyl bromides",
+    "outcome": "Typically 60-90%; alcohol with inversion at stereogenic centers.",
+    "source": "standard practice",
+    "byproducts": [
+      "Br"
+    ],
     "priority": 9,
     "notes": "Best for methyl and primary bromides; inversion occurs at a stereogenic center.",
-    "tags": ["substitution", "sn2", "alcohol"]
+    "tags": [
+      "substitution",
+      "sn2",
+      "alcohol"
+    ]
   },
   {
     "id": "sn2_chloride_to_alcohol",
     "name": "SN2 hydrolysis of alkyl chloride",
     "smarts": "[C;X4:1][Cl:2]>>[C:1]O",
     "arity": 1,
-    "reagents": ["NaOH"],
+    "reagents": [
+      "NaOH"
+    ],
     "conditions": "aqueous, reflux",
-    "byproducts": ["Cl"],
+    "substrate": "primary alkyl chlorides",
+    "outcome": "Typically 50-85%; alcohol with inversion at stereogenic centers.",
+    "source": "standard practice",
+    "byproducts": [
+      "Cl"
+    ],
     "priority": 8,
     "notes": "Primary chlorides react most reliably; hindered substrates favor elimination.",
-    "tags": ["substitution", "sn2", "alcohol"]
+    "tags": [
+      "substitution",
+      "sn2",
+      "alcohol"
+    ]
   },
   {
     "id": "sn1_tertiary_halide_to_alcohol",
     "name": "SN1 solvolysis to tertiary alcohol",
     "smarts": "[C;X4;H0:1][Br:2]>>[C:1]O",
     "arity": 1,
-    "reagents": ["H2O"],
+    "reagents": [
+      "H2O"
+    ],
     "conditions": "aqueous polar protic solvent",
-    "byproducts": ["Br"],
+    "substrate": "tertiary alkyl halides",
+    "outcome": "Typically 40-80%; tertiary alcohol with racemization and rearrangement risk.",
+    "source": "standard practice",
+    "byproducts": [
+      "Br"
+    ],
     "priority": 7,
     "notes": "A stable tertiary carbocation enables solvolysis; rearrangement and racemization are possible.",
-    "tags": ["substitution", "sn1", "alcohol"]
+    "tags": [
+      "substitution",
+      "sn1",
+      "alcohol"
+    ]
   },
   {
     "id": "sn2_bromide_to_nitrile",
     "name": "Cyanide substitution",
     "smarts": "[C;X4:1][Br:2]>>[C:1]C#N",
     "arity": 1,
-    "reagents": ["NaCN"],
+    "reagents": [
+      "NaCN"
+    ],
     "conditions": "polar aprotic solvent, reflux",
-    "byproducts": ["Br"],
+    "substrate": "primary alkyl bromides",
+    "outcome": "Typically 60-90%; nitrile with one additional carbon.",
+    "source": "standard practice",
+    "byproducts": [
+      "Br"
+    ],
     "priority": 8,
     "notes": "Adds one carbon and works best on unhindered alkyl halides.",
-    "tags": ["substitution", "sn2", "nitrile"]
+    "tags": [
+      "substitution",
+      "sn2",
+      "nitrile"
+    ]
   },
   {
     "id": "sn2_bromide_to_azide",
     "name": "Azide substitution",
     "smarts": "[C;X4:1][Br:2]>>[C:1]N=[N+]=[N-]",
     "arity": 1,
-    "reagents": ["NaN3"],
+    "reagents": [
+      "NaN3"
+    ],
     "conditions": "DMF, 20-60 C",
-    "byproducts": ["Br"],
+    "substrate": "primary alkyl bromides",
+    "outcome": "Typically 65-95%; alkyl azide with inversion.",
+    "source": "standard practice",
+    "byproducts": [
+      "Br"
+    ],
     "priority": 8,
     "notes": "Alkyl azides are useful masked amines; avoid concentrating low-molecular-weight azides.",
-    "tags": ["substitution", "sn2", "azide"]
+    "tags": [
+      "substitution",
+      "sn2",
+      "azide"
+    ]
   },
   {
     "id": "sn2_bromide_to_amine",
     "name": "Ammonolysis of alkyl bromide",
     "smarts": "[C;X4:1][Br:2]>>[C:1]N",
     "arity": 1,
-    "reagents": ["excess NH3"],
+    "reagents": [
+      "excess NH3"
+    ],
     "conditions": "ethanol, sealed vessel, heat",
-    "byproducts": ["Br"],
+    "substrate": "primary alkyl bromides",
+    "outcome": "Typically 40-75%; primary amine, with overalkylation possible.",
+    "source": "standard practice",
+    "byproducts": [
+      "Br"
+    ],
     "priority": 6,
     "notes": "Excess ammonia suppresses over-alkylation of the primary amine product.",
-    "tags": ["substitution", "sn2", "amine"]
+    "tags": [
+      "substitution",
+      "sn2",
+      "amine"
+    ]
   },
   {
     "id": "williamson_ether_synthesis",
     "name": "Williamson ether synthesis",
     "smarts": "[O;H1:1][C:2].[C;X4:3][Br,Cl,I:4]>>[O:1]([C:2])[C:3]",
     "arity": 2,
-    "reagents": ["NaH or K2CO3"],
+    "reagents": [
+      "NaH or K2CO3"
+    ],
     "conditions": "anhydrous DMF or acetone",
-    "byproducts": ["Br"],
+    "substrate": "alcohols and primary alkyl halides",
+    "outcome": "Typically 60-95%; unsymmetrical ether by SN2 substitution.",
+    "source": "standard practice",
+    "byproducts": [
+      "Br"
+    ],
     "priority": 9,
     "notes": "Use a primary alkyl halide to minimize competing E2 elimination.",
-    "tags": ["substitution", "sn2", "ether"]
+    "tags": [
+      "substitution",
+      "sn2",
+      "ether"
+    ]
   },
   {
     "id": "gabriel_amine_synthesis",
     "name": "Gabriel amine synthesis",
     "smarts": "[C;X4:1][Br,Cl:2]>>[C:1]N",
     "arity": 1,
-    "reagents": ["potassium phthalimide", "hydrazine"],
+    "reagents": [
+      "potassium phthalimide",
+      "hydrazine"
+    ],
     "conditions": "DMF, then hydrolysis",
-    "byproducts": ["O=C1NNC(=O)c2ccccc12", "Br"],
+    "substrate": "primary alkyl halides",
+    "outcome": "Typically 50-85%; primary amine without overalkylation.",
+    "source": "standard practice",
+    "byproducts": [
+      "O=C1NNC(=O)c2ccccc12",
+      "Br"
+    ],
     "priority": 6,
     "notes": "Provides primary amines without over-alkylation; unsuitable for aryl or tertiary halides.",
-    "tags": ["substitution", "amine", "gabriel"]
+    "tags": [
+      "substitution",
+      "amine",
+      "gabriel"
+    ]
   },
   {
     "id": "alcohol_tosylation",
     "name": "Tosylation of alcohol",
     "smarts": "[O;H1:1][C:2]>>[O:1]([C:2])S(=O)(=O)c1ccc(C)cc1",
     "arity": 1,
-    "reagents": ["TsCl", "pyridine"],
+    "reagents": [
+      "TsCl",
+      "pyridine"
+    ],
     "conditions": "0 C to rt",
-    "byproducts": ["Cl"],
+    "substrate": "alcohols",
+    "outcome": "Typically 75-98%; sulfonate ester with retention at carbon.",
+    "source": "standard practice",
+    "byproducts": [
+      "Cl"
+    ],
     "priority": 8,
     "notes": "Converts the hydroxyl group into a good leaving group without breaking the C-O bond.",
-    "tags": ["activation", "tosylation", "substitution"]
+    "tags": [
+      "activation",
+      "tosylation",
+      "substitution"
+    ]
+  },
+  {
+    "id": "finkelstein_halide_exchange",
+    "name": "Finkelstein halide exchange",
+    "smarts": "[C;X4:1][Cl:2]>>[C:1]I",
+    "arity": 1,
+    "reagents": [
+      "NaI"
+    ],
+    "conditions": "dry acetone, reflux",
+    "substrate": "primary alkyl chlorides",
+    "outcome": "Typically 60-95%; alkyl iodide as NaCl precipitates.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Most effective for primary substrates; secondary substrates react more slowly and tertiary substrates eliminate.",
+    "tags": [
+      "substitution",
+      "finkelstein",
+      "alkyl-iodide"
+    ]
+  },
+  {
+    "id": "thiolate_sn2_thioether_synthesis",
+    "name": "SN2 thioether synthesis",
+    "smarts": "[S;H1:1][C:2].[C;X4:3][Br:4]>>[S:1]([C:2])[C:3]",
+    "arity": 2,
+    "reagents": [
+      "K2CO3 or NaH"
+    ],
+    "conditions": "DMF or ethanol, 0-80 C",
+    "substrate": "thiols and primary alkyl bromides",
+    "outcome": "Typically 65-95%; thioether with inversion at stereogenic electrophiles.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Thiolate is strongly nucleophilic; exclude oxidants to limit disulfide formation.",
+    "tags": [
+      "substitution",
+      "sn2",
+      "thioether"
+    ]
+  },
+  {
+    "id": "nucleophilic_aromatic_substitution_phenoxide",
+    "name": "Nucleophilic aromatic substitution by phenoxide",
+    "smarts": "[c:1][F:2].[O;H1:3][c:4]>>[c:1][O:3][c:4]",
+    "arity": 2,
+    "reagents": [
+      "K2CO3"
+    ],
+    "conditions": "DMF, 60-120 C",
+    "substrate": "activated aryl fluorides and phenols",
+    "outcome": "Typically 55-90%; diaryl ether when electron-withdrawing groups activate the aryl fluoride.",
+    "source": "standard practice",
+    "byproducts": [],
+    "priority": 8,
+    "notes": "Classical addition-elimination SNAr requires ortho or para electron-withdrawing activation; unactivated aryl halides are poor substrates.",
+    "tags": [
+      "substitution",
+      "snar",
+      "diaryl-ether"
+    ]
   }
 ]

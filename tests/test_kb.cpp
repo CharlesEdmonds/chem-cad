@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "core/paths.hpp"
+#include "rxn/kb.hpp"
 
 namespace {
 
@@ -79,10 +80,12 @@ TEST_CASE("reaction knowledge base schema and SMARTS are valid") {
   std::sort(files.begin(), files.end());
   REQUIRE_FALSE(files.empty());
 
-  const std::array<const char*, 10> keys = {"id",       "name",       "smarts",   "arity",
-                                            "reagents", "conditions", "byproducts", "priority",
-                                            "notes",    "tags"};
+  const std::array<const char*, 13> keys = {
+      "id",         "name",       "smarts",     "arity",    "reagents",
+      "conditions", "substrate",  "outcome",    "source",   "byproducts",
+      "priority",   "notes",      "tags"};
   const std::regex idPattern("^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$");
+  const std::regex substratePattern("^[a-z][a-z0-9 -]*s$");
   std::set<std::string> ids;
   std::size_t templateCount = 0;
 
@@ -90,8 +93,16 @@ TEST_CASE("reaction knowledge base schema and SMARTS are valid") {
     INFO("file: " << file.string());
     const Json root = readJson(file);
     REQUIRE(root.is_array());
+    CHECK(root.size() >= 12);
 
-    for (const auto& entry : root) {
+    const auto loaded = chemcad::rxn::loadReactionFile(file.string());
+    REQUIRE(loaded.size() == root.size());
+    REQUIRE_FALSE(loaded.empty());
+    CHECK(chemcad::rxn::reactionType(loaded.front()) == file.stem().string());
+
+    for (std::size_t entryIndex = 0; entryIndex < root.size(); ++entryIndex) {
+      const Json& entry = root.at(entryIndex);
+      const chemcad::rxn::ReactionTemplate& loadedReaction = loaded.at(entryIndex);
       ++templateCount;
       REQUIRE(entry.is_object());
       const std::string id = entry.contains("id") && entry.at("id").is_string()
@@ -108,11 +119,24 @@ TEST_CASE("reaction knowledge base schema and SMARTS are valid") {
       CHECK(std::regex_match(id, idPattern));
       CHECK(ids.insert(id).second);
 
-      for (const char* key : {"name", "smarts", "conditions", "notes"}) {
+      for (const char* key : {"name", "smarts", "conditions", "substrate", "outcome",
+                              "source", "notes"}) {
         INFO("key: " << key);
         REQUIRE(entry.contains(key));
         REQUIRE(entry.at(key).is_string());
       }
+      CHECK_FALSE(id.empty());
+      CHECK_FALSE(entry.at("name").get<std::string>().empty());
+      CHECK_FALSE(entry.at("smarts").get<std::string>().empty());
+      CHECK_FALSE(entry.at("conditions").get<std::string>().empty());
+      const std::string substrate = entry.at("substrate").get<std::string>();
+      CHECK_FALSE(substrate.empty());
+      CHECK(std::regex_match(substrate, substratePattern));
+      CHECK_FALSE(entry.at("source").get<std::string>().empty());
+      CHECK(loadedReaction.id == id);
+      CHECK(loadedReaction.substrate == substrate);
+      CHECK(loadedReaction.outcome == entry.at("outcome").get<std::string>());
+      CHECK(loadedReaction.source == entry.at("source").get<std::string>());
       checkStringArray(entry, "reagents");
       checkStringArray(entry, "byproducts");
       checkStringArray(entry, "tags");
@@ -157,7 +181,7 @@ TEST_CASE("reaction knowledge base schema and SMARTS are valid") {
     }
   }
 
-  CHECK(templateCount >= 60);
+  CHECK(templateCount >= 132);
 }
 
 TEST_CASE("periodic table contains all 118 elements") {

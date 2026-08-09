@@ -98,6 +98,15 @@ void drawCanvas(AppState& st) {
 
   st.canvasOrigin = {rectMin.x, rectMin.y};
   st.canvasSize = {size.x, size.y};
+
+  // Content appearing in a previously empty sketch (build-from-name, MOL
+  // import, project open) lands wherever the source put it; frame it. An
+  // intentional zoom/pan on a non-empty doc is never second-guessed.
+  static bool wasEmpty = true;
+  const bool isEmpty = st.doc.empty();
+  if (wasEmpty && !isEmpty) st.cam.fit(st.doc, st.canvasSize);
+  wasEmpty = isEmpty;
+
   const canvas::CanvasRect rect{{rectMin.x, rectMin.y},
                                 {size.x, size.y},
                                 rectMin,

@@ -263,7 +263,7 @@ const AtomModel& modelFor(const ElementData& element) {
   const int neutrons = std::max(0, static_cast<int>(std::lround(element.mass)) - element.z);
   const int nucleons = element.z + neutrons;
   const int shown = std::min(nucleons, element.z <= 20 ? nucleons : 64);
-  const float nucR = 0.115f + 0.028f * std::cbrt(static_cast<float>(std::max(shown, 1)));
+  const float nucR = 0.045f + 0.012f * std::cbrt(static_cast<float>(std::max(shown, 1)));
   const float golden = 2.39996323f;
   for (int i = 0; i < shown; ++i) {
     const float y = 1.0f - 2.0f * (i + 0.5f) / shown;
@@ -333,7 +333,7 @@ void drawNucleus(ImDrawList* dl, const AtomModel& model, float yaw, float pitch,
   rotateProject(model.nucleus, pts, yaw, pitch, centre, scale);
   std::sort(pts.begin(), pts.end(),
             [](const Projected& a, const Projected& b) { return a.depth > b.depth; });
-  const float r = std::max(1.3f, unitR * scale * 0.085f);
+  const float r = std::max(1.1f, unitR * scale * 0.055f);
   for (const Projected& p : pts) {
     const float fog = std::clamp((p.depth / 1.2f + 1.0f) * 0.5f * 0.45f, 0.0f, 0.5f);
     shadedSphere(dl, ImVec2(p.x, p.y), r * p.persp,

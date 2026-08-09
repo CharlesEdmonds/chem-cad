@@ -167,11 +167,27 @@ double niceTickStep(double range) {
 void drawGraduation(ImDrawList* draw, const VesselGeometry& geo, const Transform& tf,
                     ImVec2 regionMin) {
   const double capacityMl = geo.cumVolumeMl[kWidthSamples - 1];
-  const double step = niceTickStep(capacityMl);
+  double step = niceTickStep(capacityMl);
   if (step <= 0.0) return;
   const ImU32 tickColor = style::u32(style::col::TextFaint);
   const ImU32 labelColor = style::u32(style::col::TextDim);
   const float tickX = regionMin.x + kMarginLeft - 14.0f;
+  const float labelH = ImGui::GetFontSize();
+  // Widen the step until no adjacent pair of labels can collide vertically.
+  // Every interval is checked: the vessel neck compresses the top ticks even
+  // when the stem intervals are generous.
+  for (int guard = 0; guard < 8; ++guard) {
+    float minPx = 1e9f;
+    float prevY = 0.0f;
+    for (double v = 0.0; v <= capacityMl + 1e-6; v += step) {
+      const double hf = heightFractionForVolume(geo, v);
+      const float y = toScreen(tf, 0.0, hf * geo.heightMetres).y;
+      if (v > 0.0) minPx = std::min(minPx, std::fabs(y - prevY));
+      prevY = y;
+    }
+    if (minPx >= labelH * 1.25f) break;
+    step *= 2.0;
+  }
   for (double v = 0.0; v <= capacityMl + 1e-6; v += step) {
     const double hf = heightFractionForVolume(geo, v);
     const ImVec2 p = toScreen(tf, 0.0, hf * geo.heightMetres);
@@ -421,11 +437,11 @@ void drawMeniscus(ImDrawList* draw, const sol::Phase& phase, double hf,
 }
 
 void drawLayers(ImDrawList* draw, const sol::Simulation& sim, const VesselGeometry& geo,
-                const Transform& tf) {
+                const Transform& tf, bool shaded) {
   static thread_local std::vector<ImVec2> slice;
   const size_t n = std::min(sim.phases.size(), sim.settledMl.size());
-  constexpr int kRows = 14;    // height samples per slice
-  constexpr int kSlices = 26;  // vertical slices across the width
+  constexpr int kRows = 28;    // height samples per slice
+  constexpr int kSlices = 34;  // vertical slices across the width
 
   double cursorMl = 0.0;
   for (size_t i = 0; i < n; ++i) {
@@ -438,6 +454,34 @@ void drawLayers(ImDrawList* draw, const sol::Simulation& sim, const VesselGeomet
     if (hfHi <= hfLo + 1e-6) continue;
 
     const sol::Phase& phase = sim.phases[i];
+
+    if (!shaded) {
+      // Flat 2D textbook cross-section: one filled band, one interface line.
+      slice.clear();
+      for (int s = 0; s <= kRows; ++s) {
+        const double hf = hfLo + (hfHi - hfLo) * s / kRows;
+        const double halfW = widthFractionAt(sim.vessel, hf) * geo.halfWidthMetres;
+        slice.push_back(toScreen(tf, halfW, hf * geo.heightMetres));
+      }
+      for (int s = kRows; s >= 0; --s) {
+        const double hf = hfLo + (hfHi - hfLo) * s / kRows;
+        const double halfW = widthFractionAt(sim.vessel, hf) * geo.halfWidthMetres;
+        slice.push_back(toScreen(tf, -halfW, hf * geo.heightMetres));
+      }
+      if (slice.size() >= 3) {
+        draw->AddConcavePolyFilled(slice.data(), static_cast<int>(slice.size()),
+                                   ImGui::ColorConvertFloat4ToU32(ImVec4(
+                                       phase.colour[0], phase.colour[1], phase.colour[2],
+                                       phase.colour[3])));
+      }
+      if (i + 1 < n && sim.settledMl[i + 1] > 1e-9) {
+        const double halfWTop = widthFractionAt(sim.vessel, hfHi) * geo.halfWidthMetres;
+        draw->AddLine(toScreen(tf, -halfWTop, hfHi * geo.heightMetres),
+                      toScreen(tf, halfWTop, hfHi * geo.heightMetres),
+                      style::u32(style::col::Text, 0.7f), 1.5f);
+      }
+      continue;
+    }
 
     // Vertical slices with cylindrical shading; each slice follows the wall
     // curvature, so the band is assembled exactly to the vessel silhouette.
@@ -469,7 +513,8 @@ void drawLayers(ImDrawList* draw, const sol::Simulation& sim, const VesselGeomet
   }
 }
 
-void drawDroplets(ImDrawList* draw, const sol::Simulation& sim, const Transform& tf) {
+void drawDroplets(ImDrawList* draw, const sol::Simulation& sim, const Transform& tf,
+                  bool shaded) {
   const int phaseCount = static_cast<int>(sim.phases.size());
   for (const sol::Droplet& droplet : sim.droplets) {
     if (droplet.phase < 0 || droplet.phase >= phaseCount) continue;
@@ -480,7 +525,7 @@ void drawDroplets(ImDrawList* draw, const sol::Simulation& sim, const Transform&
     const ImVec4 dropletColour(phase.colour[0], phase.colour[1], phase.colour[2], alpha);
     const ImU32 fill = ImGui::ColorConvertFloat4ToU32(dropletColour);
     draw->AddCircleFilled(center, radius, fill, 8);
-    if (radius > 2.0f) {
+    if (shaded && radius > 2.0f) {
       // Shaded sphere: dark rim bottom-right, specular dot top-left.
       draw->AddCircle(center, radius, style::u32(style::col::BgDeep, 0.30f), 8,
                       std::max(1.0f, radius * 0.18f));
@@ -491,7 +536,8 @@ void drawDroplets(ImDrawList* draw, const sol::Simulation& sim, const Transform&
   }
 }
 
-void drawCrossSection(const sol::Simulation& sim, ImVec2 regionMin, ImVec2 regionSize) {
+void drawCrossSection(const sol::Simulation& sim, ImVec2 regionMin, ImVec2 regionSize,
+                      bool shaded, float dragOffsetPx = 0.0f) {
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 regionMax(regionMin.x + regionSize.x, regionMin.y + regionSize.y);
   draw->PushClipRect(regionMin, regionMax, true);
@@ -511,15 +557,17 @@ void drawCrossSection(const sol::Simulation& sim, ImVec2 regionMin, ImVec2 regio
     tf.origin.x += ampPx * std::sin(kTwoPi * static_cast<float>(sim.shake.frequencyHz) *
                                     static_cast<float>(sim.elapsed));
   }
+  // Grab-and-shake: while the user drags the vessel it follows the mouse.
+  tf.origin.x += dragOffsetPx;
 
-  drawGroundShadow(draw, geo, tf);
+  if (shaded) drawGroundShadow(draw, geo, tf);
   drawVesselGlass(draw, geo, tf);
   drawGraduation(draw, geo, tf, regionMin);
-  drawLayers(draw, sim, geo, tf);
-  drawGlassHighlights(draw, sim, geo, tf);
+  drawLayers(draw, sim, geo, tf, shaded);
+  if (shaded) drawGlassHighlights(draw, sim, geo, tf);
   drawVesselWall(draw, geo, tf);
   drawFurniture(draw, sim, geo, tf);
-  drawDroplets(draw, sim, tf);
+  drawDroplets(draw, sim, tf, shaded);
   drawReadout(draw, sim, regionMin, regionSize);
 
   draw->PopClipRect();
@@ -910,6 +958,49 @@ void stepSimulation(SolubilityState& s) {
 // Solubility Suite's import payload; the slider owns it afterwards.
 float soluteMassMgUi = 100.0f;
 
+// Which phase counts as aqueous for partition maths. -1 = auto: the phase
+// that IS water when one is present, else the least dense phase (where water
+// sits in a normal water/organic pair -- halogenated solvents sink).
+int aqueousPick = -1;
+
+struct PartitionContext {
+  bool valid = false;
+  int aqueousIndex = 0;
+  double volAq = 0.0;
+  double volOrg = 0.0;
+  double K = 1.0;  // 10^logP
+  std::string organicLabel;
+};
+
+PartitionContext partitionContext(const SolubilityState& s) {
+  PartitionContext ctx;
+  if (!s.soluteValid || s.funnel.phases.size() < 2) return ctx;
+  const sol::Simulation& sim = s.funnel;
+  const size_t count = sim.phases.size();
+
+  int autoIndex = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (sim.phases[i].label.find("ater") != std::string::npos) {  // "Water"/"water"
+      autoIndex = static_cast<int>(i);
+      break;
+    }
+    if (sim.phases[i].density < sim.phases[static_cast<size_t>(autoIndex)].density)
+      autoIndex = static_cast<int>(i);
+  }
+  ctx.aqueousIndex = (aqueousPick >= 0 && static_cast<size_t>(aqueousPick) < count)
+                         ? aqueousPick
+                         : autoIndex;
+  ctx.volAq = sim.phases[static_cast<size_t>(ctx.aqueousIndex)].volumeMl;
+  for (size_t i = 0; i < count; ++i) {
+    if (static_cast<int>(i) == ctx.aqueousIndex) continue;
+    ctx.volOrg += sim.phases[i].volumeMl;
+    if (ctx.organicLabel.empty()) ctx.organicLabel = sim.phases[i].label;
+  }
+  ctx.K = std::pow(10.0, s.solute.logP);
+  ctx.valid = ctx.volAq > 0.0 && ctx.volOrg > 0.0;
+  return ctx;
+}
+
 void colourForFamily(const std::string& family, float out[4]) {
   // Muted lab-liquid tints per solvent family; alpha stays low enough that
   // the vessel wall and interface lines still read through the layer.
@@ -965,7 +1056,8 @@ void consumeExtractionImport(SolubilityState& s) {
 // layers from logP, so the extraction is quantitative rather than just
 // visual.
 void drawSoluteDistribution(const SolubilityState& s) {
-  if (!s.soluteValid || s.funnel.phases.size() < 2) {
+  const PartitionContext ctx = partitionContext(s);
+  if (!ctx.valid) {
     ImGui::TextDisabled("A valid solute and at least two charged phases are required.");
     return;
   }
@@ -974,22 +1066,6 @@ void drawSoluteDistribution(const SolubilityState& s) {
 
   ImGui::TextDisabled("%s  ·  logP %.2f", s.solute.name.c_str(), s.solute.logP);
 
-  // Aqueous phase picker: default the phase that IS water when one is
-  // present; otherwise the least dense phase, which is where water sits in
-  // a normal water/organic pair (halogenated solvents sink).
-  static int aqueousPick = -1;  // -1 = auto
-  int autoIndex = 0;
-  for (size_t i = 0; i < count; ++i) {
-    if (sim.phases[i].label.find("ater") != std::string::npos) {  // "Water"/"water"
-      autoIndex = static_cast<int>(i);
-      break;
-    }
-    if (sim.phases[i].density < sim.phases[static_cast<size_t>(autoIndex)].density)
-      autoIndex = static_cast<int>(i);
-  }
-  const int aq = (aqueousPick >= 0 && static_cast<size_t>(aqueousPick) < count)
-                     ? aqueousPick
-                     : autoIndex;
   const int controlColumns = ImGui::GetContentRegionAvail().x >= 520.0f ? 2 : 1;
   constexpr ImGuiTableFlags controlFlags =
       ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
@@ -1000,9 +1076,9 @@ void drawSoluteDistribution(const SolubilityState& s) {
     ImGui::SetNextItemWidth(std::max(
         1.0f, std::min(220.0f, ImGui::GetContentRegionAvail().x - aqueousLabelWidth)));
     if (ImGui::BeginCombo("Aqueous phase",
-                          sim.phases[static_cast<size_t>(aq)].label.c_str())) {
+                          sim.phases[static_cast<size_t>(ctx.aqueousIndex)].label.c_str())) {
       for (size_t i = 0; i < count; ++i) {
-        const bool selected = static_cast<int>(i) == aq;
+        const bool selected = static_cast<int>(i) == ctx.aqueousIndex;
         if (ImGui::Selectable(sim.phases[i].label.c_str(), selected))
           aqueousPick = static_cast<int>(i);
         if (selected) ImGui::SetItemDefaultFocus();
@@ -1019,19 +1095,8 @@ void drawSoluteDistribution(const SolubilityState& s) {
     ImGui::EndTable();
   }
 
-  // Everything that is not the aqueous phase counts as the organic side; in
-  // the common two-phase case this is exactly the partner layer.
-  double volAq = sim.phases[static_cast<size_t>(aq)].volumeMl;
-  double volOrg = 0.0;
-  std::string organicLabel;
-  for (size_t i = 0; i < count; ++i) {
-    if (static_cast<int>(i) == aq) continue;
-    volOrg += sim.phases[i].volumeMl;
-    if (organicLabel.empty()) organicLabel = sim.phases[i].label;
-  }
-
   const sol::Partition p =
-      sol::partition(static_cast<double>(soluteMassMgUi), s.solute.logP, volAq, volOrg);
+      sol::partition(static_cast<double>(soluteMassMgUi), s.solute.logP, ctx.volAq, ctx.volOrg);
 
   const float avail = ImGui::GetContentRegionAvail().x;
   if (avail <= 0.0f) return;
@@ -1065,7 +1130,91 @@ void drawSoluteDistribution(const SolubilityState& s) {
 
   ImGui::TextDisabled("%.1f%% extracted into %s · Neutral-species logP approximation (no pH "
                       "correction)",
-                      p.fractionOrganic * 100.0, organicLabel.c_str());
+                      p.fractionOrganic * 100.0, ctx.organicLabel.c_str());
+}
+
+// ------------------------------------------------ multi-stage extraction
+// The classic counter-current question: how many washes to strip the solute?
+// Each wash with fresh organic removes the same fraction, so the aqueous
+// remainder after n washes is q^n with q = V_aq / (K V_org + V_aq).
+void drawMultiStageExtraction(const SolubilityState& s) {
+  const PartitionContext ctx = partitionContext(s);
+  if (!ctx.valid) {
+    ImGui::TextDisabled("Load a solute and two phases to plan a wash sequence.");
+    return;
+  }
+
+  const double q = ctx.volAq / (ctx.K * ctx.volOrg + ctx.volAq);  // stays in aqueous
+  const double perWash = 1.0 - q;
+
+  ImGui::TextDisabled("Per-wash recovery E = K·Vorg / (K·Vorg + Vaq)");
+  ImGui::SameLine();
+  const bool mono = style::pushFont(style::fonts::mono());
+  ImGui::TextColored(style::col::Accent, "%.1f%%", perWash * 100.0);
+  style::popFont(mono);
+
+  // Cumulative recovery bars for 1..6 washes, eased toward their targets so
+  // the chart animates when volumes or logP change.
+  constexpr int kMaxWashes = 6;
+  static double heights[kMaxWashes] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  const float dt = std::clamp(ImGui::GetIO().DeltaTime, 0.0f, 0.1f);
+  const float blend = 1.0f - std::exp(-dt * 9.0f);
+
+  const float avail = ImGui::GetContentRegionAvail().x;
+  const float chartH = ImGui::GetFontSize() * 5.6f;
+  const ImVec2 chartMin = ImGui::GetCursorScreenPos();
+  ImGui::Dummy(ImVec2(avail, chartH));
+  const ImVec2 chartMax(chartMin.x + avail, chartMin.y + chartH);
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const style::Metrics& m = style::metrics();
+  dl->AddRectFilled(chartMin, chartMax, style::u32(style::col::BgDeep, 0.55f), m.radiusSm);
+
+  const float labelH = ImGui::GetFontSize() * 1.1f;
+  const float plotH = chartH - labelH - m.gap * 1.4f;
+  const float barSlot = (avail - m.gap * 2.0f) / kMaxWashes;
+  const float barW = std::min(barSlot * 0.62f, 54.0f);
+  const float plotBase = chartMin.y + m.gap * 0.7f + plotH;
+
+  int recommended = 0;
+  for (int n = 1; n <= kMaxWashes; ++n) {
+    const double recovered = 1.0 - std::pow(q, n);
+    if (recommended == 0 && recovered >= 0.99) recommended = n;
+    heights[n - 1] += (recovered - heights[n - 1]) * blend;
+
+    const float x0 = chartMin.x + m.gap + (n - 1) * barSlot + (barSlot - barW) * 0.5f;
+    const float h = static_cast<float>(heights[n - 1]) * plotH;
+    const bool isRecommended = n == recommended;
+    const ImU32 fill = isRecommended
+                           ? style::u32(style::col::Accent, 0.92f)
+                           : style::u32(style::col::Teal, 0.55f + 0.35f * heights[n - 1]);
+    dl->AddRectFilled(ImVec2(x0, plotBase - h), ImVec2(x0 + barW, plotBase), fill,
+                      m.radiusSm, ImDrawFlags_RoundCornersTop);
+    if (isRecommended) {
+      dl->AddRect(ImVec2(x0, plotBase - h), ImVec2(x0 + barW, plotBase),
+                  style::u32(style::col::Accent), m.radiusSm, ImDrawFlags_RoundCornersTop,
+                  m.hairline * 1.5f);
+    }
+
+    char buf[24];
+    std::snprintf(buf, sizeof(buf), "%.0f%%", recovered * 100.0);
+    const ImVec2 pctSize = ImGui::CalcTextSize(buf);
+    dl->AddText(ImVec2(x0 + (barW - pctSize.x) * 0.5f, plotBase - h - pctSize.y - 2.0f),
+                style::u32(style::col::TextDim), buf);
+    std::snprintf(buf, sizeof(buf), "%dx", n);
+    const ImVec2 nSize = ImGui::CalcTextSize(buf);
+    dl->AddText(ImVec2(x0 + (barW - nSize.x) * 0.5f, plotBase + 3.0f),
+                style::u32(style::col::TextFaint), buf);
+  }
+
+  if (recommended > 0) {
+    ImGui::TextDisabled("%d wash%s with fresh %s recovers >= 99%% of the solute.",
+                        recommended, recommended == 1 ? "" : "es",
+                        ctx.organicLabel.c_str());
+  } else {
+    ImGui::TextDisabled("Even 6 washes leave > 1%% behind (q = %.3f) -- raise the organic "
+                        "volume or pick a better solvent.",
+                        q);
+  }
 }
 
 }  // namespace
@@ -1074,6 +1223,16 @@ void drawExtractionLab(AppState& st) {
   SolubilityState& s = st.solubility;
   consumeExtractionImport(s);
   seedDefaultPhases(s.funnel);
+
+  // Two-zone workspace: the cross-section gets a full-height stage on the
+  // right instead of whatever scroll space the control cards left over.
+  // Narrow windows fall back to the classic stacked layout.
+  const float totalW = ImGui::GetContentRegionAvail().x;
+  const bool twoColumns = totalW >= 860.0f;
+
+  if (twoColumns) {
+    ImGui::BeginChild("##ext_controls", ImVec2(totalW * 0.58f, 0.0f), ImGuiChildFlags_None);
+  }
 
   drawControls(s);
   ImGui::Spacing();
@@ -1093,20 +1252,123 @@ void drawExtractionLab(AppState& st) {
   }
   ImGui::Spacing();
 
+  if (widgets::beginCard("##multi_stage_card", ImVec2(0.0f, 0.0f), style::col::BgSurface)) {
+    widgets::sectionHeader("MULTI-STAGE EXTRACTION", style::col::Violet);
+    drawMultiStageExtraction(s);
+    widgets::endCard();
+  }
+  ImGui::Spacing();
+
   stepSimulation(s);
+
+  if (twoColumns) {
+    ImGui::EndChild();
+    ImGui::SameLine(0.0f, style::metrics().gap);
+  }
 
   const ImVec2 remaining = ImGui::GetContentRegionAvail();
   if (remaining.x <= 0.0f || remaining.y <= 0.0f) return;
   if (widgets::beginCard("##cross_section_card", remaining, style::col::BgSurface,
                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
     widgets::sectionHeader("CROSS-SECTION", style::col::Accent);
+    // Render style: flat textbook cross-section by default, shaded glassware
+    // on request. Small segmented control pinned to the header line.
+    {
+      const float btnW = ImGui::CalcTextSize("Shaded").x + style::metrics().gap * 2.2f;
+      ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() -
+                      (btnW * 2.0f + ImGui::GetStyle().ItemSpacing.x));
+      ImGui::PushID("##render_style");
+      const style::Metrics& m = style::metrics();
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      const char* labels[2] = {"2D", "Shaded"};
+      for (int i = 0; i < 2; ++i) {
+        if (i > 0) ImGui::SameLine(0.0f, 2.0f);
+        ImGui::PushID(i);
+        ImGui::InvisibleButton("##style", ImVec2(btnW, ImGui::GetFrameHeight() * 0.9f));
+        const bool clicked = ImGui::IsItemClicked();
+        const bool active = (i == 1) == s.funnelRender3D;
+        const bool hovered = ImGui::IsItemHovered();
+        const ImVec2 bMin = ImGui::GetItemRectMin();
+        const ImVec2 bMax = ImGui::GetItemRectMax();
+        dl->AddRectFilled(bMin, bMax,
+                          active ? style::u32(style::col::Accent, 0.85f)
+                                 : style::u32(style::col::BgRaised, hovered ? 1.0f : 0.6f),
+                          m.radiusSm);
+        const ImVec2 tSize = ImGui::CalcTextSize(labels[i]);
+        dl->AddText(ImVec2(bMin.x + (btnW - tSize.x) * 0.5f,
+                           bMin.y + (bMax.y - bMin.y - tSize.y) * 0.5f),
+                    style::u32(active ? style::col::OnAccent : style::col::TextDim), labels[i]);
+        if (clicked) s.funnelRender3D = (i == 1);
+        ImGui::PopID();
+      }
+      ImGui::PopID();
+    }
     const ImVec2 canvasSize = ImGui::GetContentRegionAvail();
     if (canvasSize.x > 0.0f && canvasSize.y > 0.0f) {
-      ImGui::InvisibleButton("##funnel_canvas", canvasSize, ImGuiButtonFlags_None);
+      ImGui::InvisibleButton("##funnel_canvas", canvasSize, ImGuiButtonFlags_MouseButtonLeft);
       const ImVec2 rectMin = ImGui::GetItemRectMin();
       const ImVec2 rectMax = ImGui::GetItemRectMax();
-      drawCrossSection(s.funnel, rectMin,
-                       ImVec2(rectMax.x - rectMin.x, rectMax.y - rectMin.y));
+
+      // ---- grab-and-shake ----------------------------------------------
+      // Dragging the vessel with the mouse IS the shake: the smoothed drag
+      // velocity becomes the slosh velocity the physics disperses with, and
+      // the vessel follows the pointer while held.
+      sol::Simulation& sim = s.funnel;
+      const VesselGeometry& geo = cachedGeometry(sim.vessel, sim.vesselVolumeMl);
+      const Transform tf0 = buildTransform(geo, rectMin, canvasSize);
+      const float dt = std::clamp(ImGui::GetIO().DeltaTime, 0.0f, 0.1f);
+
+      if (ImGui::IsItemActivated()) {
+        s.funnelGrabbed = true;
+        s.funnelGrabAnchorX = ImGui::GetMousePos().x;
+        s.funnelDragOffsetPx = 0.0f;
+      }
+      if (s.funnelGrabbed && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        s.funnelGrabbed = false;  // released: the shake state decays naturally
+      }
+      if (s.funnelGrabbed) {
+        const float mouseX = ImGui::GetMousePos().x;
+        const float rawOffset = mouseX - s.funnelGrabAnchorX;
+        const float maxOffset = canvasSize.x * 0.12f;
+        const float offset = std::clamp(rawOffset, -maxOffset, maxOffset);
+
+        if (dt > 0.0f) {
+          const float instantVel = std::fabs(offset - s.funnelDragOffsetPx) / dt / tf0.scale;
+          const float blend = 1.0f - std::exp(-dt * 14.0f);
+          s.funnelMouseVel += (instantVel - s.funnelMouseVel) * blend;
+        }
+        s.funnelDragOffsetPx = offset;
+
+        // Drive the physics with the real mouse motion: peak slosh velocity
+        // = smoothed drag velocity; a nominal 5 cm stroke converts it to an
+        // equivalent frequency for the power readout.
+        const double u = static_cast<double>(s.funnelMouseVel);
+        sim.shake.active = true;
+        sim.shake.remainingS = 0.12;  // refreshed per frame; lapses on release
+        sim.shake.durationS = std::max(sim.shake.durationS, 0.12);
+        sim.shake.peakVelocity = u;
+        sim.shake.frequencyHz = u / (2.0 * 3.14159265358979323846 * 0.05);
+        sim.shake.amplitudeM = 0.05;
+        sim.shake.specificPower = 0.5 * u * u * sim.shake.frequencyHz;
+        sol::step(sim, static_cast<double>(dt * s.funnelSpeed));
+      } else {
+        // Ease the vessel back to centre after release.
+        s.funnelDragOffsetPx *= std::exp(-dt * 8.0f);
+        if (std::fabs(s.funnelDragOffsetPx) < 0.5f) s.funnelDragOffsetPx = 0.0f;
+        s.funnelMouseVel *= std::exp(-dt * 10.0f);
+      }
+
+      drawCrossSection(sim, rectMin, ImVec2(rectMax.x - rectMin.x, rectMax.y - rectMin.y),
+                       s.funnelRender3D, s.funnelDragOffsetPx);
+
+      // Hint, bottom-centre of the stage.
+      const char* hint = "grab the funnel and shake it";
+      const ImVec2 hintSize = ImGui::CalcTextSize(hint);
+      ImGui::GetWindowDrawList()->AddText(
+          ImVec2((rectMin.x + rectMax.x - hintSize.x) * 0.5f, rectMax.y - hintSize.y - 6.0f),
+          style::u32(style::col::TextFaint,
+                     s.funnelGrabbed ? 0.9f : 0.45f + 0.25f * std::sin(ImGui::GetTime() * 2.0f)),
+          hint);
     }
     widgets::endCard();
   }

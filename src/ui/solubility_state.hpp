@@ -80,7 +80,15 @@ struct SolubilityState {
   float shakeDurationS = 5.0f;    // s
   float shakeFrequencyHz = 3.0f;  // Hz, 2-4 is a firm hand shake
   float shakeAmplitudeCm = 5.0f;  // cm stroke half-amplitude
+  bool funnelRender3D = false;  // false: flat 2D cross-section (default); true: shaded
   int funnelVessel = 0;  // mirrors sol::Vessel, kept as int for a plain ImGui combo
+
+  // Grab-and-shake: the user drags the vessel itself; the drag velocity is
+  // the slosh velocity. Offset is render-side, velocity feeds the physics.
+  bool funnelGrabbed = false;
+  float funnelGrabAnchorX = 0.0f;  // mouse x at grab, px
+  float funnelDragOffsetPx = 0.0f; // vessel render offset, px
+  float funnelMouseVel = 0.0f;     // smoothed |dx/dt| in vessel m/s
 
   ExtractionImport extractionImport;  // suite -> extraction lab hand-off
 
