@@ -13,6 +13,7 @@ void drawPeriodicTable(AppState&);  // ui/periodic_table.cpp
 void drawPropertiesPanel(AppState&);// ui/properties_panel.cpp
 void drawReactionPlanner(AppState&);// ui/reaction_planner.cpp
 void drawToolbox(AppState&);        // ui/toolbox_view.cpp
+void drawSolventSelector(AppState&);// ui/solvent_selector.cpp
 void drawSolubilitySuite(AppState&);// ui/solubility_suite.cpp
 void drawExtractionLab(AppState&);  // ui/extraction_view.cpp
 void drawViewer3D(AppState&);       // ui/viewer3d_view.cpp

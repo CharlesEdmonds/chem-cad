@@ -14,6 +14,7 @@
 #include "rxn/engine.hpp"
 #include "ui/camera.hpp"
 #include "ui/solubility_state.hpp"
+#include "ui/selection_state.hpp"
 #include "ui/viewer3d_state.hpp"
 
 namespace chemcad::ui {
@@ -171,6 +172,7 @@ struct AppState {
   // Solubility Suite: solvent selection, prediction cache and the separatory
   // funnel simulation. Owned here so the panel survives a tab switch.
   SolubilityState solubility;
+  SelectionState selection;
 
   // 3D molecule viewer: turntable angles and the cached conformer.
   Viewer3DState viewer3d;
