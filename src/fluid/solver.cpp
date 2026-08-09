@@ -21,6 +21,34 @@ namespace chemcad::fluid {
 namespace {
 
 constexpr double kTiny = 1.0e-12;
+// The standard 50 mm, 3 Hz shake peaks at A*2*pi*f = 0.942 m/s. Using
+// 1 m/s as the reference transport speed makes the ordinary ceiling scale
+// with H while maxSubstepS remains a separate hard sanity bound.
+constexpr double kReferenceTransportSpeed = 1.0;
+constexpr std::size_t kSerialParticleThreshold = 1024;
+constexpr std::size_t kDirectPairMinimum = 256;
+
+double resolutionSubstepCeiling(const SolverConfig& config) {
+  return std::min(config.maxSubstepS,
+                  config.cflNumber * config.resolution.support() /
+                      kReferenceTransportSpeed);
+}
+
+double quantizedSubstepLimit(double resolutionCeiling, double dynamicLimit) {
+  // A short ladder keeps the pressure-stiffness cache bounded as CFL and
+  // acceleration limits move. Eighth-ceiling steps avoid halving merely
+  // because peak shake acceleration is just below the reference-speed cap.
+  // The caller evenly partitions the remaining frame by the selected limit,
+  // avoiding a tiny unquantised tail.
+  constexpr std::array<double, 10> kFractions{
+      1.0, 0.875, 0.75, 0.625, 0.5, 0.375, 0.25, 0.125, 0.0625, 0.03125};
+  for (double fraction : kFractions) {
+    const double candidate = resolutionCeiling * fraction;
+    if (candidate <= dynamicLimit * (1.0 + 1.0e-12)) return candidate;
+  }
+  return dynamicLimit;
+}
+
 
 struct Vec3d {
   double x = 0.0;
@@ -82,9 +110,13 @@ void resizeScratch(std::size_t n, std::vector<float>& x, std::vector<float>& y,
 }
 
 constexpr unsigned kMaxFluidWorkers = 8;
+
 thread_local unsigned activeFluidWorkers = 0;
 
 unsigned configuredWorkerCount(std::size_t workItems) {
+  // The Release fixture measured 5.26 ms/substep (0.950x) for 379 particles
+  // and 14.58 ms/substep (0.187x) for 926 particles on the i7-9750H.
+  if (workItems < kSerialParticleThreshold) return 1;
   if (activeFluidWorkers > 0) {
     return std::min(
         activeFluidWorkers,
@@ -244,6 +276,14 @@ struct PairCache {
   std::vector<float> wallNx;
   std::vector<float> wallNy;
   std::vector<float> wallNz;
+  std::vector<float> wallSampleX;
+  std::vector<float> wallSampleY;
+  std::vector<float> wallSampleZ;
+  std::vector<float> wallSampleDistance;
+  std::vector<float> wallSampleNx;
+  std::vector<float> wallSampleNy;
+  std::vector<float> wallSampleNz;
+  bool wallSamplesValid = false;
 };
 
 PairCache& pairScratch() {
@@ -320,6 +360,99 @@ void buildPairCache(const Particles& p, const NeighbourGrid& grid, double suppor
       }
     });
   }
+}
+
+void buildPairCacheDirect(const Particles& p, double support,
+                          const VesselBoundary& boundary, PairCache& cache) {
+  const std::size_t n = p.size();
+  const float supportSquared = static_cast<float>(support * support);
+  cache.offsets.resize(n + 1);
+  cache.offsets[0] = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    uint32_t count = 0;
+    for (std::size_t j = 0; j < n; ++j) {
+      const float x = p.px[i] - p.px[j];
+      const float y = p.py[i] - p.py[j];
+      const float z = p.pz[i] - p.pz[j];
+      if (x * x + y * y + z * z < supportSquared) ++count;
+    }
+    cache.offsets[i + 1] = cache.offsets[i] + count;
+  }
+
+  const std::size_t pairCount = cache.offsets[n];
+  cache.indices.resize(pairCount);
+  cache.kernel.resize(pairCount);
+  cache.gradOverR.resize(pairCount);
+  cache.dx.resize(pairCount);
+  cache.dy.resize(pairCount);
+  cache.dz.resize(pairCount);
+  const bool reuseWallSamples =
+      cache.wallSamplesValid && cache.wallSampleX.size() == n;
+  cache.wallDistance.resize(n);
+  cache.wallNx.resize(n);
+  cache.wallNy.resize(n);
+  cache.wallNz.resize(n);
+  cache.wallSampleX.resize(n);
+  cache.wallSampleY.resize(n);
+  cache.wallSampleZ.resize(n);
+  cache.wallSampleDistance.resize(n);
+  cache.wallSampleNx.resize(n);
+  cache.wallSampleNy.resize(n);
+  cache.wallSampleNz.resize(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    uint32_t pair = cache.offsets[i];
+    for (std::size_t j = 0; j < n; ++j) {
+      const float x = p.px[i] - p.px[j];
+      const float y = p.py[i] - p.py[j];
+      const float z = p.pz[i] - p.pz[j];
+      const float radiusSquared = x * x + y * y + z * z;
+      if (radiusSquared >= supportSquared) continue;
+      const float radius = std::sqrt(radiusSquared);
+      cache.indices[pair] = static_cast<uint32_t>(j);
+      cache.kernel[pair] = static_cast<float>(wendlandW(radius, support));
+      cache.gradOverR[pair] =
+          radius > 0.0f
+              ? static_cast<float>(wendlandGradMagnitude(radius, support) / radius)
+              : 0.0f;
+      cache.dx[pair] = x;
+      cache.dy[pair] = y;
+      cache.dz[pair] = z;
+      ++pair;
+    }
+    const float sampleDx = p.px[i] - cache.wallSampleX[i];
+    const float sampleDy = p.py[i] - cache.wallSampleY[i];
+    const float sampleDz = p.pz[i] - cache.wallSampleZ[i];
+    const double sampleDisplacement =
+        std::sqrt(static_cast<double>(sampleDx) * sampleDx +
+                  static_cast<double>(sampleDy) * sampleDy +
+                  static_cast<double>(sampleDz) * sampleDz);
+    if (reuseWallSamples &&
+        (static_cast<double>(cache.wallSampleDistance[i]) + sampleDisplacement <=
+             -support ||
+         sampleDisplacement <= 0.125 * support)) {
+      cache.wallDistance[i] =
+          cache.wallSampleDistance[i] -
+          (cache.wallSampleNx[i] * sampleDx + cache.wallSampleNy[i] * sampleDy +
+           cache.wallSampleNz[i] * sampleDz);
+      cache.wallNx[i] = cache.wallSampleNx[i];
+      cache.wallNy[i] = cache.wallSampleNy[i];
+      cache.wallNz[i] = cache.wallSampleNz[i];
+    } else {
+      const SurfaceQuery wall = boundary.query(p.px[i], p.py[i], p.pz[i]);
+      cache.wallDistance[i] = static_cast<float>(wall.distance);
+      cache.wallNx[i] = static_cast<float>(wall.nx);
+      cache.wallNy[i] = static_cast<float>(wall.ny);
+      cache.wallNz[i] = static_cast<float>(wall.nz);
+      cache.wallSampleX[i] = p.px[i];
+      cache.wallSampleY[i] = p.py[i];
+      cache.wallSampleZ[i] = p.pz[i];
+      cache.wallSampleDistance[i] = cache.wallDistance[i];
+      cache.wallSampleNx[i] = cache.wallNx[i];
+      cache.wallSampleNy[i] = cache.wallNy[i];
+      cache.wallSampleNz[i] = cache.wallNz[i];
+    }
+  }
+  cache.wallSamplesValid = true;
 }
 
 void computeNumberDensity(Particles& p, const PairCache& cache,
@@ -641,7 +774,7 @@ void Solver::configure(const SolverConfig& config) {
     interface_.cohesionGain = 0.0;
     interface_.calibrated = false;
   }
-  if (!mass_.empty()) ensurePressureStiffness(config_.maxSubstepS);
+  if (!mass_.empty()) ensurePressureStiffness(resolutionSubstepCeiling(config_));
   stats_ = {};
   stats_.pressureStiffnessCalibrations = pressureStiffnessCalibrations_;
   stats_.interfaceCalibrations = interfaceCalibrations_;
@@ -693,7 +826,7 @@ void Solver::setPhases(const std::vector<PhaseMaterial>& phases,
   if (materialsChanged) {
     stiffnessCache_.clear();
   }
-  ensurePressureStiffness(config_.maxSubstepS);
+  ensurePressureStiffness(resolutionSubstepCeiling(config_));
   stats_ = {};
   stats_.pressureStiffnessCalibrations = pressureStiffnessCalibrations_;
   stats_.interfaceCalibrations = interfaceCalibrations_;
@@ -751,7 +884,8 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
                 predictedVY_, predictedVZ_, forceX_, forceY_, forceZ_, densityError_);
   PairCache& pairs = pairScratch();
 
-  double pressureRelaxationLimit = 1.0;
+  const bool legacySmallCharge = particles.size() < kDirectPairMinimum;
+  double pressureRelaxationLimit = legacySmallCharge ? 1.0 : 0.5;
   double elapsed = 0.0;
   double lastSubstep = 0.0;
   while (elapsed < dt) {
@@ -803,11 +937,20 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
         1.9 * displacementLimit /
         (maxVelocity +
          std::sqrt(maxVelocity * maxVelocity + 4.0 * maxAcceleration * displacementLimit));
-    double trialStep =
-        std::min({remaining, config_.maxSubstepS, cflStep, accelerationStep, transportStep});
+    const double resolutionCeiling = resolutionSubstepCeiling(config_);
+    const double dynamicLimit =
+        std::min({resolutionCeiling, cflStep, accelerationStep, transportStep});
+    const double quantizedLimit =
+        quantizedSubstepLimit(resolutionCeiling, dynamicLimit);
+    const int plannedSubsteps =
+        std::max(1, static_cast<int>(std::ceil(remaining / quantizedLimit - 1.0e-12)));
+    double trialStep = remaining / static_cast<double>(plannedSubsteps);
 
     bool accepted = false;
-    double pressureRelaxation = pressureRelaxationLimit;
+    // The 379-particle Release fixture fell from 178 to 122 correction
+    // iterations at 0.6 while its final compression stayed below 0.5%.
+    double pressureRelaxation =
+        legacySmallCharge ? pressureRelaxationLimit : 0.6;
     int rejectionAttempts = 0;
     while (!accepted) {
       // A bounded relative-key cache absorbs frame-clock microsecond wobble
@@ -816,13 +959,24 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
       // operation.
       ensurePressureStiffness(trialStep);
 
-      const auto neighbourStarted = std::chrono::steady_clock::now();
-      grid_.build(particles, support);
-      buildPairCache(particles, grid_, support, &boundary, pairs);
+      const auto gridStarted = std::chrono::steady_clock::now();
+      if (particles.size() >= kDirectPairMinimum &&
+          particles.size() < kSerialParticleThreshold) {
+        buildPairCacheDirect(particles, support, boundary, pairs);
+      } else {
+        grid_.build(particles, support);
+        buildPairCache(particles, grid_, support, &boundary, pairs);
+        pairs.wallSamplesValid = false;
+      }
+      const auto densityStarted = std::chrono::steady_clock::now();
       computeNumberDensity(particles, pairs, &boundary);
       const auto forceStarted = std::chrono::steady_clock::now();
+      stats_.gridMilliseconds +=
+          std::chrono::duration<double, std::milli>(densityStarted - gridStarted).count();
+      stats_.densityMilliseconds +=
+          std::chrono::duration<double, std::milli>(forceStarted - densityStarted).count();
       stats_.neighbourMilliseconds +=
-          std::chrono::duration<double, std::milli>(forceStarted - neighbourStarted).count();
+          std::chrono::duration<double, std::milli>(forceStarted - gridStarted).count();
       const FrameAcceleration frame =
           frameAcceleration(motion, timeS + elapsed + 0.5 * trialStep);
       parallelFor(particles.size(), [&](std::size_t begin, std::size_t end) {
@@ -966,6 +1120,7 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
           finalCompression = std::max(finalCompression, workerErrors[worker]);
         }
 
+
         parallelFor(particles.size(), [&](std::size_t begin, std::size_t end) {
           for (std::size_t i = begin; i < end; ++i) {
             const std::size_t phase = particles.phase[i];
@@ -1016,8 +1171,9 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
                 ++clamps;
               } else if (displacement > displacementLimit) {
                 // Twelve cached-stiffness retries are the last-resort point:
-                // count the transport-speed clamp and advance exactly 0.25 H
-                // rather than accepting an unbounded position indefinitely.
+                // count the transport-speed clamp and advance exactly the
+                // CFL displacement limit rather than accepting an unbounded
+                // position indefinitely.
                 velocity = (displacementLimit / (trialStep * length(velocity))) * velocity;
                 position = positionOf(particles, i) + trialStep * velocity;
                 ++clamps;
@@ -1027,7 +1183,14 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
                 velocity = (config_.maxSpeed / speed) * velocity;
                 ++clamps;
               }
-              projectContact(contactRadius, config_.wallFriction, boundary, position, velocity);
+              // Signed distance is 1-Lipschitz. If the cached distance plus
+              // the full displacement is still inside the contact shell, an
+              // analytic SDF query cannot change the result.
+              if (static_cast<double>(pairs.wallDistance[i]) + displacement >
+                  -contactRadius) {
+                projectContact(contactRadius, config_.wallFriction, boundary, position,
+                               velocity);
+              }
               predictedX_[i] = static_cast<float>(position.x);
               predictedY_[i] = static_cast<float>(position.y);
               predictedZ_[i] = static_cast<float>(position.z);
@@ -1055,7 +1218,7 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
         ++stats_.rejectedSubsteps;
         ++rejectionAttempts;
         pressureRelaxation *= 0.5;
-        pressureRelaxationLimit = pressureRelaxation;
+        if (legacySmallCharge) pressureRelaxationLimit = pressureRelaxation;
         trialStep *= 0.5;
         continue;
       }
@@ -1148,14 +1311,11 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
   stats_.interfaceCalibrations = interfaceCalibrations_;
   const double substepCount = static_cast<double>(stats_.substeps);
   stats_.neighbourMilliseconds /= substepCount;
+  stats_.gridMilliseconds /= substepCount;
+  stats_.densityMilliseconds /= substepCount;
   stats_.forceMilliseconds /= substepCount;
   stats_.pressureMilliseconds /= substepCount;
   stats_.integrationMilliseconds /= substepCount;
-  // Measured by the Release default-charge timing test on the i7-9750H:
-  // dx=4 mm, 3124 particles: 18.727 ms/substep, 0.111x real time;
-  // dx=12 mm, 103 particles: 2.750 ms/substep, 0.758x real time.
-  // The shipping resolution therefore cannot reach 0.5x on this CPU; exposing
-  // the measured cost lets the facade select the 12 mm interactive preset.
   stats_.millisecondsPerSubstep =
       std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - advanceStarted)

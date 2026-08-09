@@ -16,6 +16,16 @@
 
 namespace chemcad::gfx {
 namespace {
+// Five-pass screen-space fluid pipeline:
+//   1. sphere impostors write the nearest linear eye depth and phase fields;
+//   2. adaptive mean-curvature flow smooths that depth at a radius derived from
+//      the projected particle size, without sampling the background;
+//   3. additive sphere chords accumulate an optical thickness for each phase;
+//   4. inverse-projection derivatives reconstruct normals for Beer-Lambert,
+//      phase-tinted lighting, and a particle-scale interface highlight;
+//   5. the analytic vessel shell is blended rear face first, then front face.
+// The passes render off-screen and GlState restores every shared-context state
+// touched here before the ImGui OpenGL backend draws.
 // GL_RGBA32F is core in OpenGL 3.0; keep the token local because gl_api.hpp
 // exposes only the subset shared by the rest of the application.
 constexpr GLenum kRgba32f = 0x8814;
@@ -220,40 +230,109 @@ void main() {
 const char* kBlurFragment = R"GLSL(#version 330 core
 in vec2 vUv;
 uniform sampler2D uSurface;
-uniform vec2 uDirection;
-uniform vec2 uTexel;
+uniform mat4 uInverseProjection;
+uniform vec2 uViewport;
+uniform vec2 uProjectionScale;
+uniform float uParticleRadius;
 layout(location = 0) out vec3 outSurface;
 
+vec3 eyePosition(vec2 uv, float linearDepth) {
+  vec2 ndc = uv * 2.0 - 1.0;
+  vec4 farPoint = uInverseProjection * vec4(ndc, 1.0, 1.0);
+  vec3 ray = farPoint.xyz / farPoint.w;
+  return ray * (linearDepth / max(1.0e-6, -ray.z));
+}
+
+vec3 guardedSample(ivec2 pixel, ivec2 pixelOffset, vec3 centre,
+                   float maximumJump) {
+  ivec2 limit = ivec2(uViewport) - ivec2(1);
+  vec3 sampleSurface =
+      texelFetch(uSurface, clamp(pixel + pixelOffset, ivec2(0), limit), 0).rgb;
+  // A zero depth is the background, not a very distant piece of liquid. A
+  // Neumann boundary (return the centre value) keeps both the silhouette and
+  // phase fields from being pulled toward that sentinel. texelFetch also
+  // prevents bilinear interpolation from manufacturing a false foreground
+  // depth between the liquid and its zero-depth background.
+  if (sampleSurface.x <= 0.0 || abs(sampleSurface.x - centre.x) > maximumJump)
+    return centre;
+  return sampleSurface;
+}
+
 void main() {
-  vec3 centre = texture(uSurface, vUv).rgb;
+  ivec2 pixel = ivec2(gl_FragCoord.xy);
+  vec3 centre = texelFetch(uSurface, pixel, 0).rgb;
   if (centre.x <= 0.0) {
     outSurface = vec3(0.0);
     return;
   }
 
-  // Fixed support and range rejection are the separable bilateral form of the
-  // screen-space smoothing in van der Laan, Green & Sainz, I3D 2009. Applying
-  // the same weights to depth and colour keeps the interface on that surface.
-  const float spatial[5] = float[](1.0, 0.8825, 0.6065, 0.3247, 0.1353);
-  float threshold = max(0.0025, 0.015 * centre.x);
-  vec3 sum = centre * spatial[0];
-  float weight = spatial[0];
-  for (int i = 1; i <= 4; ++i) {
-    for (int signIndex = 0; signIndex < 2; ++signIndex) {
-      float directionSign = signIndex == 0 ? -1.0 : 1.0;
-      vec3 sampleSurface =
-          texture(uSurface, vUv + directionSign * float(i) * uDirection * uTexel).rgb;
-      float difference = abs(sampleSurface.x - centre.x);
-      if (sampleSurface.x > 0.0 && difference < threshold) {
-        float rangeWeight =
-            exp(-difference * difference / max(1.0e-7, 0.18 * threshold * threshold));
-        float w = spatial[i] * rangeWeight;
-        sum += sampleSurface * w;
-        weight += w;
-      }
-    }
-  }
-  outSurface = sum / weight;
+  // Perspective projects R metres to R*f/(2z) pixels. Sampling at 1.25
+  // projected radii makes the curvature stencil cross particle centres at the
+  // coarse dx=2R spacing instead of degenerating to a fixed few-pixel blur.
+  vec2 radiusPixels2 =
+      0.5 * uParticleRadius * abs(uProjectionScale) * uViewport / centre.x;
+  float projectedRadiusPixels =
+      sqrt(max(1.0, radiusPixels2.x * radiusPixels2.y));
+  int stencilRadiusPixels =
+      int(round(clamp(1.25 * projectedRadiusPixels, 1.0, 24.0)));
+  vec2 stepUv = vec2(stencilRadiusPixels) / uViewport;
+
+  // Reject a separate depth layer but retain the full slope of one particle.
+  // This range guard only defines the curvature-flow domain; the smoothing
+  // itself below is the mean-curvature PDE rather than a bilateral average.
+  float maximumJump = max(2.5 * uParticleRadius, 0.012 * centre.x);
+  vec3 left =
+      guardedSample(pixel, ivec2(-stencilRadiusPixels, 0), centre, maximumJump);
+  vec3 right =
+      guardedSample(pixel, ivec2(stencilRadiusPixels, 0), centre, maximumJump);
+  vec3 down =
+      guardedSample(pixel, ivec2(0, -stencilRadiusPixels), centre, maximumJump);
+  vec3 up =
+      guardedSample(pixel, ivec2(0, stencilRadiusPixels), centre, maximumJump);
+  vec3 leftDown = guardedSample(
+      pixel, ivec2(-stencilRadiusPixels, -stencilRadiusPixels), centre, maximumJump);
+  vec3 rightDown = guardedSample(
+      pixel, ivec2(stencilRadiusPixels, -stencilRadiusPixels), centre, maximumJump);
+  vec3 leftUp = guardedSample(
+      pixel, ivec2(-stencilRadiusPixels, stencilRadiusPixels), centre, maximumJump);
+  vec3 rightUp = guardedSample(
+      pixel, ivec2(stencilRadiusPixels, stencilRadiusPixels), centre, maximumJump);
+
+  // Express the depth graph in local eye-space metres before evaluating
+  // z_t = H sqrt(1+|grad z|^2). This is the explicit mean-curvature-flow form
+  // from van der Laan, Green & Sainz rather than an image-space Gaussian.
+  vec3 flatLeft = eyePosition(vUv - vec2(stepUv.x, 0.0), centre.x);
+  vec3 flatRight = eyePosition(vUv + vec2(stepUv.x, 0.0), centre.x);
+  vec3 flatDown = eyePosition(vUv - vec2(0.0, stepUv.y), centre.x);
+  vec3 flatUp = eyePosition(vUv + vec2(0.0, stepUv.y), centre.x);
+  float hx = max(1.0e-6, 0.5 * length(flatRight - flatLeft));
+  float hy = max(1.0e-6, 0.5 * length(flatUp - flatDown));
+
+  float zx = (right.x - left.x) / (2.0 * hx);
+  float zy = (up.x - down.x) / (2.0 * hy);
+  float zxx = (right.x - 2.0 * centre.x + left.x) / (hx * hx);
+  float zyy = (up.x - 2.0 * centre.x + down.x) / (hy * hy);
+  float zxy =
+      (rightUp.x - rightDown.x - leftUp.x + leftDown.x) / (4.0 * hx * hy);
+  float gradient2 = zx * zx + zy * zy;
+  float flow =
+      ((1.0 + zy * zy) * zxx - 2.0 * zx * zy * zxy +
+       (1.0 + zx * zx) * zyy) /
+      (2.0 * (1.0 + gradient2));
+
+  // 0.16*h^2 is below the 2-D explicit diffusion stability limit. The public
+  // default requests four smoothing iterations; two stable PDE steps per
+  // request give eight steps. Their sqrt(N)*1.25R influence spans neighbouring
+  // centres at dx=2R while retaining an interactive, bounded pass count.
+  float flowTime = 0.16 * min(hx * hx, hy * hy);
+  float smoothedDepth = max(1.0e-5, centre.x + flowTime * flow);
+
+  // Transport phase data with the same accepted stencil so colour cannot drift
+  // across a rejected depth layer. Depth itself is updated only by curvature.
+  vec2 attributeMean =
+      (4.0 * centre.yz + left.yz + right.yz + down.yz + up.yz) / 8.0;
+  outSurface =
+      vec3(smoothedDepth, clamp(mix(centre.yz, attributeMean, 0.35), 0.0, 1.0));
 }
 )GLSL";
 
@@ -263,6 +342,9 @@ uniform sampler2D uSurface;
 uniform sampler2D uThickness;
 uniform mat4 uInverseProjection;
 uniform vec2 uTexel;
+uniform vec2 uViewport;
+uniform vec2 uProjectionScale;
+uniform float uParticleRadius;
 uniform vec4 uPhaseA;
 uniform vec4 uPhaseB;
 uniform vec3 uAbsorptionA;
@@ -280,31 +362,66 @@ vec3 eyePosition(vec2 uv, float linearDepth) {
   return ray * (linearDepth / max(1.0e-6, -ray.z));
 }
 
+float projectedParticleRadius(float linearDepth) {
+  vec2 radiusPixels2 =
+      0.5 * uParticleRadius * abs(uProjectionScale) * uViewport / linearDepth;
+  return sqrt(max(1.0, radiusPixels2.x * radiusPixels2.y));
+}
+
 void main() {
-  vec3 surface = texture(uSurface, vUv).rgb;
+  ivec2 pixel = ivec2(gl_FragCoord.xy);
+  ivec2 limit = ivec2(uViewport) - ivec2(1);
+  vec3 surface = texelFetch(uSurface, pixel, 0).rgb;
   float depth = surface.x;
   if (depth <= 0.0) {
     outColour = vec4(uBackground, 1.0);
     return;
   }
 
-  vec3 surfaceL = texture(uSurface, vUv - vec2(uTexel.x, 0.0)).rgb;
-  vec3 surfaceR = texture(uSurface, vUv + vec2(uTexel.x, 0.0)).rgb;
-  vec3 surfaceD = texture(uSurface, vUv - vec2(0.0, uTexel.y)).rgb;
-  vec3 surfaceU = texture(uSurface, vUv + vec2(0.0, uTexel.y)).rgb;
-  surfaceL = surfaceL.x > 0.0 ? surfaceL : surface;
-  surfaceR = surfaceR.x > 0.0 ? surfaceR : surface;
-  surfaceD = surfaceD.x > 0.0 ? surfaceD : surface;
-  surfaceU = surfaceU.x > 0.0 ? surfaceU : surface;
+  vec2 offsetX = vec2(uTexel.x, 0.0);
+  vec2 offsetY = vec2(0.0, uTexel.y);
+  vec3 surfaceL =
+      texelFetch(uSurface, clamp(pixel + ivec2(-1, 0), ivec2(0), limit), 0).rgb;
+  vec3 surfaceR =
+      texelFetch(uSurface, clamp(pixel + ivec2(1, 0), ivec2(0), limit), 0).rgb;
+  vec3 surfaceD =
+      texelFetch(uSurface, clamp(pixel + ivec2(0, -1), ivec2(0), limit), 0).rgb;
+  vec3 surfaceU =
+      texelFetch(uSurface, clamp(pixel + ivec2(0, 1), ivec2(0), limit), 0).rgb;
+  bool haveL = surfaceL.x > 0.0;
+  bool haveR = surfaceR.x > 0.0;
+  bool haveD = surfaceD.x > 0.0;
+  bool haveU = surfaceU.x > 0.0;
 
   vec3 positionEye = eyePosition(vUv, depth);
-  vec3 tangentX = eyePosition(vUv + vec2(uTexel.x, 0.0), surfaceR.x) -
-                  eyePosition(vUv - vec2(uTexel.x, 0.0), surfaceL.x);
-  vec3 tangentY = eyePosition(vUv + vec2(0.0, uTexel.y), surfaceU.x) -
-                  eyePosition(vUv - vec2(0.0, uTexel.y), surfaceD.x);
+  vec3 tangentX;
+  if (haveL && haveR) {
+    tangentX = eyePosition(vUv + offsetX, surfaceR.x) -
+               eyePosition(vUv - offsetX, surfaceL.x);
+  } else if (haveR) {
+    tangentX = eyePosition(vUv + offsetX, surfaceR.x) - positionEye;
+  } else if (haveL) {
+    tangentX = positionEye - eyePosition(vUv - offsetX, surfaceL.x);
+  } else {
+    tangentX = eyePosition(vUv + offsetX, depth) -
+               eyePosition(vUv - offsetX, depth);
+  }
+  vec3 tangentY;
+  if (haveD && haveU) {
+    tangentY = eyePosition(vUv + offsetY, surfaceU.x) -
+               eyePosition(vUv - offsetY, surfaceD.x);
+  } else if (haveU) {
+    tangentY = eyePosition(vUv + offsetY, surfaceU.x) - positionEye;
+  } else if (haveD) {
+    tangentY = positionEye - eyePosition(vUv - offsetY, surfaceD.x);
+  } else {
+    tangentY = eyePosition(vUv + offsetY, depth) -
+               eyePosition(vUv - offsetY, depth);
+  }
+  // Each derivative uses exact inverse-projected eye positions. At a silhouette
+  // it switches to a foreground one-sided derivative (or a same-depth tangent),
+  // so a zero-depth background texel can never enter the reconstructed normal.
   vec3 normalEye = normalize(cross(tangentX, tangentY));
-  // Screen-space winding can flip after projection; face the reconstructed
-  // normal toward the eye so diffuse and Fresnel terms cannot black out a surface.
   if (normalEye.z < 0.0) normalEye = -normalEye;
 
   vec3 viewDirection = normalize(-positionEye);
@@ -314,45 +431,71 @@ void main() {
   float specular = pow(max(dot(normalEye, halfDirection), 0.0), 72.0);
 
   // Schlick's approximation preserves the grazing-angle rise of a dielectric
-  // interface without pretending that the display colours are optical IOR data.
+  // interface without pretending that display colours are optical IOR data.
   float cosTheta = clamp(dot(normalEye, viewDirection), 0.0, 1.0);
   float fresnel = 0.020 + 0.980 * pow(1.0 - cosTheta, 5.0);
   float rim = pow(1.0 - cosTheta, 2.4);
 
-  // Base hue follows the actual surface particle phase; the continuous solver
-  // indicator is reserved for locating the interface rather than muddying phases.
-  float phase = step(0.5, clamp(surface.y, 0.0, 1.0));
-  vec4 liquid = mix(uPhaseA, uPhaseB, phase);
+  float surfacePhase = step(0.5, clamp(surface.y, 0.0, 1.0));
+  vec3 surfaceTint = mix(uPhaseA.rgb, uPhaseB.rgb, surfacePhase);
   vec2 thicknessM = max(texture(uThickness, vUv).rg, vec2(0.0));
-  // Beer-Lambert T = exp(-mu L): thickness is already in metres and mu is 1/m.
-  // Keeping that unit contract explicit avoids the 1000x millimetre black bias.
-  vec3 transmission =
-      exp(-uAbsorptionScale *
-          (uAbsorptionA * thicknessM.x + uAbsorptionB * thicknessM.y));
+  float strength = max(uAbsorptionScale, 0.0);
+
+  // Each phase gets its own Beer-Lambert optical depth in metres. The CPU
+  // derives coefficients from a 25 mm reference cuvette, so a 30-40 mm layer
+  // reaches visible saturation instead of requiring a metre-scale path.
+  vec3 transmissionA = exp(-strength * uAbsorptionA * thicknessM.x);
+  vec3 transmissionB = exp(-strength * uAbsorptionB * thicknessM.y);
+  vec3 transmission = transmissionA * transmissionB;
+  float coverageA = 1.0 - dot(transmissionA, vec3(1.0 / 3.0));
+  float coverageB = 1.0 - dot(transmissionB, vec3(1.0 / 3.0));
+  float presenceA = 1.0 - exp(-strength * thicknessM.x / 0.012);
+  float presenceB = 1.0 - exp(-strength * thicknessM.y / 0.012);
+
+  // Optical coverage weights the identity colour independently per phase. A
+  // thick phase therefore dominates its own layer rather than both extinction
+  // spectra collapsing the result toward grey; the presence term keeps a thin
+  // film identifiable before it has accumulated much absorption.
+  float identityWeightA = coverageA + 0.14 * presenceA;
+  float identityWeightB = coverageB + 0.14 * presenceB;
+  float identityWeight = identityWeightA + identityWeightB;
+  vec3 phaseTint =
+      identityWeight > 1.0e-5
+          ? (uPhaseA.rgb * identityWeightA + uPhaseB.rgb * identityWeightB) /
+                identityWeight
+          : surfaceTint;
+  float absorptionCoverage = 1.0 - dot(transmission, vec3(1.0 / 3.0));
+  float totalPresence = 1.0 - exp(-strength * (thicknessM.x + thicknessM.y) / 0.012);
 
   vec3 refractedBackground = uBackground * (0.92 + 0.18 * normalEye.x);
-  float absorptionCoverage = 1.0 - dot(transmission, vec3(1.0 / 3.0));
-  // Transmission remains spectrally per-phase, while a small tinted scattering
-  // term preserves configured liquid hue against the dark laboratory backdrop.
-  // Its coverage dependence keeps a thin film pale and a 100 mL layer saturated.
-  vec3 body = refractedBackground * transmission +
-              liquid.rgb * (0.08 + 0.72 * absorptionCoverage);
-  body *= 0.34 + 0.66 * diffuse;
-  // A diffuse/ambient floor preserves the phase hue even where the key light
-  // misses; a readable laboratory liquid must not collapse to silhouette black.
-  body = max(body, vec3(0.035) + 0.12 * liquid.rgb);
+  vec3 body = refractedBackground * transmission;
+  body += phaseTint * (0.08 * totalPresence + 0.62 * absorptionCoverage) *
+          (0.38 + 0.62 * diffuse);
+  // The small phase-tinted diffuse term reveals thin films, while this ambient
+  // floor prevents an unlit part of either liquid from becoming pure black.
+  body += phaseTint * (0.10 * totalPresence) * (0.35 + 0.65 * diffuse);
+  body = max(body, vec3(0.015) + phaseTint * (0.035 + 0.08 * totalPresence));
   body += vec3(1.0) * (0.72 * specular + 0.24 * fresnel);
-  body += liquid.rgb * (0.18 * rim);
+  body += phaseTint * (0.18 * rim);
 
   float indicator = clamp(surface.z, 0.0, 1.0);
+  float indicatorL = haveL ? surfaceL.z : indicator;
+  float indicatorR = haveR ? surfaceR.z : indicator;
+  float indicatorD = haveD ? surfaceD.z : indicator;
+  float indicatorU = haveU ? surfaceU.z : indicator;
   vec2 indicatorGradient =
-      0.5 * vec2(surfaceR.z - surfaceL.z, surfaceU.z - surfaceD.z);
+      0.5 * vec2(indicatorR - indicatorL, indicatorU - indicatorD);
   float gradientStrength = length(indicatorGradient);
-  // Dividing distance from 0.5 by the local indicator slope makes a roughly
-  // one-pixel band exactly where the smoothed A/B field crosses its interface.
-  float interfaceDistance = abs(indicator - 0.5) / max(gradientStrength, 1.0e-4);
-  float interfaceBand = (1.0 - smoothstep(0.25, 1.25, interfaceDistance)) *
-                        smoothstep(0.004, 0.06, gradientStrength);
+  float interfaceDistancePixels =
+      abs(indicator - 0.5) / max(gradientStrength, 1.0e-4);
+  // About 18% of the projected particle radius produces a thin meniscus band:
+  // it scales with zoom and resolution, but is clamped to remain subtle.
+  float interfaceWidthPixels =
+      clamp(0.18 * projectedParticleRadius(depth), 1.0, 3.5);
+  float interfaceBand =
+      (1.0 - smoothstep(0.45 * interfaceWidthPixels, interfaceWidthPixels,
+                        interfaceDistancePixels)) *
+      smoothstep(0.003, 0.045, gradientStrength);
   body += uShowInterface * interfaceBand * vec3(0.18, 0.22, 0.28);
 
   // Exposure is a true linear multiplier around 1.0. The fixed shoulder only
@@ -361,12 +504,13 @@ void main() {
   vec3 exposed = max(uExposure, 0.0) * max(body, vec3(0.0));
   body = pow(exposed / (vec3(1.0) + exposed), vec3(1.0 / 2.2));
 
-  float alpha = clamp(max(liquid.a * (0.18 + 0.82 * absorptionCoverage),
-                          0.08 + 0.30 * fresnel + 0.14 * rim),
-                      0.0, 0.985);
+  float maximumAlpha = max(uPhaseA.a, uPhaseB.a);
+  float alpha =
+      clamp(max(maximumAlpha * (0.18 + 0.82 * absorptionCoverage),
+                0.08 + 0.30 * fresnel + 0.14 * rim),
+            0.0, 0.985);
   // Resolve the liquid once against the stage background and keep the texture
-  // opaque. ImGui would otherwise apply alpha a second time, recreating the
-  // near-black bias and making transparent glass rims disappear.
+  // opaque. ImGui would otherwise apply alpha a second time.
   outColour = vec4(mix(uBackground, body, alpha), 1.0);
 }
 )GLSL";
@@ -615,14 +759,19 @@ struct FluidRenderer::Impl {
   } depthUniforms, thicknessUniforms;
   struct BlurUniforms {
     GLint surface = -1;
-    GLint direction = -1;
-    GLint texel = -1;
+    GLint inverseProjection = -1;
+    GLint viewport = -1;
+    GLint projectionScale = -1;
+    GLint particleRadius = -1;
   } blurUniforms;
   struct ShadeUniforms {
     GLint surface = -1;
     GLint thickness = -1;
     GLint inverseProjection = -1;
     GLint texel = -1;
+    GLint viewport = -1;
+    GLint projectionScale = -1;
+    GLint particleRadius = -1;
     GLint phaseA = -1;
     GLint phaseB = -1;
     GLint absorptionA = -1;
@@ -702,13 +851,18 @@ struct FluidRenderer::Impl {
                          glGetUniformLocation(thicknessProgram, "uProjection"),
                          glGetUniformLocation(thicknessProgram, "uRadius")};
     blurUniforms = {glGetUniformLocation(blurProgram, "uSurface"),
-                    glGetUniformLocation(blurProgram, "uDirection"),
-                    glGetUniformLocation(blurProgram, "uTexel")};
+                    glGetUniformLocation(blurProgram, "uInverseProjection"),
+                    glGetUniformLocation(blurProgram, "uViewport"),
+                    glGetUniformLocation(blurProgram, "uProjectionScale"),
+                    glGetUniformLocation(blurProgram, "uParticleRadius")};
     shadeUniforms = {
         glGetUniformLocation(shadeProgram, "uSurface"),
         glGetUniformLocation(shadeProgram, "uThickness"),
         glGetUniformLocation(shadeProgram, "uInverseProjection"),
         glGetUniformLocation(shadeProgram, "uTexel"),
+        glGetUniformLocation(shadeProgram, "uViewport"),
+        glGetUniformLocation(shadeProgram, "uProjectionScale"),
+        glGetUniformLocation(shadeProgram, "uParticleRadius"),
         glGetUniformLocation(shadeProgram, "uPhaseA"),
         glGetUniformLocation(shadeProgram, "uPhaseB"),
         glGetUniformLocation(shadeProgram, "uAbsorptionA"),
@@ -809,10 +963,12 @@ struct FluidRenderer::Impl {
     for (int i = 0; i < 32 && glGetError() != GL_NO_ERROR; ++i) {}
     allocateTexture(rawSurfaceTexture, static_cast<GLint>(kRgba32f), GL_RGBA, GL_FLOAT,
                     GL_NEAREST, width, height);
-    allocateTexture(blurTexture[0], static_cast<GLint>(kRgba32f), GL_RGBA, GL_FLOAT, GL_LINEAR,
-                    width, height);
-    allocateTexture(blurTexture[1], static_cast<GLint>(kRgba32f), GL_RGBA, GL_FLOAT, GL_LINEAR,
-                    width, height);
+    // Depth/phase fields use exact texel fetches: interpolation across the
+    // zero-depth silhouette would create geometry that no particle contributed.
+    allocateTexture(blurTexture[0], static_cast<GLint>(kRgba32f), GL_RGBA, GL_FLOAT,
+                    GL_NEAREST, width, height);
+    allocateTexture(blurTexture[1], static_cast<GLint>(kRgba32f), GL_RGBA, GL_FLOAT,
+                    GL_NEAREST, width, height);
     allocateTexture(thicknessTexture, static_cast<GLint>(GL_RG16F), GL_RG, GL_FLOAT, GL_LINEAR,
                     width, height);
     allocateTexture(compositeTexture, static_cast<GLint>(GL_RGBA8), GL_RGBA, GL_UNSIGNED_BYTE,
@@ -991,34 +1147,34 @@ struct FluidRenderer::Impl {
     glBindVertexArray(particleVao);
     glDrawArraysInstanced(GL_TRIANGLES, 0, 6, particleCount);
 
-    // Pass 2: separable bilateral smoothing, ping-ponged for each iteration.
+    // Pass 2: adaptive mean-curvature flow, ping-ponged once per stable PDE step.
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
     glDisable(GL_BLEND);
     glUseProgram(blurProgram);
     glUniform1i(blurUniforms.surface, 0);
-    glUniform2f(blurUniforms.texel, 1.0f / static_cast<float>(width),
-                1.0f / static_cast<float>(height));
+    glUniformMatrix4fv(blurUniforms.inverseProjection, 1, GL_FALSE,
+                       inverseProjection.data());
+    glUniform2f(blurUniforms.viewport, static_cast<float>(width),
+                static_cast<float>(height));
+    glUniform2f(blurUniforms.projectionScale, projection[0], projection[5]);
+    glUniform1f(blurUniforms.particleRadius, radius);
     glBindVertexArray(fullscreenVao);
     GLuint smoothedSurface = rawSurfaceTexture;
-    const int smoothingPasses = settings.showParticles
-                                    ? 0
-                                    : std::clamp(static_cast<int>(std::lround(
-                                                     settings.smoothingIterations)),
-                                                 0, 12);
-    for (int iteration = 0; iteration < smoothingPasses; ++iteration) {
-      glBindFramebuffer(GL_FRAMEBUFFER, blurFbo[0]);
+    const int requestedSmoothingIterations =
+        settings.showParticles
+            ? 0
+            : std::clamp(
+                  static_cast<int>(std::lround(settings.smoothingIterations)), 0, 12);
+    const int curvatureSteps = 2 * requestedSmoothingIterations;
+    for (int step = 0; step < curvatureSteps; ++step) {
+      const int destination = step & 1;
+      glBindFramebuffer(GL_FRAMEBUFFER, blurFbo[destination]);
       glDrawBuffers(1, &colourAttachment);
       glActiveTexture(GL_TEXTURE0);
       glBindTexture(GL_TEXTURE_2D, smoothedSurface);
-      glUniform2f(blurUniforms.direction, 1.0f, 0.0f);
       glDrawArrays(GL_TRIANGLES, 0, 3);
-
-      glBindFramebuffer(GL_FRAMEBUFFER, blurFbo[1]);
-      glBindTexture(GL_TEXTURE_2D, blurTexture[0]);
-      glUniform2f(blurUniforms.direction, 0.0f, 1.0f);
-      glDrawArrays(GL_TRIANGLES, 0, 3);
-      smoothedSurface = blurTexture[1];
+      smoothedSurface = blurTexture[destination];
     }
 
     // Pass 3: per-phase Beer-Lambert optical path, accumulated additively.
@@ -1053,6 +1209,10 @@ struct FluidRenderer::Impl {
     glUniformMatrix4fv(shadeUniforms.inverseProjection, 1, GL_FALSE, inverseProjection.data());
     glUniform2f(shadeUniforms.texel, 1.0f / static_cast<float>(width),
                 1.0f / static_cast<float>(height));
+    glUniform2f(shadeUniforms.viewport, static_cast<float>(width),
+                static_cast<float>(height));
+    glUniform2f(shadeUniforms.projectionScale, projection[0], projection[5]);
+    glUniform1f(shadeUniforms.particleRadius, radius);
 
     const auto phaseA = phaseColour(snapshot, 0, {0.25f, 0.55f, 0.90f, 0.82f});
     const auto phaseB = phaseColour(snapshot, 1, {0.92f, 0.58f, 0.18f, 0.82f});

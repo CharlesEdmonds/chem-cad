@@ -640,7 +640,8 @@ std::string Simulation::statusLine() const {
        << "dx " << state->particleRadiusM * 2000.0 << " mm | "
        << state->px.size() << " particles | ";
   if (state->elapsedS > 0.0) {
-    text << stats->substeps << " substeps | worst compression "
+    text << stats->substeps << " substeps, " << stats->pressureIterations
+         << " pressure iterations | worst compression "
          << stats->maxDensityCompression * 100.0 << "%, deficit "
          << stats->maxDensityDeficit * 100.0 << "% | "
          << std::setprecision(2) << stats->millisecondsPerSubstep << " ms/substep | ";

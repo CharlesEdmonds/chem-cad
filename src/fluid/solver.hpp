@@ -49,10 +49,10 @@ struct SolverConfig {
   Resolution resolution;
   double densityTolerance = 5.0e-3;  // maximum compression (delta/delta0 - 1)
   int minPressureIterations = 3;
-  int maxPressureIterations = 8;
+  int maxPressureIterations = 32;
   double cflNumber = 0.4;            // dt <= cfl * H / v_max
   double accelerationSafety = 0.25;  // dt <= safety * sqrt(H / a_max)
-  double maxSubstepS = 1.0 / 480.0;
+  double maxSubstepS = 1.0 / 60.0;  // hard sanity ceiling; resolution sets the normal cap
   double maxSpeed = 4.0;             // m/s, hard clamp against blow-up
   double contactRadiusFactor = 0.35; // wall contact distance, in units of spacing
   double wallFriction = 0.05;        // tangential loss at the glass
@@ -110,7 +110,9 @@ class Solver {
     double maxSpeed = 0.0;               // m/s
     double substepS = 0.0;               // last substep length
     double millisecondsPerSubstep = 0.0; // wall cost over the latest advance
-    double neighbourMilliseconds = 0.0;  // grid, pairs, and initial density
+    double neighbourMilliseconds = 0.0;  // compatibility: grid + density
+    double gridMilliseconds = 0.0;       // neighbour grid and pair-cache build
+    double densityMilliseconds = 0.0;    // initial number-density gather
     double forceMilliseconds = 0.0;      // frame, viscosity, and interface
     double pressureMilliseconds = 0.0;   // prediction-correction iterations
     double integrationMilliseconds = 0.0;
