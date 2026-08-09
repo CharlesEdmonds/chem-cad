@@ -54,28 +54,37 @@ void Camera3D::orbit(float dxPixels, float dyPixels) {
 }
 
 void Camera3D::zoom(float wheelSteps) {
-  // Exponential zoom makes equal wheel travel feel equal at every scale.
-  distanceM = std::clamp(distanceM * std::exp(-0.12f * wheelSteps), 0.15f, 2.0f);
+  // Exponential zoom makes equal wheel travel feel equal at every scale. frame()
+  // keeps its fit distance as the geometric midpoint of the clip planes, so the
+  // limits scale with this vessel instead of assuming an absolute metre range.
+  const float frameDistance =
+      std::sqrt(std::max(nearM, 1.0e-6f) * std::max(farM, 1.0e-6f));
+  distanceM = std::clamp(distanceM * std::exp(-0.12f * wheelSteps),
+                         0.55f * frameDistance, 2.8f * frameDistance);
 }
 
 void Camera3D::frame(double vesselHeightM, double maxRadiusM, float aspect) {
   const float height = std::max(0.001f, static_cast<float>(vesselHeightM));
   const float radius = std::max(0.0005f, static_cast<float>(maxRadiusM));
+  // The orbit belongs at the vessel mid-height; targeting its base is the
+  // perceptual reason a correctly sized apparatus still looks off-centre.
   targetZM = 0.5f * height;
 
   const float verticalHalfFov = 0.5f * radians(std::clamp(fovDeg, 5.0f, 150.0f));
+  const float tangent = std::max(std::tan(verticalHalfFov), 1.0e-3f);
   const float safeAspect = std::max(aspect, 0.05f);
-  const float horizontalHalfFov = std::atan(std::tan(verticalHalfFov) * safeAspect);
-  const float limitingHalfFov = std::max(0.01f, std::min(verticalHalfFov, horizontalHalfFov));
 
-  // A sphere enclosing the complete vessel fits for every orbit angle. The
-  // sin relation is the exact tangent distance to a sphere, rather than the
-  // planar height/tan approximation, and the 10 percent margin keeps glass
-  // highlights clear of the panel edge.
-  const float boundRadius = 1.10f * std::sqrt(0.25f * height * height + radius * radius);
-  distanceM = std::clamp(boundRadius / std::sin(limitingHalfFov), 0.15f, 2.0f);
-  nearM = std::max(0.002f, distanceM - 1.25f * boundRadius);
-  farM = std::max(nearM + 0.1f, distanceM + 1.25f * boundRadius);
+  // Fit height and diameter independently in perspective, then honour the
+  // tighter axis. This fills wide viewports without the over-conservative
+  // enclosing sphere while a 12 percent margin keeps the glass rim in frame.
+  const float verticalDistance = (0.5f * height) / tangent;
+  const float horizontalDistance = radius / (tangent * safeAspect);
+  distanceM = std::max(0.0032f, 1.12f * std::max(verticalDistance, horizontalDistance));
+
+  // Symmetric logarithmic clip limits both contain every allowed zoom and retain
+  // the framing distance as sqrt(near*far), without adding hidden camera state.
+  nearM = distanceM / 32.0f;
+  farM = distanceM * 32.0f;
 }
 
 std::array<float, 3> Camera3D::eye() const {

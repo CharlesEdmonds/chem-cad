@@ -71,7 +71,15 @@ class Simulation {
   void setPose(const Pose&, const std::array<double, 3>& angularVelocity,
                const std::array<double, 3>& angularAcceleration);
 
-  // Advances the physics by `dt` seconds. Safe to call from a worker thread.
+  // Queues simulated time for the dedicated physics worker. Requests coalesce
+  // into a bounded backlog, so this call never waits for a solve in flight.
+  void requestAdvance(double simulatedSeconds);
+  bool stepping() const;
+  double pendingSeconds() const;
+  void waitForIdle();
+
+  // Synchronous compatibility path for tests and batch callers. It uses the
+  // same worker integration path as requestAdvance(), then waits for completion.
   void advance(double dt);
 
   // ---- reading --------------------------------------------------------
@@ -82,6 +90,9 @@ class Simulation {
   const Solver::Stats& solverStats() const;
   double elapsedS() const;
   bool shaking() const;
+  // Ratio of simulated time completed to wall time spent on the latest solve.
+  // Values below one mean physics is deliberately advancing slower than real time.
+  double realTimeFactor() const;
 
   // Total charged volume, mL, and the per-phase charge.
   double totalVolumeMl() const;

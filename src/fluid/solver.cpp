@@ -1,11 +1,14 @@
 #include "fluid/solver.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <cstdlib>
 #include <stdexcept>
 #include <vector>
+#include <thread>
 
 #include "fluid/kernels.hpp"
 
@@ -73,39 +76,193 @@ void resizeScratch(std::size_t n, std::vector<float>& x, std::vector<float>& y,
   error.resize(n);
 }
 
-void computeNumberDensity(Particles& p, const NeighbourGrid& grid, const VesselBoundary* boundary,
-                          double support) {
-  for (std::size_t i = 0; i < p.size(); ++i) {
-    const Vec3d pi = positionOf(p, i);
-    double delta = 0.0;
-    grid.forEachCandidate(i, [&](std::size_t j) {
-      const Vec3d r = pi - positionOf(p, j);
-      const double radius = length(r);
-      if (radius < support) delta += wendlandW(radius, support);
+constexpr unsigned kMaxFluidWorkers = 8;
+
+unsigned configuredWorkerCount(std::size_t workItems) {
+  unsigned requested = std::thread::hardware_concurrency();
+  unsigned overrideWorkers = 0;
+#ifdef _WIN32
+  char* text = nullptr;
+  std::size_t textLength = 0;
+  if (_dupenv_s(&text, &textLength, "CHEMCAD_FLUID_WORKERS") == 0 && text != nullptr) {
+    overrideWorkers = static_cast<unsigned>(std::strtoul(text, nullptr, 10));
+    std::free(text);
+  }
+#else
+  if (const char* text = std::getenv("CHEMCAD_FLUID_WORKERS")) {
+    overrideWorkers = static_cast<unsigned>(std::strtoul(text, nullptr, 10));
+  }
+#endif
+  if (overrideWorkers > 0) {
+    const unsigned availableItems =
+        static_cast<unsigned>(std::max<std::size_t>(1, workItems));
+    return std::clamp(overrideWorkers, 1U,
+                      std::min(kMaxFluidWorkers, availableItems));
+  }
+  if (requested == 0) requested = 1;
+  const unsigned useful =
+      static_cast<unsigned>(std::max<std::size_t>(1, (workItems + 255) / 256));
+  return std::clamp(requested, 1U, std::min(kMaxFluidWorkers, useful));
+}
+template <typename Fn>
+void parallelForWorkers(std::size_t count, unsigned workers, Fn&& fn) {
+  std::array<std::thread, kMaxFluidWorkers - 1> threads;
+  for (unsigned worker = 1; worker < workers; ++worker) {
+    threads[worker - 1] = std::thread([&, worker] {
+      fn(worker, count * worker / workers, count * (worker + 1) / workers);
     });
-    if (boundary != nullptr) {
-      delta += boundary->boundaryDensity(boundary->query(pi.x, pi.y, pi.z).distance);
+  }
+  fn(0, 0, count / workers);
+  for (unsigned worker = 1; worker < workers; ++worker) threads[worker - 1].join();
+}
+
+
+template <typename Fn>
+void parallelFor(std::size_t count, Fn&& fn) {
+  parallelForWorkers(count, configuredWorkerCount(count),
+                     [&](unsigned, std::size_t begin, std::size_t end) { fn(begin, end); });
+}
+
+struct PairCache {
+  std::vector<uint32_t> offsets;
+  std::vector<uint32_t> indices;
+  std::vector<float> kernel;
+  std::vector<float> gradOverR;
+  std::vector<float> dx;
+  std::vector<float> dy;
+  std::vector<float> dz;
+  std::vector<float> wallDistance;
+  std::vector<float> wallNx;
+  std::vector<float> wallNy;
+  std::vector<float> wallNz;
+};
+
+PairCache& pairScratch() {
+  // Simulation::advance owns one solver per worker thread. Thread-local
+  // storage therefore keeps capacity across UI jobs without cross-solver
+  // locking or allocations in any pair loop.
+  thread_local PairCache cache;
+  return cache;
+}
+
+void buildPairCache(const Particles& p, const NeighbourGrid& grid, double support,
+                    const VesselBoundary* boundary, PairCache& cache) {
+  const std::size_t n = p.size();
+  cache.offsets.resize(n + 1);
+  const float supportSquared = static_cast<float>(support * support);
+  parallelFor(n, [&](std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      uint32_t count = 0;
+      grid.forEachCandidate(i, [&](std::size_t j) {
+        const float x = p.px[i] - p.px[j];
+        const float y = p.py[i] - p.py[j];
+        const float z = p.pz[i] - p.pz[j];
+        if (x * x + y * y + z * z < supportSquared) ++count;
+      });
+      cache.offsets[i + 1] = count;
     }
-    p.delta[i] = static_cast<float>(delta);
+  });
+  cache.offsets[0] = 0;
+  for (std::size_t i = 0; i < n; ++i) cache.offsets[i + 1] += cache.offsets[i];
+  const std::size_t pairCount = cache.offsets[n];
+  cache.indices.resize(pairCount);
+  cache.kernel.resize(pairCount);
+  cache.gradOverR.resize(pairCount);
+  cache.dx.resize(pairCount);
+  cache.dy.resize(pairCount);
+  cache.dz.resize(pairCount);
+  cache.wallDistance.resize(n);
+  cache.wallNx.resize(n);
+  cache.wallNy.resize(n);
+  cache.wallNz.resize(n);
+
+  parallelFor(n, [&](std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      uint32_t pair = cache.offsets[i];
+      grid.forEachCandidate(i, [&](std::size_t j) {
+        const float x = p.px[i] - p.px[j];
+        const float y = p.py[i] - p.py[j];
+        const float z = p.pz[i] - p.pz[j];
+        const float radiusSquared = x * x + y * y + z * z;
+        if (radiusSquared >= supportSquared) return;
+        const float radius = std::sqrt(radiusSquared);
+        cache.indices[pair] = static_cast<uint32_t>(j);
+        cache.kernel[pair] = static_cast<float>(wendlandW(radius, support));
+        cache.gradOverR[pair] =
+            radius > 0.0f
+                ? static_cast<float>(wendlandGradMagnitude(radius, support) / radius)
+                : 0.0f;
+        cache.dx[pair] = x;
+        cache.dy[pair] = y;
+        cache.dz[pair] = z;
+        ++pair;
+      });
+    }
+  });
+
+  if (boundary != nullptr) {
+    parallelFor(n, [&](std::size_t begin, std::size_t end) {
+      for (std::size_t i = begin; i < end; ++i) {
+        const SurfaceQuery wall = boundary->query(p.px[i], p.py[i], p.pz[i]);
+        cache.wallDistance[i] = static_cast<float>(wall.distance);
+        cache.wallNx[i] = static_cast<float>(wall.nx);
+        cache.wallNy[i] = static_cast<float>(wall.ny);
+        cache.wallNz[i] = static_cast<float>(wall.nz);
+      }
+    });
   }
 }
 
-void projectContact(double contactRadius, double wallFriction, const VesselBoundary& boundary,
-                    Vec3d& position, Vec3d& velocity) {
-  const SurfaceQuery wall = boundary.query(position.x, position.y, position.z);
-  if (wall.distance <= -contactRadius) return;
+void computeNumberDensity(Particles& p, const PairCache& cache,
+                          const VesselBoundary* boundary) {
+  parallelFor(p.size(), [&](std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      double delta = 0.0;
+      for (uint32_t pair = cache.offsets[i]; pair < cache.offsets[i + 1]; ++pair) {
+        delta += static_cast<double>(cache.kernel[pair]);
+      }
+      if (boundary != nullptr) {
+        delta += boundary->boundaryDensity(cache.wallDistance[i]);
+      }
+      p.delta[i] = static_cast<float>(delta);
+    }
+  });
+}
 
-  // VesselBoundary::query returns the glass-to-fluid normal. Moving by
-  // (phi+r_c)n is therefore an inward projection to phi=-r_c.
-  const Vec3d n{wall.nx, wall.ny, wall.nz};
-  position = position + (wall.distance + contactRadius) * n;
+void projectContact(double contactRadius, double wallFriction,
+                    const VesselBoundary& boundary, Vec3d& position,
+                    Vec3d& velocity) {
+  // At a lip or wall/cap corner, the closest analytic segment can change
+  // after projection. A bounded active-set iteration closes that corner case;
+  // interior particles still take exactly one query and return immediately.
+  for (int projection = 0; projection < 4; ++projection) {
+    const SurfaceQuery wall = boundary.query(position.x, position.y, position.z);
+    if (wall.distance <= -contactRadius) return;
+    const Vec3d n{wall.nx, wall.ny, wall.nz};
+    position = position + (wall.distance + contactRadius) * n;
+    const double vn = dot(velocity, n);
+    const Vec3d tangent = velocity - vn * n;
+    velocity = std::max(0.0, vn) * n +
+               (1.0 - std::clamp(wallFriction, 0.0, 1.0)) * tangent;
+  }
+}
 
-  // Restitution zero removes only velocity into the glass. The remaining
-  // tangential component is reduced by Coulomb-like wall loss; motion away
-  // from the glass is retained so projection cannot make particles stick.
+void projectCachedContact(std::size_t i, double contactRadius, double wallFriction,
+                          const Particles& particles, const PairCache& cache,
+                          Vec3d& position, Vec3d& velocity) {
+  const Vec3d n{cache.wallNx[i], cache.wallNy[i], cache.wallNz[i]};
+  const Vec3d displacement = position - positionOf(particles, i);
+  const double distance = static_cast<double>(cache.wallDistance[i]) -
+                          dot(n, displacement);
+  if (distance <= -contactRadius) return;
+  // A locally planar frozen wall is consistent with the frozen PCISPH
+  // neighbourhood. The accepted 0.25 H transport bound limits curvature error;
+  // the exact analytic SDF is applied once before committing the state.
+  position = position + (distance + contactRadius) * n;
   const double vn = dot(velocity, n);
   const Vec3d tangent = velocity - vn * n;
-  velocity = std::max(0.0, vn) * n + (1.0 - std::clamp(wallFriction, 0.0, 1.0)) * tangent;
+  velocity = std::max(0.0, vn) * n +
+             (1.0 - std::clamp(wallFriction, 0.0, 1.0)) * tangent;
 }
 
 std::vector<double> calibratePressureStiffness(const std::vector<double>& mass, double spacing,
@@ -164,69 +321,82 @@ std::vector<double> calibratePressureStiffness(const std::vector<double>& mass, 
   return result;
 }
 
-void computeColourGeometry(Particles& p, const NeighbourGrid& grid, double support,
-                           std::vector<double>& curvature) {
-  const std::size_t n = p.size();
-  for (std::size_t i = 0; i < n; ++i) {
-    const Vec3d pi = positionOf(p, i);
-    double numerator = 0.0;
-    double denominator = 0.0;
-    grid.forEachCandidate(i, [&](std::size_t j) {
-      const double r = length(pi - positionOf(p, j));
-      if (r >= support || p.delta[j] <= 0.0f) return;
-      const double volumeWeight = wendlandW(r, support) / static_cast<double>(p.delta[j]);
-      denominator += volumeWeight;
-      numerator += (p.phase[j] == 0 ? 0.0 : 1.0) * volumeWeight;
-    });
-    p.colour[i] = static_cast<float>(denominator > kTiny ? numerator / denominator
-                                                         : (p.phase[i] == 0 ? 0.0 : 1.0));
-  }
-
-  // Solenthaler and Pajarola, SCA 2008, eqs. 22-24: use the normalised colour
-  // field, its SPH gradient as the interface normal, then the divergence of the
-  // unit normal as curvature. The 1/delta_j factor is particle volume in the
-  // number-density formulation.
-  for (std::size_t i = 0; i < n; ++i) {
-    const Vec3d pi = positionOf(p, i);
-    Vec3d normal{};
-    grid.forEachCandidate(i, [&](std::size_t j) {
-      if (i == j || p.delta[j] <= 0.0f) return;
-      const Vec3d rij = pi - positionOf(p, j);
-      const double r = length(rij);
-      if (r <= kTiny || r >= support) return;
-      const Vec3d grad = (wendlandGradMagnitude(r, support) / r) * rij;
-      normal = normal + ((static_cast<double>(p.colour[j]) - p.colour[i]) /
-                         static_cast<double>(p.delta[j])) *
-                            grad;
-    });
-    p.nx[i] = static_cast<float>(normal.x);
-    p.ny[i] = static_cast<float>(normal.y);
-    p.nz[i] = static_cast<float>(normal.z);
-  }
-
-  curvature.assign(n, 0.0);
-  for (std::size_t i = 0; i < n; ++i) {
-    if (!(p.colour[i] > 0.05f && p.colour[i] < 0.95f)) continue;
-    const Vec3d pi = positionOf(p, i);
-    const Vec3d ni = normalized({p.nx[i], p.ny[i], p.nz[i]});
-    double kappa = 0.0;
-    grid.forEachCandidate(i, [&](std::size_t j) {
-      if (i == j || p.delta[j] <= 0.0f) return;
-      const Vec3d rij = pi - positionOf(p, j);
-      const double r = length(rij);
-      if (r <= kTiny || r >= support) return;
-      const Vec3d grad = (wendlandGradMagnitude(r, support) / r) * rij;
-      const Vec3d nj = normalized({p.nx[j], p.ny[j], p.nz[j]});
-      kappa -= dot(nj - ni, grad) / static_cast<double>(p.delta[j]);
-    });
-    curvature[i] = kappa;
-  }
+void computeColourField(Particles& p, const PairCache& cache) {
+  parallelFor(p.size(), [&](std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      double numerator = 0.0;
+      double denominator = 0.0;
+      for (uint32_t pair = cache.offsets[i]; pair < cache.offsets[i + 1]; ++pair) {
+        const std::size_t j = cache.indices[pair];
+        if (p.delta[j] <= 0.0f) continue;
+        const double volumeWeight =
+            static_cast<double>(cache.kernel[pair]) / static_cast<double>(p.delta[j]);
+        denominator += volumeWeight;
+        numerator += (p.phase[j] == 0 ? 0.0 : 1.0) * volumeWeight;
+      }
+      p.colour[i] = static_cast<float>(
+          denominator > kTiny ? numerator / denominator : (p.phase[i] == 0 ? 0.0 : 1.0));
+    }
+  });
 }
 
-void addSurfaceAcceleration(Particles& p, const NeighbourGrid& grid,
+void computeColourGeometry(Particles& p, const PairCache& cache,
+                           std::vector<double>& curvature) {
+  const std::size_t n = p.size();
+  computeColourField(p, cache);
+
+  // Solenthaler and Pajarola, SCA 2008, eqs. 22-24. Frozen per-substep kernel
+  // gradients are shared with PCISPH below; their static support is the usual
+  // PCISPH neighbour approximation and keeps every gather allocation-free.
+  parallelFor(n, [&](std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      Vec3d normal{};
+      for (uint32_t pair = cache.offsets[i]; pair < cache.offsets[i + 1]; ++pair) {
+        const std::size_t j = cache.indices[pair];
+        if (i == j || p.delta[j] <= 0.0f) continue;
+        const double scale =
+            (static_cast<double>(p.colour[j]) - p.colour[i]) /
+            static_cast<double>(p.delta[j]) * static_cast<double>(cache.gradOverR[pair]);
+        normal.x += scale * cache.dx[pair];
+        normal.y += scale * cache.dy[pair];
+        normal.z += scale * cache.dz[pair];
+      }
+      normal = normalized(normal);
+      p.nx[i] = static_cast<float>(normal.x);
+      p.ny[i] = static_cast<float>(normal.y);
+      p.nz[i] = static_cast<float>(normal.z);
+    }
+  });
+
+  curvature.resize(n);
+  std::fill(curvature.begin(), curvature.end(), 0.0);
+  parallelFor(n, [&](std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      // Surface tension acts only in the narrow colour-field band. Skipping
+      // bulk particles is the continuum-surface-force narrow-band treatment,
+      // not a change to interface forces.
+      if (!(p.colour[i] > 0.05f && p.colour[i] < 0.95f)) continue;
+      const Vec3d ni{p.nx[i], p.ny[i], p.nz[i]};
+      double kappa = 0.0;
+      for (uint32_t pair = cache.offsets[i]; pair < cache.offsets[i + 1]; ++pair) {
+        const std::size_t j = cache.indices[pair];
+        if (i == j || p.delta[j] <= 0.0f) continue;
+        const Vec3d nj{p.nx[j], p.ny[j], p.nz[j]};
+        const Vec3d grad{static_cast<double>(cache.gradOverR[pair]) * cache.dx[pair],
+                         static_cast<double>(cache.gradOverR[pair]) * cache.dy[pair],
+                         static_cast<double>(cache.gradOverR[pair]) * cache.dz[pair]};
+        kappa -= dot(nj - ni, grad) / static_cast<double>(p.delta[j]);
+      }
+      curvature[i] = kappa;
+    }
+  });
+}
+
+void addSurfaceAcceleration(Particles& p, const PairCache& cache,
                             const std::vector<PhaseMaterial>& phases,
-                            const std::vector<double>& mass, const InterfaceModel& interfaceModel,
-                            double support, std::vector<double>& curvature) {
+                            const std::vector<double>& mass,
+                            const InterfaceModel& interfaceModel, double support,
+                            std::vector<double>& curvature) {
   if (!interfaceModel.calibrated || interfaceModel.cohesionGain <= 0.0 || phases.size() < 2) {
     std::fill(p.colour.begin(), p.colour.end(), 0.0f);
     std::fill(p.nx.begin(), p.nx.end(), 0.0f);
@@ -235,93 +405,96 @@ void addSurfaceAcceleration(Particles& p, const NeighbourGrid& grid,
     return;
   }
 
-  computeColourGeometry(p, grid, support, curvature);
+  computeColourGeometry(p, cache, curvature);
   const std::size_t phaseCount = phases.size();
-  for (std::size_t i = 0; i < p.size(); ++i) {
-    const std::size_t phaseI = p.phase[i];
-    if (phaseI >= phaseCount || p.delta[i] <= 0.0f) continue;
-    const Vec3d pi = positionOf(p, i);
-    const Vec3d ni = normalized({p.nx[i], p.ny[i], p.nz[i]});
-    Vec3d acceleration{};
-    grid.forEachCandidate(i, [&](std::size_t j) {
-      if (i == j || p.phase[j] >= phaseCount || p.phase[j] == phaseI || p.delta[j] <= 0.0f)
-        return;
-      const std::size_t phaseJ = p.phase[j];
-      const double sigma = interfaceModel.sigma[phaseI * phaseCount + phaseJ];
-      // Akinci et al. 2013 explicitly note that their cohesion coefficient is
-      // resolution dependent. It therefore enters only as sigma times the
-      // Young-Laplace calibration gain, never as the measured N/m directly.
-      const double coefficient = sigma * interfaceModel.cohesionGain;
-      if (coefficient <= 0.0) return;
-      const Vec3d rij = pi - positionOf(p, j);
-      const double r = length(rij);
-      if (r <= kTiny || r >= support) return;
-
-      const double rhoi = mass[phaseI] * static_cast<double>(p.delta[i]);
-      const double rhoj = mass[phaseJ] * static_cast<double>(p.delta[j]);
-      const double restI = phases[phaseI].restDensity;
-      const double restJ = phases[phaseJ].restDensity;
-      const double densityCorrection =
-          2.0 * std::sqrt(restI * restJ) / std::max(kTiny, rhoi + rhoj);
-      const Vec3d nj = normalized({p.nx[j], p.ny[j], p.nz[j]});
-      Vec3d pairShape = -cohesionC(r, support) * (1.0 / r) * rij;
-      if ((p.colour[i] > 0.05f && p.colour[i] < 0.95f) ||
-          (p.colour[j] > 0.05f && p.colour[j] < 0.95f)) {
-        const Vec3d curvatureI = curvature[i] * ni;
-        const Vec3d curvatureJ = curvature[j] * nj;
-        const double volumeKernel =
-            wendlandW(r, support) /
-            std::sqrt(static_cast<double>(p.delta[i]) * static_cast<double>(p.delta[j]));
-        pairShape = pairShape - volumeKernel * (curvatureI - curvatureJ);
+  parallelFor(p.size(), [&](std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      const std::size_t phaseI = p.phase[i];
+      if (phaseI >= phaseCount || p.delta[i] <= 0.0f) continue;
+      const Vec3d ni{p.nx[i], p.ny[i], p.nz[i]};
+      Vec3d acceleration{};
+      for (uint32_t pair = cache.offsets[i]; pair < cache.offsets[i + 1]; ++pair) {
+        const std::size_t j = cache.indices[pair];
+        if (i == j || p.phase[j] >= phaseCount || p.phase[j] == phaseI ||
+            p.delta[j] <= 0.0f) {
+          continue;
+        }
+        const std::size_t phaseJ = p.phase[j];
+        const double coefficient =
+            interfaceModel.sigma[phaseI * phaseCount + phaseJ] * interfaceModel.cohesionGain;
+        if (coefficient <= 0.0) continue;
+        const double radiusSquared =
+            static_cast<double>(cache.dx[pair]) * cache.dx[pair] +
+            static_cast<double>(cache.dy[pair]) * cache.dy[pair] +
+            static_cast<double>(cache.dz[pair]) * cache.dz[pair];
+        if (radiusSquared <= kTiny) continue;
+        const double radius = std::sqrt(radiusSquared);
+        const double rhoi = mass[phaseI] * static_cast<double>(p.delta[i]);
+        const double rhoj = mass[phaseJ] * static_cast<double>(p.delta[j]);
+        const double densityCorrection =
+            2.0 * std::sqrt(phases[phaseI].restDensity * phases[phaseJ].restDensity) /
+            std::max(kTiny, rhoi + rhoj);
+        const double pairScale = -cohesionC(radius, support) / radius;
+        Vec3d pairShape{pairScale * cache.dx[pair], pairScale * cache.dy[pair],
+                        pairScale * cache.dz[pair]};
+        if ((p.colour[i] > 0.05f && p.colour[i] < 0.95f) ||
+            (p.colour[j] > 0.05f && p.colour[j] < 0.95f)) {
+          const Vec3d curvatureI = curvature[i] * ni;
+          const Vec3d curvatureJ =
+              curvature[j] * Vec3d{p.nx[j], p.ny[j], p.nz[j]};
+          const double volumeKernel =
+              static_cast<double>(cache.kernel[pair]) /
+              std::sqrt(static_cast<double>(p.delta[i]) * static_cast<double>(p.delta[j]));
+          pairShape = pairShape - volumeKernel * (curvatureI - curvatureJ);
+        }
+        acceleration =
+            acceleration + (coefficient * mass[phaseJ] * densityCorrection) * pairShape;
       }
-
-      // F_ij = coefficient*m_i*m_j*K_ij*pairShape. Every scalar is symmetric
-      // and pairShape changes sign under i<->j, hence F_ji=-F_ij exactly at the
-      // algebraic level. Gathering F_ij/m_i preserves momentum without a
-      // schedule-dependent scatter.
-      acceleration = acceleration +
-                     (coefficient * mass[phaseJ] * densityCorrection) * pairShape;
-    });
-    p.ax[i] = static_cast<float>(static_cast<double>(p.ax[i]) + acceleration.x);
-    p.ay[i] = static_cast<float>(static_cast<double>(p.ay[i]) + acceleration.y);
-    p.az[i] = static_cast<float>(static_cast<double>(p.az[i]) + acceleration.z);
-  }
+      p.ax[i] = static_cast<float>(static_cast<double>(p.ax[i]) + acceleration.x);
+      p.ay[i] = static_cast<float>(static_cast<double>(p.ay[i]) + acceleration.y);
+      p.az[i] = static_cast<float>(static_cast<double>(p.az[i]) + acceleration.z);
+    }
+  });
 }
 
-void computePressureForce(const Particles& p, const NeighbourGrid& grid, double support,
+void computePressureForce(const Particles& p, const PairCache& cache, double support,
                           const std::vector<float>& x, const std::vector<float>& y,
                           const std::vector<float>& z, double delta0,
                           const std::vector<double>& error, std::vector<float>& fx,
                           std::vector<float>& fy, std::vector<float>& fz) {
-  std::fill(fx.begin(), fx.end(), 0.0f);
-  std::fill(fy.begin(), fy.end(), 0.0f);
-  std::fill(fz.begin(), fz.end(), 0.0f);
-  for (std::size_t i = 0; i < p.size(); ++i) {
-    const Vec3d pi{x[i], y[i], z[i]};
-    const double deltai = std::max(kTiny, delta0 * (1.0 + error[i]));
-    grid.forEachCandidate(i, [&](std::size_t j) {
-      if (j <= i) return;
-      const Vec3d rij = pi - Vec3d{x[j], y[j], z[j]};
-      const double r = length(rij);
-      if (r <= kTiny || r >= support) return;
-      const double deltaj = std::max(kTiny, delta0 * (1.0 + error[j]));
-      const Vec3d grad = (wendlandGradMagnitude(r, support) / r) * rij;
-      const double scale = -(static_cast<double>(p.pressure[i]) + p.pressure[j]) /
-                           (2.0 * deltai * deltaj);
-      const float pairX = static_cast<float>(scale * grad.x);
-      const float pairY = static_cast<float>(scale * grad.y);
-      const float pairZ = static_cast<float>(scale * grad.z);
-      // Evaluate each Solenthaler-Pajarola 2008 eq. 14 pair once and apply its
-      // exact float negation. This prevents two gathers from rounding the same
-      // delta product or kernel gradient differently.
-      fx[i] += pairX;
-      fy[i] += pairY;
-      fz[i] += pairZ;
-      fx[j] -= pairX;
-      fy[j] -= pairY;
-      fz[j] -= pairZ;
-    });
-  }
+  parallelFor(p.size(), [&](std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      const double deltai = std::max(kTiny, delta0 * (1.0 + error[i]));
+      float totalX = 0.0f;
+      float totalY = 0.0f;
+      float totalZ = 0.0f;
+      // The frozen cache supplies candidates, but pressure gradients are
+      // evaluated at predicted separation to preserve the validated PCISPH
+      // response. Globally ascending gather order makes opposite evaluations
+      // exact float negations without scatter writes or atomics.
+      for (uint32_t pair = cache.offsets[i]; pair < cache.offsets[i + 1]; ++pair) {
+        const std::size_t j = cache.indices[pair];
+        if (i == j) continue;
+        const double dx = static_cast<double>(x[i]) - x[j];
+        const double dy = static_cast<double>(y[i]) - y[j];
+        const double dz = static_cast<double>(z[i]) - z[j];
+        const double radiusSquared = dx * dx + dy * dy + dz * dz;
+        if (radiusSquared <= kTiny || radiusSquared >= support * support) continue;
+        const double radius = std::sqrt(radiusSquared);
+        const double deltaj = std::max(kTiny, delta0 * (1.0 + error[j]));
+        const double scale =
+            -(static_cast<double>(p.pressure[i]) + p.pressure[j]) /
+            (2.0 * deltai * deltaj) *
+            (wendlandGradMagnitude(radius, support) / radius);
+        totalX += static_cast<float>(scale * dx);
+        totalY += static_cast<float>(scale * dy);
+        totalZ += static_cast<float>(scale * dz);
+      }
+      fx[i] = totalX;
+      fy[i] = totalY;
+      fz[i] = totalZ;
+    }
+  });
 }
 
 }  // namespace
@@ -416,6 +589,7 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
           : 0.0;
   resizeScratch(particles.size(), predictedX_, predictedY_, predictedZ_, predictedVX_,
                 predictedVY_, predictedVZ_, forceX_, forceY_, forceZ_, densityError_);
+  PairCache& pairs = pairScratch();
 
   double pressureRelaxationLimit = 1.0;
   double elapsed = 0.0;
@@ -424,13 +598,33 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
     const double remaining = dt - elapsed;
     if (!(remaining > std::numeric_limits<double>::epsilon() * std::max(1.0, dt))) break;
 
-    double maxVelocity = 0.0;
-    double maxAcceleration = 0.0;
-    for (std::size_t i = 0; i < particles.size(); ++i) {
-      maxVelocity = std::max(maxVelocity, length(velocityOf(particles, i)));
-      maxAcceleration =
-          std::max(maxAcceleration, length({particles.ax[i], particles.ay[i], particles.az[i]}));
+    std::array<double, kMaxFluidWorkers> velocitySquared{};
+    std::array<double, kMaxFluidWorkers> accelerationSquared{};
+    const unsigned reductionWorkers = configuredWorkerCount(particles.size());
+    parallelForWorkers(
+        particles.size(), reductionWorkers,
+        [&](unsigned worker, std::size_t begin, std::size_t end) {
+          double workerVelocitySquared = 0.0;
+          double workerAccelerationSquared = 0.0;
+          for (std::size_t i = begin; i < end; ++i) {
+            workerVelocitySquared =
+                std::max(workerVelocitySquared, lengthSquared(velocityOf(particles, i)));
+            workerAccelerationSquared =
+                std::max(workerAccelerationSquared,
+                         lengthSquared({particles.ax[i], particles.ay[i], particles.az[i]}));
+          }
+          velocitySquared[worker] = workerVelocitySquared;
+          accelerationSquared[worker] = workerAccelerationSquared;
+        });
+    double maxVelocitySquared = 0.0;
+    double maxAccelerationSquared = 0.0;
+    for (unsigned worker = 0; worker < reductionWorkers; ++worker) {
+      maxVelocitySquared = std::max(maxVelocitySquared, velocitySquared[worker]);
+      maxAccelerationSquared =
+          std::max(maxAccelerationSquared, accelerationSquared[worker]);
     }
+    const double maxVelocity = std::sqrt(maxVelocitySquared);
+    double maxAcceleration = std::sqrt(maxAccelerationSquared);
     const FrameAcceleration limitingFrame = frameAcceleration(motion, timeS + elapsed);
     maxAcceleration =
         std::max(maxAcceleration,
@@ -466,65 +660,75 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
       }
 
       grid_.build(particles, support);
-      computeNumberDensity(particles, grid_, &boundary, support);
+      buildPairCache(particles, grid_, support, &boundary, pairs);
+      computeNumberDensity(particles, pairs, &boundary);
       const FrameAcceleration frame =
           frameAcceleration(motion, timeS + elapsed + 0.5 * trialStep);
-      for (std::size_t i = 0; i < particles.size(); ++i) {
-        Vec3d acceleration{frame.uniform[0], frame.uniform[1], frame.uniform[2]};
-        if (frame.rotating) {
-          const Vec3d angularVelocity{frame.omega[0], frame.omega[1], frame.omega[2]};
-          const Vec3d angularAcceleration{frame.alpha[0], frame.alpha[1], frame.alpha[2]};
-          const Vec3d q = positionOf(particles, i);
-          const Vec3d u = velocityOf(particles, i);
-          if (config_.enableCoriolis) {
-            acceleration = acceleration - 2.0 * cross(angularVelocity, u);
+      parallelFor(particles.size(), [&](std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          Vec3d acceleration{frame.uniform[0], frame.uniform[1], frame.uniform[2]};
+          if (frame.rotating) {
+            const Vec3d angularVelocity{frame.omega[0], frame.omega[1], frame.omega[2]};
+            const Vec3d angularAcceleration{frame.alpha[0], frame.alpha[1], frame.alpha[2]};
+            const Vec3d q = positionOf(particles, i);
+            const Vec3d u = velocityOf(particles, i);
+            if (config_.enableCoriolis) {
+              acceleration = acceleration - 2.0 * cross(angularVelocity, u);
+            }
+            acceleration = acceleration - cross(angularAcceleration, q) -
+                           cross(angularVelocity, cross(angularVelocity, q));
           }
-          acceleration = acceleration - cross(angularAcceleration, q) -
-                         cross(angularVelocity, cross(angularVelocity, q));
+          particles.ax[i] = static_cast<float>(acceleration.x);
+          particles.ay[i] = static_cast<float>(acceleration.y);
+          particles.az[i] = static_cast<float>(acceleration.z);
         }
-        particles.ax[i] = static_cast<float>(acceleration.x);
-        particles.ay[i] = static_cast<float>(acceleration.y);
-        particles.az[i] = static_cast<float>(acceleration.z);
-      }
+      });
 
       // Monaghan, Rep. Prog. Phys. 68 (2005): the pair scalar below is
       // symmetric (harmonic mu, rho_i*rho_j, and r.grad W), while v_i-v_j
       // changes sign. Thus m_i*a_ij = -m_j*a_ji for unequal phase masses.
-      const double regularizerSquared = std::pow(0.01 * support, 2.0);
-      for (std::size_t i = 0; i < particles.size(); ++i) {
-        const Vec3d pi = positionOf(particles, i);
-        const Vec3d vi = velocityOf(particles, i);
-        const double mi = phaseMass(mass_, particles, i);
-        const double rhoi = mi * particles.delta[i];
-        const double mui = phaseViscosity(phases_, particles, i);
-        Vec3d viscous{};
-        grid_.forEachCandidate(i, [&](std::size_t j) {
-          if (i == j || particles.delta[j] <= 0.0f) return;
-          const Vec3d rij = pi - positionOf(particles, j);
-          const double r2 = lengthSquared(rij);
-          const double r = std::sqrt(r2);
-          if (r <= kTiny || r >= support) return;
-          const double muj = phaseViscosity(phases_, particles, j);
-          if (mui + muj <= kTiny) return;
-          const double mj = phaseMass(mass_, particles, j);
-          const double rhoj = mj * particles.delta[j];
-          const double muij = 2.0 * mui * muj / (mui + muj);
-          const Vec3d grad = (wendlandGradMagnitude(r, support) / r) * rij;
-          const double pairForceScale =
-              mi * mj * 2.0 * muij / std::max(kTiny, rhoi * rhoj) *
-              dot(rij, grad) / (r2 + regularizerSquared);
-          viscous = viscous + (pairForceScale / mi) * (vi - velocityOf(particles, j));
-        });
-        particles.ax[i] = static_cast<float>(static_cast<double>(particles.ax[i]) + viscous.x);
-        particles.ay[i] = static_cast<float>(static_cast<double>(particles.ay[i]) + viscous.y);
-        particles.az[i] = static_cast<float>(static_cast<double>(particles.az[i]) + viscous.z);
-      }
+      const double regularizerSquared = (0.01 * support) * (0.01 * support);
+      parallelFor(particles.size(), [&](std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+          const Vec3d vi = velocityOf(particles, i);
+          const double mi = phaseMass(mass_, particles, i);
+          const double rhoi = mi * particles.delta[i];
+          const double mui = phaseViscosity(phases_, particles, i);
+          Vec3d viscous{};
+          for (uint32_t pair = pairs.offsets[i]; pair < pairs.offsets[i + 1]; ++pair) {
+            const std::size_t j = pairs.indices[pair];
+            if (i == j || particles.delta[j] <= 0.0f) continue;
+            const double r2 =
+                static_cast<double>(pairs.dx[pair]) * pairs.dx[pair] +
+                static_cast<double>(pairs.dy[pair]) * pairs.dy[pair] +
+                static_cast<double>(pairs.dz[pair]) * pairs.dz[pair];
+            if (r2 <= kTiny) continue;
+            const double muj = phaseViscosity(phases_, particles, j);
+            if (mui + muj <= kTiny) continue;
+            const double mj = phaseMass(mass_, particles, j);
+            const double rhoj = mj * particles.delta[j];
+            const double muij = 2.0 * mui * muj / (mui + muj);
+            const double pairForceScale =
+                mi * mj * 2.0 * muij / std::max(kTiny, rhoi * rhoj) *
+                (static_cast<double>(pairs.gradOverR[pair]) * r2) /
+                (r2 + regularizerSquared);
+            viscous =
+                viscous + (pairForceScale / mi) * (vi - velocityOf(particles, j));
+          }
+          particles.ax[i] =
+              static_cast<float>(static_cast<double>(particles.ax[i]) + viscous.x);
+          particles.ay[i] =
+              static_cast<float>(static_cast<double>(particles.ay[i]) + viscous.y);
+          particles.az[i] =
+              static_cast<float>(static_cast<double>(particles.az[i]) + viscous.z);
+        }
+      });
 
       if (config_.enableSurfaceTension) {
-        addSurfaceAcceleration(particles, grid_, phases_, mass_, interface_, support,
+        addSurfaceAcceleration(particles, pairs, phases_, mass_, interface_, support,
                                densityError_);
       } else {
-        computeColourGeometry(particles, grid_, support, densityError_);
+        computeColourField(particles, pairs);
       }
 
       std::fill(particles.pressure.begin(), particles.pressure.end(), 0.0f);
@@ -534,47 +738,79 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
       double finalError = std::numeric_limits<double>::infinity();
       int iterations = 0;
       for (; iterations < config_.maxPressureIterations; ++iterations) {
-        for (std::size_t i = 0; i < particles.size(); ++i) {
-          const double particleMass = phaseMass(mass_, particles, i);
-          Vec3d predictedVelocity =
-              velocityOf(particles, i) +
-              trialStep *
-                  Vec3d{static_cast<double>(particles.ax[i]) + forceX_[i] / particleMass,
-                        static_cast<double>(particles.ay[i]) + forceY_[i] / particleMass,
-                        static_cast<double>(particles.az[i]) + forceZ_[i] / particleMass};
-          Vec3d predictedPosition = positionOf(particles, i) + trialStep * predictedVelocity;
-          projectContact(contactRadius, config_.wallFriction, boundary, predictedPosition,
-                         predictedVelocity);
-          predictedX_[i] = static_cast<float>(predictedPosition.x);
-          predictedY_[i] = static_cast<float>(predictedPosition.y);
-          predictedZ_[i] = static_cast<float>(predictedPosition.z);
-          predictedVX_[i] = static_cast<float>(predictedVelocity.x);
-          predictedVY_[i] = static_cast<float>(predictedVelocity.y);
-          predictedVZ_[i] = static_cast<float>(predictedVelocity.z);
-        }
+        parallelFor(particles.size(), [&](std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i) {
+            const double particleMass = phaseMass(mass_, particles, i);
+            Vec3d predictedVelocity =
+                velocityOf(particles, i) +
+                trialStep *
+                    Vec3d{static_cast<double>(particles.ax[i]) + forceX_[i] / particleMass,
+                          static_cast<double>(particles.ay[i]) + forceY_[i] / particleMass,
+                          static_cast<double>(particles.az[i]) + forceZ_[i] / particleMass};
+            Vec3d predictedPosition = positionOf(particles, i) + trialStep * predictedVelocity;
+            projectCachedContact(i, contactRadius, config_.wallFriction, particles, pairs,
+                                 predictedPosition, predictedVelocity);
+            predictedX_[i] = static_cast<float>(predictedPosition.x);
+            predictedY_[i] = static_cast<float>(predictedPosition.y);
+            predictedZ_[i] = static_cast<float>(predictedPosition.z);
+            predictedVX_[i] = static_cast<float>(predictedVelocity.x);
+            predictedVY_[i] = static_cast<float>(predictedVelocity.y);
+            predictedVZ_[i] = static_cast<float>(predictedVelocity.z);
+          }
+        });
 
+        // PCISPH freezes the neighbour set during its correction loop
+        // (Solenthaler & Pajarola 2009). Cached indices eliminate grid searches
+        // while W is evaluated at predicted separation to retain hydrostatics.
+        // The 0.25 H acceptance gate below bounds the frozen-set approximation.
+        std::array<double, kMaxFluidWorkers> workerErrors{};
+        const unsigned errorWorkers = configuredWorkerCount(particles.size());
+        parallelForWorkers(
+            particles.size(), errorWorkers,
+            [&](unsigned worker, std::size_t begin, std::size_t end) {
+              double workerError = 0.0;
+              for (std::size_t i = begin; i < end; ++i) {
+                double delta = 0.0;
+                for (uint32_t pair = pairs.offsets[i]; pair < pairs.offsets[i + 1]; ++pair) {
+                  const std::size_t j = pairs.indices[pair];
+                  const float x = predictedX_[i] - predictedX_[j];
+                  const float y = predictedY_[i] - predictedY_[j];
+                  const float z = predictedZ_[i] - predictedZ_[j];
+                  const float radiusSquared = x * x + y * y + z * z;
+                  if (radiusSquared < static_cast<float>(support * support)) {
+                    delta += wendlandW(std::sqrt(radiusSquared), support);
+                  }
+                }
+                const Vec3d displacement{
+                    predictedX_[i] - particles.px[i],
+                    predictedY_[i] - particles.py[i],
+                    predictedZ_[i] - particles.pz[i]};
+                const Vec3d wallNormal{
+                    pairs.wallNx[i], pairs.wallNy[i], pairs.wallNz[i]};
+                const double predictedWallDistance =
+                    static_cast<double>(pairs.wallDistance[i]) -
+                    dot(wallNormal, displacement);
+                delta += boundary.boundaryDensity(predictedWallDistance);
+                densityError_[i] = (delta - delta0_) / delta0_;
+                workerError = std::max(workerError, std::abs(densityError_[i]));
+              }
+              workerErrors[worker] = workerError;
+            });
         finalError = 0.0;
-        for (std::size_t i = 0; i < particles.size(); ++i) {
-          const Vec3d pi{predictedX_[i], predictedY_[i], predictedZ_[i]};
-          double delta = 0.0;
-          grid_.forEachCandidate(i, [&](std::size_t j) {
-            const double r =
-                length(pi - Vec3d{predictedX_[j], predictedY_[j], predictedZ_[j]});
-            if (r < support) delta += wendlandW(r, support);
-          });
-          delta += boundary.boundaryDensity(boundary.query(pi.x, pi.y, pi.z).distance);
-          densityError_[i] = (delta - delta0_) / delta0_;
-          finalError = std::max(finalError, std::abs(densityError_[i]));
+        for (unsigned worker = 0; worker < errorWorkers; ++worker) {
+          finalError = std::max(finalError, workerErrors[worker]);
         }
 
-        for (std::size_t i = 0; i < particles.size(); ++i) {
-          const std::size_t phase = particles.phase[i];
-          const double pressure =
-              static_cast<double>(particles.pressure[i]) +
-              pressureRelaxation * stiffness_[phase] * densityError_[i];
-          particles.pressure[i] = static_cast<float>(std::max(0.0, pressure));
-        }
-        computePressureForce(particles, grid_, support, predictedX_, predictedY_, predictedZ_,
+        parallelFor(particles.size(), [&](std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i) {
+            const std::size_t phase = particles.phase[i];
+            const double pressure =
+                static_cast<double>(particles.pressure[i]) +
+                pressureRelaxation * stiffness_[phase] * densityError_[i];
+            particles.pressure[i] = static_cast<float>(std::max(0.0, pressure));
+          }
+        });
+        computePressureForce(particles, pairs, support, predictedX_, predictedY_, predictedZ_,
                              delta0_, densityError_, forceX_, forceY_, forceZ_);
         if (iterations + 1 >= config_.minPressureIterations &&
             finalError <= config_.densityTolerance) {
@@ -673,17 +909,43 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
     ++stats_.substeps;
   }
 
-  grid_.build(particles, support);
-  computeNumberDensity(particles, grid_, &boundary, support);
-  computeColourGeometry(particles, grid_, support, densityError_);
+  // The accepted PCISPH prediction already contains the final number density.
+  // Publishing it avoids a second O(N) analytic-SDF scan and grid rebuild;
+  // the next substep rebuilds from committed positions before using density in
+  // physics. Pair identities remain valid under the enforced 0.25 H bound.
+  parallelFor(particles.size(), [&](std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      particles.delta[i] =
+          static_cast<float>(delta0_ * (1.0 + densityError_[i]));
+    }
+  });
+  computeColourField(particles, pairs);
+  std::array<double, kMaxFluidWorkers> finalDensityErrors{};
+  std::array<double, kMaxFluidWorkers> finalSpeedSquared{};
+  const unsigned finalWorkers = configuredWorkerCount(particles.size());
+  parallelForWorkers(
+      particles.size(), finalWorkers,
+      [&](unsigned worker, std::size_t begin, std::size_t end) {
+        double densityError = 0.0;
+        double speedSquared = 0.0;
+        for (std::size_t i = begin; i < end; ++i) {
+          densityError =
+              std::max(densityError,
+                       std::abs(static_cast<double>(particles.delta[i]) / delta0_ - 1.0));
+          speedSquared =
+              std::max(speedSquared, lengthSquared(velocityOf(particles, i)));
+        }
+        finalDensityErrors[worker] = densityError;
+        finalSpeedSquared[worker] = speedSquared;
+      });
   stats_.maxDensityError = 0.0;
-  stats_.maxSpeed = 0.0;
-  for (std::size_t i = 0; i < particles.size(); ++i) {
+  double maximumSpeedSquared = 0.0;
+  for (unsigned worker = 0; worker < finalWorkers; ++worker) {
     stats_.maxDensityError =
-        std::max(stats_.maxDensityError,
-                 std::abs(static_cast<double>(particles.delta[i]) / delta0_ - 1.0));
-    stats_.maxSpeed = std::max(stats_.maxSpeed, length(velocityOf(particles, i)));
+        std::max(stats_.maxDensityError, finalDensityErrors[worker]);
+    maximumSpeedSquared = std::max(maximumSpeedSquared, finalSpeedSquared[worker]);
   }
+  stats_.maxSpeed = std::sqrt(maximumSpeedSquared);
   stats_.substepS = lastSubstep;
   return stats_.substeps;
 }
@@ -744,6 +1006,7 @@ void Solver::calibrateInterface(const VesselBoundary& boundary) {
 
     NeighbourGrid calibrationGrid;
     std::vector<double> curvature;
+    PairCache calibrationPairs;
     std::vector<float> px(droplet.size()), py(droplet.size()), pz(droplet.size());
     std::vector<float> pvx(droplet.size()), pvy(droplet.size()), pvz(droplet.size());
     std::vector<float> fx(droplet.size()), fy(droplet.size()), fz(droplet.size());
@@ -766,11 +1029,12 @@ void Solver::calibrateInterface(const VesselBoundary& boundary) {
     const int calibrationIterations = std::min(config_.maxPressureIterations, 6);
     for (int step = 0; step < kRelaxationSteps; ++step) {
       calibrationGrid.build(droplet, support);
-      computeNumberDensity(droplet, calibrationGrid, nullptr, support);
+      buildPairCache(droplet, calibrationGrid, support, nullptr, calibrationPairs);
+      computeNumberDensity(droplet, calibrationPairs, nullptr);
       std::fill(droplet.ax.begin(), droplet.ax.end(), 0.0f);
       std::fill(droplet.ay.begin(), droplet.ay.end(), 0.0f);
       std::fill(droplet.az.begin(), droplet.az.end(), 0.0f);
-      addSurfaceAcceleration(droplet, calibrationGrid, phases_, mass_, trialModel, support,
+      addSurfaceAcceleration(droplet, calibrationPairs, phases_, mass_, trialModel, support,
                              curvature);
       std::fill(droplet.pressure.begin(), droplet.pressure.end(), 0.0f);
       std::fill(fx.begin(), fx.end(), 0.0f);
@@ -806,8 +1070,8 @@ void Solver::calibrateInterface(const VesselBoundary& boundary) {
               std::max(0.0, static_cast<double>(droplet.pressure[i]) +
                                 calibrationStiffness[phase] * error[i]));
         }
-        computePressureForce(droplet, calibrationGrid, support, px, py, pz, delta0_, error, fx,
-                             fy, fz);
+        computePressureForce(droplet, calibrationPairs, support, px, py, pz, delta0_, error,
+                             fx, fy, fz);
       }
 
       for (std::size_t i = 0; i < droplet.size(); ++i) {

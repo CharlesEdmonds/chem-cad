@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -827,22 +828,29 @@ fluid::VesselMotion shakeReportMotion(const SolubilityState& s) {
 
 void drawFluidDiagnostics(SolubilityState& s) {
   const size_t resolutionIndex =
-      std::min(static_cast<size_t>(s.fluidResolution), kFluidResolutionNames.size() - 1);
+      std::min(static_cast<size_t>(s.fluidResolution),
+               kFluidResolutionNames.size() - 1);
 
   ImGui::Spacing();
   ImGui::Separator();
   ImGui::TextDisabled("REAL FLUID READOUT");
 
   fluid::Simulation* simulation = availableFluid(s);
-  fluid::Diagnostics diagnostics;
+  std::shared_ptr<const fluid::Snapshot> snapshot;
+  fluid::Solver::Stats stats;
+  double realTimeFactor = std::numeric_limits<double>::quiet_NaN();
+  bool stepping = false;
   std::string status;
   const bool readable =
       simulation &&
       runFluidInteraction(s, [&] {
-        diagnostics = simulation->diagnostics();
+        snapshot = simulation->snapshot();
+        stats = simulation->solverStats();
+        realTimeFactor = simulation->realTimeFactor();
+        stepping = simulation->stepping();
         status = simulation->statusLine();
       });
-  if (!readable) {
+  if (!readable || !snapshot) {
     const FluidBoundaryState& state = fluidBoundaryState(s);
     ImGui::TextColored(style::col::Danger, "Physics unavailable");
     ImGui::TextWrapped("%s", state.reason.empty() ? "Fluid setup did not complete."
@@ -850,47 +858,82 @@ void drawFluidDiagnostics(SolubilityState& s) {
     return;
   }
 
+  const char* runState = s.funnelRunning ? "RUNNING" : "PAUSED";
+  ImGui::TextColored(s.funnelRunning ? style::col::Success : style::col::TextDim,
+                     "%s%s", runState, stepping ? " - physics step active" : "");
   ImGui::TextWrapped("%s", status.c_str());
-  if (!diagnostics.valid) {
-    ImGui::TextWrapped(
-        "Particle-resolved estimates are waiting for the first solver step.");
-    return;
-  }
-
   ImGui::TextWrapped("Particle-resolved %s-resolution estimates (dx %.0f mm)",
                      kFluidResolutionNames[resolutionIndex],
                      selectedFluidSpacing(s) * 1000.0);
+
+  const bool completedStep = snapshot->elapsedS > 0.0;
+  const fluid::Diagnostics& diagnostics = snapshot->diagnostics;
   const int columns = ImGui::GetContentRegionAvail().x >= 500.0f ? 3 : 1;
   constexpr ImGuiTableFlags flags =
       ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
   if (ImGui::BeginTable("##fluid_diagnostics", columns, flags)) {
     ImGui::TableNextColumn();
+    ImGui::TextDisabled("SUBSTEPS");
+    if (completedStep && stats.substeps > 0)
+      ImGui::Text("%d", stats.substeps);
+    else
+      ImGui::TextUnformatted("Waiting for completed step");
+
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("WORST DENSITY ERROR");
+    if (completedStep && stats.substeps > 0)
+      ImGui::Text("%.2f%%", stats.maxDensityError * 100.0);
+    else
+      ImGui::TextUnformatted("Unavailable");
+
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("REAL-TIME FACTOR");
+    if (completedStep && std::isfinite(realTimeFactor))
+      ImGui::Text("%.2fx", realTimeFactor);
+    else
+      ImGui::TextUnformatted("Waiting for completed step");
+
+    ImGui::TableNextColumn();
     ImGui::TextDisabled("DISPERSED");
-    ImGui::Text("%.1f%%", diagnostics.dispersedFraction * 100.0);
+    if (completedStep && diagnostics.valid)
+      ImGui::Text("%.1f%%", diagnostics.dispersedFraction * 100.0);
+    else
+      ImGui::TextUnformatted("Unavailable");
 
     ImGui::TableNextColumn();
     ImGui::TextDisabled("SAUTER d32");
-    if (diagnostics.sauterDiameterM > 0.0)
+    if (!completedStep || !diagnostics.valid)
+      ImGui::TextUnformatted("Unavailable");
+    else if (diagnostics.sauterDiameterM > 0.0)
       ImGui::Text("%.0f um", diagnostics.sauterDiameterM * 1.0e6);
     else
-      ImGui::TextUnformatted("No dispersed drops");
+      ImGui::TextUnformatted("No resolved drops");
 
     ImGui::TableNextColumn();
     ImGui::TextDisabled("INTERFACIAL AREA");
-    ImGui::Text("%.2f cm^2", diagnostics.interfacialAreaM2 * 1.0e4);
+    if (completedStep && diagnostics.valid)
+      ImGui::Text("%.2f cm^2", diagnostics.interfacialAreaM2 * 1.0e4);
+    else
+      ImGui::TextUnformatted("Unavailable");
 
     ImGui::TableNextColumn();
     ImGui::TextDisabled("FREE SURFACE");
-    ImGui::Text("%.1f mm", diagnostics.freeSurfaceM * 1000.0);
+    if (completedStep && diagnostics.valid)
+      ImGui::Text("%.1f mm", diagnostics.freeSurfaceM * 1000.0);
+    else
+      ImGui::TextUnformatted("Unavailable");
 
-    const size_t phaseCount = std::min(diagnostics.phases.size(), s.funnel.phases.size());
-    for (size_t i = 0; i < phaseCount; ++i) {
-      ImGui::TableNextColumn();
-      ImGui::TextDisabled("%s BULK", s.funnel.phases[i].label.c_str());
-      if (diagnostics.phases[i].bulkResolved)
-        ImGui::Text("%.1f mL", diagnostics.phases[i].bulkMl);
-      else
-        ImGui::TextUnformatted("Bulk unresolved");
+    if (completedStep && diagnostics.valid) {
+      const size_t phaseCount =
+          std::min(diagnostics.phases.size(), s.funnel.phases.size());
+      for (size_t i = 0; i < phaseCount; ++i) {
+        ImGui::TableNextColumn();
+        ImGui::TextDisabled("%s BULK", s.funnel.phases[i].label.c_str());
+        if (diagnostics.phases[i].bulkResolved)
+          ImGui::Text("%.1f mL", diagnostics.phases[i].bulkMl);
+        else
+          ImGui::TextUnformatted("Bulk unresolved");
+      }
     }
     ImGui::EndTable();
   }
@@ -937,6 +980,8 @@ void drawTransportControls(SolubilityState& s) {
     s.fluidTiltAngularVelocityRadS = 0.0f;
     if (recharged) s.statusMessage = "Particle vessel recharged";
   }
+  ImGui::TextColored(s.funnelRunning ? style::col::Success : style::col::TextDim,
+                     "%s", s.funnelRunning ? "Running" : "Paused");
 
   ImGui::TableNextColumn();
   ImGui::TextDisabled("SIMULATION SPEED");
@@ -1301,14 +1346,14 @@ void updateFluidPose(SolubilityState& s, fluid::Simulation& simulation, double d
 void stepSimulation(SolubilityState& s) {
   fluid::Simulation* simulation = availableFluid(s);
   if (!simulation) return;
-  // Clamp a hitched frame before scaling so neither a high speed setting nor a
-  // debugger pause can hand the CFL-controlled solver an unbounded interval.
-  const double dt = std::clamp(
-      static_cast<double>(ImGui::GetIO().DeltaTime) * s.funnelSpeed, 0.0, 0.1);
-  if (dt <= 0.0) return;
+  const double frameDelta = static_cast<double>(ImGui::GetIO().DeltaTime);
+  if (!(frameDelta > 0.0) || !std::isfinite(frameDelta)) return;
+  const double requestedSeconds = frameDelta * s.funnelSpeed;
+  const double poseSeconds = std::min(requestedSeconds, 0.1);
   runFluidInteraction(s, [&] {
-    updateFluidPose(s, *simulation, dt);
-    if (s.funnelRunning) simulation->advance(dt);
+    updateFluidPose(s, *simulation, poseSeconds);
+    if (s.funnelRunning)
+      simulation->requestAdvance(frameDelta * s.funnelSpeed);
   });
 }
 

@@ -1,11 +1,14 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <chrono>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <vector>
+#include <iostream>
 
 #include "fluid/frame.hpp"
 #include "fluid/kernels.hpp"
@@ -111,6 +114,31 @@ void checkFiniteAndContained(const fluid::Particles& particles,
     CHECK(boundary.query(particles.px[i], particles.py[i], particles.pz[i]).distance <=
           contactRadius + 2.0e-6);
   }
+}
+
+void setFluidWorkers(unsigned workers) {
+  const char* value = workers == 1 ? "1" : workers == 2 ? "2" : workers == 6 ? "6" : "0";
+#ifdef _WIN32
+  REQUIRE(_putenv_s("CHEMCAD_FLUID_WORKERS", value) == 0);
+#else
+  REQUIRE(setenv("CHEMCAD_FLUID_WORKERS", value, 1) == 0);
+#endif
+}
+
+fluid::Particles benchmarkParticles(std::size_t count, double spacing) {
+  fluid::Particles particles;
+  const std::size_t side =
+      static_cast<std::size_t>(std::ceil(std::cbrt(static_cast<double>(count))));
+  for (std::size_t i = 0; i < count; ++i) {
+    const std::size_t x = i % side;
+    const std::size_t y = (i / side) % side;
+    const std::size_t z = i / (side * side);
+    particles.add(static_cast<float>((static_cast<double>(x) - 0.5 * side) * spacing),
+                  static_cast<float>((static_cast<double>(y) - 0.5 * side) * spacing),
+                  static_cast<float>(1.0 + static_cast<double>(z) * spacing),
+                  static_cast<uint8_t>(z >= side / 2));
+  }
+  return particles;
 }
 
 }  // namespace
@@ -351,12 +379,16 @@ TEST_CASE("identical fluid runs are bit deterministic") {
   fluid::Particles a;
   boundary.chargeLattice(phases, config.resolution.spacing, a);
   fluid::Particles b = a;
+  fluid::Particles c = a;
   fluid::Solver first;
   fluid::Solver second;
+  fluid::Solver third;
   first.configure(config);
   second.configure(config);
+  third.configure(config);
   first.setPhases(phases, {0.025});
   second.setPhases(phases, {0.025});
+  third.setPhases(phases, {0.025});
   fluid::VesselMotion shake;
   shake.shaking = true;
   shake.shakeRemainingS = 1.0;
@@ -365,8 +397,14 @@ TEST_CASE("identical fluid runs are bit deterministic") {
   shake.shakeAxis = {0.25, -0.5, 1.0};
   double ta = 0.0;
   double tb = 0.0;
+  setFluidWorkers(1);
   runSteps(first, a, boundary, shake, 240, ta);
+  setFluidWorkers(2);
   runSteps(second, b, boundary, shake, 240, tb);
+  double tc = 0.0;
+  setFluidWorkers(6);
+  runSteps(third, c, boundary, shake, 240, tc);
+  setFluidWorkers(0);
 
   CHECK(a.id == b.id);
   CHECK(a.phase == b.phase);
@@ -376,6 +414,45 @@ TEST_CASE("identical fluid runs are bit deterministic") {
   CHECK(a.vx == b.vx);
   CHECK(a.vy == b.vy);
   CHECK(a.vz == b.vz);
+  CHECK(a.id == c.id);
+  CHECK(a.phase == c.phase);
+  CHECK(a.px == c.px);
+  CHECK(a.py == c.py);
+  CHECK(a.pz == c.pz);
+  CHECK(a.vx == c.vx);
+  CHECK(a.vy == c.vy);
+  CHECK(a.vz == c.vz);
+}
+
+TEST_CASE("shipping-resolution substep timing") {
+  // Measured on the shipping Windows workstation with Release MSVC:
+  // before: 282.590/563.174/1174.000 ms at 1500/3100/6000 particles;
+  // after:   32.117/49.173/77.099 ms (11.45x at the 3100-particle charge).
+  fluid::SolverConfig config;
+  config.resolution.spacing = 4.0e-3;
+  config.maxPressureIterations = 8;
+  config.maxSubstepS = 1.0 / 480.0;
+  fluid::VesselBoundary boundary = cylinder(config, 3.0);
+  const std::vector<fluid::PhaseMaterial> phases{
+      phase("aqueous", 998.0, 1.0e-3, 100.0),
+      phase("organic", 1326.0, 1.5e-3, 100.0)};
+
+  for (std::size_t count : {1500U, 3100U, 6000U}) {
+    fluid::Solver solver;
+    solver.configure(config);
+    solver.setPhases(phases, {0.030});
+    fluid::Particles particles = benchmarkParticles(count, config.resolution.spacing);
+    const auto started = std::chrono::steady_clock::now();
+    const int substeps = solver.advance(particles, boundary, noGravity(), 0.0,
+                                        config.maxSubstepS);
+    const auto stopped = std::chrono::steady_clock::now();
+    REQUIRE(substeps == 1);
+    const double elapsedMs =
+        std::chrono::duration<double, std::milli>(stopped - started).count();
+    std::cout << "[fluid timing] particles=" << count
+              << " ms/substep=" << elapsedMs
+              << " ms/simulated-second=" << elapsedMs / config.maxSubstepS << '\n';
+  }
 }
 
 TEST_CASE("the solver remains finite under an abusive shake") {

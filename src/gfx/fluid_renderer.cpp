@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <exception>
 #include <cstddef>
 #include <cstdint>
 #include <sstream>
@@ -15,6 +16,9 @@
 
 namespace chemcad::gfx {
 namespace {
+// GL_RGBA32F is core in OpenGL 3.0; keep the token local because gl_api.hpp
+// exposes only the subset shared by the rest of the application.
+constexpr GLenum kRgba32f = 0x8814;
 
 struct InstanceData {
   float x;
@@ -159,13 +163,13 @@ void main() {
 const char* kDepthFragment = R"GLSL(#version 330 core
 in vec2 vCorner;
 in vec3 vCentreEye;
+flat in float vPhase;
 flat in float vIndicator;
 
 uniform mat4 uProjection;
 uniform float uRadius;
 
-layout(location = 0) out float outDepth;
-layout(location = 1) out float outPhase;
+layout(location = 0) out vec3 outSurface;
 
 void main() {
   float radius2 = dot(vCorner, vCorner);
@@ -178,8 +182,10 @@ void main() {
   vec3 surfaceEye = vCentreEye + uRadius * sphereNormal;
   vec4 clip = uProjection * vec4(surfaceEye, 1.0);
   gl_FragDepth = 0.5 * (clip.z / clip.w) + 0.5;
-  outDepth = -surfaceEye.z;
-  outPhase = clamp(vIndicator, 0.0, 1.0);
+  // Depth, discrete particle phase, and the solver-smoothed colour indicator
+  // must undergo identical filtering or the A/B boundary drifts off the surface.
+  outSurface = vec3(-surfaceEye.z, step(0.5, vPhase),
+                    clamp(vIndicator, 0.0, 1.0));
 }
 )GLSL";
 
@@ -213,46 +219,47 @@ void main() {
 
 const char* kBlurFragment = R"GLSL(#version 330 core
 in vec2 vUv;
-uniform sampler2D uDepth;
+uniform sampler2D uSurface;
 uniform vec2 uDirection;
 uniform vec2 uTexel;
-layout(location = 0) out float outDepth;
+layout(location = 0) out vec3 outSurface;
 
 void main() {
-  float centre = texture(uDepth, vUv).r;
-  if (centre <= 0.0) {
-    outDepth = 0.0;
+  vec3 centre = texture(uSurface, vUv).rgb;
+  if (centre.x <= 0.0) {
+    outSurface = vec3(0.0);
     return;
   }
 
   // Fixed support and range rejection are the separable bilateral form of the
-  // screen-space smoothing in van der Laan, Green & Sainz, I3D 2009. The hard
-  // range gate is important: without it the vessel silhouette leaks into air.
+  // screen-space smoothing in van der Laan, Green & Sainz, I3D 2009. Applying
+  // the same weights to depth and colour keeps the interface on that surface.
   const float spatial[5] = float[](1.0, 0.8825, 0.6065, 0.3247, 0.1353);
-  float threshold = max(0.0025, 0.015 * centre);
-  float sum = centre * spatial[0];
+  float threshold = max(0.0025, 0.015 * centre.x);
+  vec3 sum = centre * spatial[0];
   float weight = spatial[0];
   for (int i = 1; i <= 4; ++i) {
     for (int signIndex = 0; signIndex < 2; ++signIndex) {
       float directionSign = signIndex == 0 ? -1.0 : 1.0;
-      float sampleDepth = texture(uDepth, vUv + directionSign * float(i) * uDirection * uTexel).r;
-      float difference = abs(sampleDepth - centre);
-      if (sampleDepth > 0.0 && difference < threshold) {
-        float rangeWeight = exp(-difference * difference / max(1.0e-7, 0.18 * threshold * threshold));
+      vec3 sampleSurface =
+          texture(uSurface, vUv + directionSign * float(i) * uDirection * uTexel).rgb;
+      float difference = abs(sampleSurface.x - centre.x);
+      if (sampleSurface.x > 0.0 && difference < threshold) {
+        float rangeWeight =
+            exp(-difference * difference / max(1.0e-7, 0.18 * threshold * threshold));
         float w = spatial[i] * rangeWeight;
-        sum += sampleDepth * w;
+        sum += sampleSurface * w;
         weight += w;
       }
     }
   }
-  outDepth = sum / weight;
+  outSurface = sum / weight;
 }
 )GLSL";
 
 const char* kShadeFragment = R"GLSL(#version 330 core
 in vec2 vUv;
-uniform sampler2D uDepth;
-uniform sampler2D uPhase;
+uniform sampler2D uSurface;
 uniform sampler2D uThickness;
 uniform mat4 uInverseProjection;
 uniform vec2 uTexel;
@@ -274,24 +281,30 @@ vec3 eyePosition(vec2 uv, float linearDepth) {
 }
 
 void main() {
-  float depth = texture(uDepth, vUv).r;
-  if (depth <= 0.0) discard;
+  vec3 surface = texture(uSurface, vUv).rgb;
+  float depth = surface.x;
+  if (depth <= 0.0) {
+    outColour = vec4(uBackground, 1.0);
+    return;
+  }
 
-  float depthL = texture(uDepth, vUv - vec2(uTexel.x, 0.0)).r;
-  float depthR = texture(uDepth, vUv + vec2(uTexel.x, 0.0)).r;
-  float depthD = texture(uDepth, vUv - vec2(0.0, uTexel.y)).r;
-  float depthU = texture(uDepth, vUv + vec2(0.0, uTexel.y)).r;
-  depthL = depthL > 0.0 ? depthL : depth;
-  depthR = depthR > 0.0 ? depthR : depth;
-  depthD = depthD > 0.0 ? depthD : depth;
-  depthU = depthU > 0.0 ? depthU : depth;
+  vec3 surfaceL = texture(uSurface, vUv - vec2(uTexel.x, 0.0)).rgb;
+  vec3 surfaceR = texture(uSurface, vUv + vec2(uTexel.x, 0.0)).rgb;
+  vec3 surfaceD = texture(uSurface, vUv - vec2(0.0, uTexel.y)).rgb;
+  vec3 surfaceU = texture(uSurface, vUv + vec2(0.0, uTexel.y)).rgb;
+  surfaceL = surfaceL.x > 0.0 ? surfaceL : surface;
+  surfaceR = surfaceR.x > 0.0 ? surfaceR : surface;
+  surfaceD = surfaceD.x > 0.0 ? surfaceD : surface;
+  surfaceU = surfaceU.x > 0.0 ? surfaceU : surface;
 
   vec3 positionEye = eyePosition(vUv, depth);
-  vec3 tangentX = eyePosition(vUv + vec2(uTexel.x, 0.0), depthR) -
-                  eyePosition(vUv - vec2(uTexel.x, 0.0), depthL);
-  vec3 tangentY = eyePosition(vUv + vec2(0.0, uTexel.y), depthU) -
-                  eyePosition(vUv - vec2(0.0, uTexel.y), depthD);
+  vec3 tangentX = eyePosition(vUv + vec2(uTexel.x, 0.0), surfaceR.x) -
+                  eyePosition(vUv - vec2(uTexel.x, 0.0), surfaceL.x);
+  vec3 tangentY = eyePosition(vUv + vec2(0.0, uTexel.y), surfaceU.x) -
+                  eyePosition(vUv - vec2(0.0, uTexel.y), surfaceD.x);
   vec3 normalEye = normalize(cross(tangentX, tangentY));
+  // Screen-space winding can flip after projection; face the reconstructed
+  // normal toward the eye so diffuse and Fresnel terms cannot black out a surface.
   if (normalEye.z < 0.0) normalEye = -normalEye;
 
   vec3 viewDirection = normalize(-positionEye);
@@ -306,28 +319,55 @@ void main() {
   float fresnel = 0.020 + 0.980 * pow(1.0 - cosTheta, 5.0);
   float rim = pow(1.0 - cosTheta, 2.4);
 
-  float phase = clamp(texture(uPhase, vUv).r, 0.0, 1.0);
+  // Base hue follows the actual surface particle phase; the continuous solver
+  // indicator is reserved for locating the interface rather than muddying phases.
+  float phase = step(0.5, clamp(surface.y, 0.0, 1.0));
   vec4 liquid = mix(uPhaseA, uPhaseB, phase);
-  vec2 thickness = max(texture(uThickness, vUv).rg, vec2(0.0));
-  // Beer-Lambert: T = exp(-mu L), evaluated separately for both path lengths.
-  vec3 transmission = exp(-uAbsorptionScale *
-                          (uAbsorptionA * thickness.x + uAbsorptionB * thickness.y));
+  vec2 thicknessM = max(texture(uThickness, vUv).rg, vec2(0.0));
+  // Beer-Lambert T = exp(-mu L): thickness is already in metres and mu is 1/m.
+  // Keeping that unit contract explicit avoids the 1000x millimetre black bias.
+  vec3 transmission =
+      exp(-uAbsorptionScale *
+          (uAbsorptionA * thicknessM.x + uAbsorptionB * thicknessM.y));
 
   vec3 refractedBackground = uBackground * (0.92 + 0.18 * normalEye.x);
-  vec3 body = mix(liquid.rgb, refractedBackground, transmission);
+  float absorptionCoverage = 1.0 - dot(transmission, vec3(1.0 / 3.0));
+  // Transmission remains spectrally per-phase, while a small tinted scattering
+  // term preserves configured liquid hue against the dark laboratory backdrop.
+  // Its coverage dependence keeps a thin film pale and a 100 mL layer saturated.
+  vec3 body = refractedBackground * transmission +
+              liquid.rgb * (0.08 + 0.72 * absorptionCoverage);
   body *= 0.34 + 0.66 * diffuse;
+  // A diffuse/ambient floor preserves the phase hue even where the key light
+  // misses; a readable laboratory liquid must not collapse to silhouette black.
+  body = max(body, vec3(0.035) + 0.12 * liquid.rgb);
   body += vec3(1.0) * (0.72 * specular + 0.24 * fresnel);
   body += liquid.rgb * (0.18 * rim);
 
-  float interfaceBand = 1.0 - smoothstep(0.18, 0.48, abs(phase - 0.5));
-  body += uShowInterface * interfaceBand * vec3(0.12, 0.17, 0.22);
-  body = vec3(1.0) - exp(-max(uExposure, 0.0) * max(body, vec3(0.0)));
+  float indicator = clamp(surface.z, 0.0, 1.0);
+  vec2 indicatorGradient =
+      0.5 * vec2(surfaceR.z - surfaceL.z, surfaceU.z - surfaceD.z);
+  float gradientStrength = length(indicatorGradient);
+  // Dividing distance from 0.5 by the local indicator slope makes a roughly
+  // one-pixel band exactly where the smoothed A/B field crosses its interface.
+  float interfaceDistance = abs(indicator - 0.5) / max(gradientStrength, 1.0e-4);
+  float interfaceBand = (1.0 - smoothstep(0.25, 1.25, interfaceDistance)) *
+                        smoothstep(0.004, 0.06, gradientStrength);
+  body += uShowInterface * interfaceBand * vec3(0.18, 0.22, 0.28);
 
-  float absorptionCoverage = 1.0 - dot(transmission, vec3(1.0 / 3.0));
+  // Exposure is a true linear multiplier around 1.0. The fixed shoulder only
+  // protects highlights, then explicit sRGB encoding prevents a linear-RGBA8
+  // target from making mid-tones appear much darker than intended.
+  vec3 exposed = max(uExposure, 0.0) * max(body, vec3(0.0));
+  body = pow(exposed / (vec3(1.0) + exposed), vec3(1.0 / 2.2));
+
   float alpha = clamp(max(liquid.a * (0.18 + 0.82 * absorptionCoverage),
                           0.08 + 0.30 * fresnel + 0.14 * rim),
                       0.0, 0.985);
-  outColour = vec4(body * alpha, alpha);
+  // Resolve the liquid once against the stage background and keep the texture
+  // opaque. ImGui would otherwise apply alpha a second time, recreating the
+  // near-black bias and making transparent glass rims disappear.
+  outColour = vec4(mix(uBackground, body, alpha), 1.0);
 }
 )GLSL";
 
@@ -357,13 +397,20 @@ layout(location = 0) out vec4 outColour;
 void main() {
   vec3 n = normalize(vNormalEye);
   vec3 v = normalize(-vPositionEye);
+  if (dot(n, v) < 0.0) n = -n;
   // Front and back surfaces are both visible in real thin glass. Their Schlick
   // rims add, with the rear wall deliberately dimmer to retain depth ordering.
-  float facing = abs(dot(n, v));
+  float facing = clamp(dot(n, v), 0.0, 1.0);
   float fresnel = 0.04 + 0.96 * pow(1.0 - facing, 5.0);
-  float side = mix(1.0, 0.48, uBackFace);
-  float alpha = side * (0.018 + 0.16 * fresnel);
-  outColour = vec4(uTint * alpha, alpha);
+  vec3 lightDirection = normalize(vec3(-0.45, 0.62, 0.70));
+  vec3 halfDirection = normalize(lightDirection + v);
+  // A narrow Blinn-Phong streak supplies the perceptual cue that the otherwise
+  // transparent revolved shell is glass rather than an outline.
+  float streak = pow(max(dot(n, halfDirection), 0.0), 72.0);
+  float side = mix(1.0, 0.52, uBackFace);
+  float alpha = side * (0.040 + 0.24 * fresnel + 0.10 * streak);
+  vec3 colour = mix(uTint, vec3(1.0), 0.55 * streak);
+  outColour = vec4(colour, alpha);
 }
 )GLSL";
 
@@ -548,8 +595,7 @@ struct FluidRenderer::Impl {
   GLuint blurFbo[2]{};
   GLuint thicknessFbo = 0;
   GLuint compositeFbo = 0;
-  GLuint rawDepthTexture = 0;
-  GLuint phaseTexture = 0;
+  GLuint rawSurfaceTexture = 0;
   GLuint blurTexture[2]{};
   GLuint thicknessTexture = 0;
   GLuint compositeTexture = 0;
@@ -568,13 +614,12 @@ struct FluidRenderer::Impl {
     GLint radius = -1;
   } depthUniforms, thicknessUniforms;
   struct BlurUniforms {
-    GLint depth = -1;
+    GLint surface = -1;
     GLint direction = -1;
     GLint texel = -1;
   } blurUniforms;
   struct ShadeUniforms {
-    GLint depth = -1;
-    GLint phase = -1;
+    GLint surface = -1;
     GLint thickness = -1;
     GLint inverseProjection = -1;
     GLint texel = -1;
@@ -607,7 +652,7 @@ struct FluidRenderer::Impl {
       quadVbo = instanceVbo = glassVbo = glassEbo = 0;
       depthFbo = thicknessFbo = compositeFbo = 0;
       blurFbo[0] = blurFbo[1] = 0;
-      rawDepthTexture = phaseTexture = thicknessTexture = compositeTexture = 0;
+      rawSurfaceTexture = thicknessTexture = compositeTexture = 0;
       blurTexture[0] = blurTexture[1] = 0;
       depthStencil = 0;
       valid = false;
@@ -624,9 +669,9 @@ struct FluidRenderer::Impl {
     glDeleteBuffers(4, buffers);
     const GLuint vaos[] = {particleVao, fullscreenVao, glassVao};
     glDeleteVertexArrays(3, vaos);
-    const GLuint textures[] = {rawDepthTexture, phaseTexture, blurTexture[0], blurTexture[1],
+    const GLuint textures[] = {rawSurfaceTexture, blurTexture[0], blurTexture[1],
                                thicknessTexture, compositeTexture};
-    glDeleteTextures(6, textures);
+    glDeleteTextures(5, textures);
     const GLuint framebuffers[] = {depthFbo, blurFbo[0], blurFbo[1], thicknessFbo,
                                    compositeFbo};
     glDeleteFramebuffers(5, framebuffers);
@@ -637,7 +682,7 @@ struct FluidRenderer::Impl {
     quadVbo = instanceVbo = glassVbo = glassEbo = 0;
     depthFbo = thicknessFbo = compositeFbo = 0;
     blurFbo[0] = blurFbo[1] = 0;
-    rawDepthTexture = phaseTexture = thicknessTexture = compositeTexture = 0;
+    rawSurfaceTexture = thicknessTexture = compositeTexture = 0;
     blurTexture[0] = blurTexture[1] = 0;
     depthStencil = 0;
     glassIndexCount = 0;
@@ -656,12 +701,11 @@ struct FluidRenderer::Impl {
                          glGetUniformLocation(thicknessProgram, "uView"),
                          glGetUniformLocation(thicknessProgram, "uProjection"),
                          glGetUniformLocation(thicknessProgram, "uRadius")};
-    blurUniforms = {glGetUniformLocation(blurProgram, "uDepth"),
+    blurUniforms = {glGetUniformLocation(blurProgram, "uSurface"),
                     glGetUniformLocation(blurProgram, "uDirection"),
                     glGetUniformLocation(blurProgram, "uTexel")};
     shadeUniforms = {
-        glGetUniformLocation(shadeProgram, "uDepth"),
-        glGetUniformLocation(shadeProgram, "uPhase"),
+        glGetUniformLocation(shadeProgram, "uSurface"),
         glGetUniformLocation(shadeProgram, "uThickness"),
         glGetUniformLocation(shadeProgram, "uInverseProjection"),
         glGetUniformLocation(shadeProgram, "uTexel"),
@@ -733,8 +777,7 @@ struct FluidRenderer::Impl {
     glGenFramebuffers(2, blurFbo);
     glGenFramebuffers(1, &thicknessFbo);
     glGenFramebuffers(1, &compositeFbo);
-    glGenTextures(1, &rawDepthTexture);
-    glGenTextures(1, &phaseTexture);
+    glGenTextures(1, &rawSurfaceTexture);
     glGenTextures(2, blurTexture);
     glGenTextures(1, &thicknessTexture);
     glGenTextures(1, &compositeTexture);
@@ -764,13 +807,11 @@ struct FluidRenderer::Impl {
     if (width == targetWidth && height == targetHeight) return true;
 
     for (int i = 0; i < 32 && glGetError() != GL_NO_ERROR; ++i) {}
-    allocateTexture(rawDepthTexture, static_cast<GLint>(GL_R32F), GL_RED, GL_FLOAT, GL_NEAREST,
+    allocateTexture(rawSurfaceTexture, static_cast<GLint>(kRgba32f), GL_RGBA, GL_FLOAT,
+                    GL_NEAREST, width, height);
+    allocateTexture(blurTexture[0], static_cast<GLint>(kRgba32f), GL_RGBA, GL_FLOAT, GL_LINEAR,
                     width, height);
-    allocateTexture(phaseTexture, static_cast<GLint>(GL_R16F), GL_RED, GL_FLOAT, GL_NEAREST,
-                    width, height);
-    allocateTexture(blurTexture[0], static_cast<GLint>(GL_R32F), GL_RED, GL_FLOAT, GL_LINEAR,
-                    width, height);
-    allocateTexture(blurTexture[1], static_cast<GLint>(GL_R32F), GL_RED, GL_FLOAT, GL_LINEAR,
+    allocateTexture(blurTexture[1], static_cast<GLint>(kRgba32f), GL_RGBA, GL_FLOAT, GL_LINEAR,
                     width, height);
     allocateTexture(thicknessTexture, static_cast<GLint>(GL_RG16F), GL_RG, GL_FLOAT, GL_LINEAR,
                     width, height);
@@ -780,17 +821,15 @@ struct FluidRenderer::Impl {
     glBindRenderbuffer(GL_RENDERBUFFER, depthStencil);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
 
-    const GLenum depthAttachments[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+    const GLenum colourAttachment = GL_COLOR_ATTACHMENT0;
     glBindFramebuffer(GL_FRAMEBUFFER, depthFbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rawDepthTexture,
-                           0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, phaseTexture, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           rawSurfaceTexture, 0);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER,
                               depthStencil);
-    glDrawBuffers(2, depthAttachments);
+    glDrawBuffers(1, &colourAttachment);
     if (!checkFramebuffer("depth")) return false;
 
-    const GLenum colourAttachment = GL_COLOR_ATTACHMENT0;
     for (int i = 0; i < 2; ++i) {
       glBindFramebuffer(GL_FRAMEBUFFER, blurFbo[i]);
       glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
@@ -927,7 +966,6 @@ struct FluidRenderer::Impl {
     const Mat4 inverseProjection = inverse(projection);
     const float radius = std::max(1.0e-5f, static_cast<float>(snapshot.particleRadiusM));
     const GLsizei particleCount = static_cast<GLsizei>(instances.size());
-    const GLenum depthAttachments[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
     const GLenum colourAttachment = GL_COLOR_ATTACHMENT0;
     const GLfloat zero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
@@ -939,9 +977,8 @@ struct FluidRenderer::Impl {
     glDisable(GL_FRAMEBUFFER_SRGB);
     // Pass 1: sphere-impostor surface depth and phase indicator.
     glBindFramebuffer(GL_FRAMEBUFFER, depthFbo);
-    glDrawBuffers(2, depthAttachments);
+    glDrawBuffers(1, &colourAttachment);
     glClearBufferfv(GL_COLOR, 0, zero);
-    glClearBufferfv(GL_COLOR, 1, zero);
     const GLfloat farDepth = 1.0f;
     glClearBufferfv(GL_DEPTH, 0, &farDepth);
     glDisable(GL_BLEND);
@@ -959,11 +996,11 @@ struct FluidRenderer::Impl {
     glDepthMask(GL_FALSE);
     glDisable(GL_BLEND);
     glUseProgram(blurProgram);
-    glUniform1i(blurUniforms.depth, 0);
+    glUniform1i(blurUniforms.surface, 0);
     glUniform2f(blurUniforms.texel, 1.0f / static_cast<float>(width),
                 1.0f / static_cast<float>(height));
     glBindVertexArray(fullscreenVao);
-    GLuint smoothedDepth = rawDepthTexture;
+    GLuint smoothedSurface = rawSurfaceTexture;
     const int smoothingPasses = settings.showParticles
                                     ? 0
                                     : std::clamp(static_cast<int>(std::lround(
@@ -973,7 +1010,7 @@ struct FluidRenderer::Impl {
       glBindFramebuffer(GL_FRAMEBUFFER, blurFbo[0]);
       glDrawBuffers(1, &colourAttachment);
       glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D, smoothedDepth);
+      glBindTexture(GL_TEXTURE_2D, smoothedSurface);
       glUniform2f(blurUniforms.direction, 1.0f, 0.0f);
       glDrawArrays(GL_TRIANGLES, 0, 3);
 
@@ -981,7 +1018,7 @@ struct FluidRenderer::Impl {
       glBindTexture(GL_TEXTURE_2D, blurTexture[0]);
       glUniform2f(blurUniforms.direction, 0.0f, 1.0f);
       glDrawArrays(GL_TRIANGLES, 0, 3);
-      smoothedDepth = blurTexture[1];
+      smoothedSurface = blurTexture[1];
     }
 
     // Pass 3: per-phase Beer-Lambert optical path, accumulated additively.
@@ -998,7 +1035,7 @@ struct FluidRenderer::Impl {
     glBindVertexArray(particleVao);
     glDrawArraysInstanced(GL_TRIANGLES, 0, 6, particleCount);
 
-    // Pass 4: reconstruct the smooth surface, shade, and write premultiplied RGBA.
+    // Pass 4: reconstruct the smooth surface, shade, and write straight RGBA.
     glBindFramebuffer(GL_FRAMEBUFFER, compositeFbo);
     glDrawBuffers(1, &colourAttachment);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
@@ -1008,14 +1045,11 @@ struct FluidRenderer::Impl {
     glDepthMask(GL_FALSE);
     glUseProgram(shadeProgram);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, smoothedDepth);
+    glBindTexture(GL_TEXTURE_2D, smoothedSurface);
     glActiveTexture(GL_TEXTURE0 + 1);
-    glBindTexture(GL_TEXTURE_2D, phaseTexture);
-    glActiveTexture(GL_TEXTURE0 + 2);
     glBindTexture(GL_TEXTURE_2D, thicknessTexture);
-    glUniform1i(shadeUniforms.depth, 0);
-    glUniform1i(shadeUniforms.phase, 1);
-    glUniform1i(shadeUniforms.thickness, 2);
+    glUniform1i(shadeUniforms.surface, 0);
+    glUniform1i(shadeUniforms.thickness, 1);
     glUniformMatrix4fv(shadeUniforms.inverseProjection, 1, GL_FALSE, inverseProjection.data());
     glUniform2f(shadeUniforms.texel, 1.0f / static_cast<float>(width),
                 1.0f / static_cast<float>(height));
@@ -1040,7 +1074,10 @@ struct FluidRenderer::Impl {
     if (settings.showGlass && glassIndexCount > 0) {
       glEnable(GL_BLEND);
       glBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
-      glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ONE);
+      // The composite target stores straight colour because ImGui supplies the
+      // final source-alpha blend; use the matching over operator for glass too.
+      glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE,
+                          GL_ONE_MINUS_SRC_ALPHA);
       glDisable(GL_DEPTH_TEST);
       glDepthMask(GL_FALSE);
       glEnable(GL_CULL_FACE);
@@ -1105,32 +1142,42 @@ std::uint32_t FluidRenderer::render(const fluid::Snapshot& snapshot, const Camer
                                     int width, int height,
                                     const FluidRenderSettings& settings) {
   if (!impl_->valid || width <= 0 || height <= 0) return 0;
-  for (int i = 0; i < 32 && glGetError() != GL_NO_ERROR; ++i) {}
   const auto started = std::chrono::steady_clock::now();
-  GlState savedState;
-  if (!impl_->resizeTargets(width, height)) {
+  const auto finishFailure = [&]() {
     impl_->frameMilliseconds =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
             .count();
-    return 0;
-  }
+    return std::uint32_t{0};
+  };
 
-  impl_->uploadInstances(snapshot);
-  impl_->rebuildGlass(snapshot);
-  const GLuint texture = impl_->drawFrame(snapshot, camera, width, height, settings);
-  const GLenum errorCode = glGetError();
-  if (errorCode != GL_NO_ERROR) {
-    impl_->setFailure("Fluid rendering failed: " + glErrorMessage(errorCode));
+  try {
+    for (int i = 0; i < 32 && glGetError() != GL_NO_ERROR; ++i) {}
+    GlState savedState;
+    if (!impl_->resizeTargets(width, height)) return finishFailure();
+
+    impl_->uploadInstances(snapshot);
+    impl_->rebuildGlass(snapshot);
+    const GLuint texture = impl_->drawFrame(snapshot, camera, width, height, settings);
+    const GLenum errorCode = glGetError();
+    if (errorCode != GL_NO_ERROR) {
+      impl_->setFailure("Fluid rendering failed: " + glErrorMessage(errorCode));
+      return finishFailure();
+    }
+
     impl_->frameMilliseconds =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
             .count();
-    return 0;
+    impl_->presentedTexture = texture;
+    return texture;
+  } catch (const std::exception& exception) {
+    // Snapshot upload and glass tessellation allocate; converting any failure to
+    // renderer state keeps exceptions from escaping the application's UI seam.
+    impl_->setFailure(std::string("Fluid rendering failed: ") + exception.what());
+    return finishFailure();
+  } catch (...) {
+    impl_->setFailure("Fluid rendering failed with an unknown error");
+    return finishFailure();
   }
-
-  impl_->frameMilliseconds =
-      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-  impl_->presentedTexture = texture;
-  return texture;
 }
 
 std::uint32_t FluidRenderer::colourTexture() const {

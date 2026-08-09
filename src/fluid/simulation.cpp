@@ -1,18 +1,22 @@
 #include "fluid/simulation.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <exception>
 #include <iomanip>
+#include <limits>
 #include <mutex>
 #include <numeric>
 #include <sstream>
+#include <thread>
 #include <utility>
 
 namespace chemcad::fluid {
 namespace {
 
-constexpr double kDiagnosticsPeriodS = 1.0 / 30.0;
 constexpr double kMaximumAdvanceS = 0.1;
 constexpr double kShakeTimerToleranceS = 1.0e-12;
 
@@ -51,6 +55,7 @@ struct Simulation::Impl {
   DiagnosticsEngine diagnosticsEngine;
   NeighbourGrid diagnosticsGrid;
   VesselMotion motion;
+  VesselMotion requestedMotion;
   Resolution resolution;
   std::vector<PhaseMaterial> phases;
   std::vector<double> sigmaPairs;
@@ -60,15 +65,30 @@ struct Simulation::Impl {
   double ratedVolumeMl = 250.0;
   double vesselHeightM = 0.19;
   double elapsed = 0.0;
-  double diagnosticsClock = 0.0;
   Diagnostics latestDiagnostics;
   uint64_t revision = 0;
+  uint64_t requestedShakeGeneration = 0;
+  uint64_t appliedShakeGeneration = 0;
 
   mutable std::mutex stepMutex;
+  mutable std::mutex controlMutex;
   mutable std::mutex publicationMutex;
+  mutable std::mutex workMutex;
+  std::condition_variable workAvailable;
+  std::condition_variable idle;
+  std::thread worker;
+  bool stopping = false;
+  bool active = false;
+  bool invalidRequest = false;
+  double queuedRealtimeSeconds = 0.0;
+  double queuedExactSeconds = 0.0;
+  double activeSeconds = 0.0;
+  std::atomic<double> measuredRealTimeFactor{
+      std::numeric_limits<double>::quiet_NaN()};
   std::shared_ptr<const Snapshot> published;
   std::shared_ptr<const Solver::Stats> publishedStats =
       std::make_shared<const Solver::Stats>();
+  std::string publishedIssue;
 
   Impl() {
     SolverConfig config;
@@ -77,6 +97,19 @@ struct Simulation::Impl {
     vesselHeightM = vesselHeight(vessel, ratedVolumeMl);
     boundary.build(vessel, vesselHeightM, resolution.support(), resolution.spacing);
     publish();
+    worker = std::thread([this] { workerLoop(); });
+  }
+
+  ~Impl() {
+    {
+      std::lock_guard<std::mutex> lock(workMutex);
+      stopping = true;
+      queuedRealtimeSeconds = 0.0;
+      queuedExactSeconds = 0.0;
+      invalidRequest = false;
+    }
+    workAvailable.notify_one();
+    if (worker.joinable()) worker.join();
   }
 
   void rebuildBoundary() {
@@ -116,6 +149,17 @@ struct Simulation::Impl {
     latestDiagnostics = diagnosticsEngine.smooth(raw, intervalS);
   }
 
+  void resetMotionForCharge() {
+    std::lock_guard<std::mutex> controlLock(controlMutex);
+    const Pose retainedPose = requestedMotion.pose;
+    requestedMotion = {};
+    requestedMotion.pose = retainedPose;
+    ++requestedShakeGeneration;
+    appliedShakeGeneration = requestedShakeGeneration;
+    motion = {};
+    motion.pose = retainedPose;
+  }
+
   bool charge(bool preserveIssue = false) {
     if (!preserveIssue &&
         statusIssue.rfind("Surface tension disabled:", 0) != 0) {
@@ -139,12 +183,8 @@ struct Simulation::Impl {
         return false;
       }
       zeroParticleMotion();
-
-      const Pose retainedPose = motion.pose;
-      motion = {};
-      motion.pose = retainedPose;
+      resetMotionForCharge();
       elapsed = 0.0;
-      diagnosticsClock = 0.0;
       recomputeDiagnostics(0.0);
       publish();
       return true;
@@ -161,6 +201,162 @@ struct Simulation::Impl {
     return false;
   }
 
+  void applyRequestedMotion(VesselMotion& motionForStep,
+                            uint64_t& shakeGenerationForStep) {
+    std::lock_guard<std::mutex> controlLock(controlMutex);
+    motion.pose = requestedMotion.pose;
+    motion.manualAcceleration = requestedMotion.manualAcceleration;
+    motion.angularVelocity = requestedMotion.angularVelocity;
+    motion.angularAcceleration = requestedMotion.angularAcceleration;
+    if (appliedShakeGeneration != requestedShakeGeneration) {
+      motion.shaking = requestedMotion.shaking;
+      motion.shakeAxis = requestedMotion.shakeAxis;
+      motion.shakeRemainingS = requestedMotion.shakeRemainingS;
+      motion.shakeFrequencyHz = requestedMotion.shakeFrequencyHz;
+      motion.shakeAmplitudeM = requestedMotion.shakeAmplitudeM;
+      appliedShakeGeneration = requestedShakeGeneration;
+    }
+    shakeGenerationForStep = appliedShakeGeneration;
+    motionForStep = motion;
+  }
+
+  void publishShakeState(uint64_t shakeGenerationForStep) {
+    std::lock_guard<std::mutex> controlLock(controlMutex);
+    if (requestedShakeGeneration != shakeGenerationForStep) return;
+    requestedMotion.shaking = motion.shaking;
+    requestedMotion.shakeRemainingS = motion.shakeRemainingS;
+  }
+
+  bool integrate(double stepS) {
+    std::lock_guard<std::mutex> lock(stepMutex);
+    if (particles.empty()) {
+      statusIssue = phases.empty()
+                        ? "Advance ignored: configure fluid phases and charge"
+                        : "Advance ignored: no fluid is charged";
+      publish();
+      return false;
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    try {
+      VesselMotion motionForStep;
+      uint64_t shakeGenerationForStep = 0;
+      applyRequestedMotion(motionForStep, shakeGenerationForStep);
+      // Keep the shake armed for the interval that begins while its timer is
+      // positive. The analytic p''(t) in frame.cpp is sampled by every solver
+      // substep; no pointer finite difference enters the forcing term.
+      solver.advance(particles, boundary, motionForStep, elapsed, stepS);
+      elapsed += stepS;
+      if (motion.shaking) {
+        motion.shakeRemainingS =
+            std::max(0.0, motion.shakeRemainingS - stepS);
+        if (motion.shakeRemainingS <= kShakeTimerToleranceS) {
+          motion.shakeRemainingS = 0.0;
+          motion.shaking = false;
+        }
+      }
+      publishShakeState(shakeGenerationForStep);
+
+      // Diagnostics are part of the immutable completed-step publication. They
+      // are recomputed here so the UI never labels a new solver state with an
+      // older interface estimate.
+      recomputeDiagnostics(stepS);
+      const double wallSeconds =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
+              .count();
+      const double factor =
+          wallSeconds > 0.0 ? std::min(1.0, stepS / wallSeconds) : 1.0;
+      measuredRealTimeFactor.store(factor, std::memory_order_release);
+      publish();
+      return true;
+    } catch (const std::exception& error) {
+      particles.clear();
+      latestDiagnostics = {};
+      statusIssue = std::string("Fluid advance stopped: ") + error.what();
+    } catch (...) {
+      particles.clear();
+      latestDiagnostics = {};
+      statusIssue = "Fluid advance stopped";
+    }
+    publish();
+    return false;
+  }
+
+  void publishInvalidRequest() {
+    std::lock_guard<std::mutex> lock(stepMutex);
+    statusIssue = "Advance ignored: timestep must be finite and positive";
+    publish();
+  }
+
+  void enqueueAdvance(double simulatedSeconds, bool applyRealtimeBudget) {
+    {
+      std::lock_guard<std::mutex> lock(workMutex);
+      if (!(simulatedSeconds > 0.0) || !std::isfinite(simulatedSeconds)) {
+        invalidRequest = true;
+      } else if (!stopping) {
+        // Count the in-flight interval against the cap as well as queued
+        // demand. A slow solve therefore drops excess wall-clock demand rather
+        // than finishing one expensive step only to find another 0.1 s batch.
+        const double queued =
+            queuedRealtimeSeconds + queuedExactSeconds;
+        const double room =
+            std::max(0.0, kMaximumAdvanceS - activeSeconds - queued);
+        double& destination =
+            applyRealtimeBudget ? queuedRealtimeSeconds : queuedExactSeconds;
+        destination += std::min(simulatedSeconds, room);
+      }
+    }
+    workAvailable.notify_one();
+  }
+
+  void workerLoop() {
+    for (;;) {
+      double stepS = 0.0;
+      bool rejectRequest = false;
+      {
+        std::unique_lock<std::mutex> lock(workMutex);
+        workAvailable.wait(lock, [this] {
+          return stopping || invalidRequest || queuedRealtimeSeconds > 0.0 ||
+                 queuedExactSeconds > 0.0;
+        });
+        if (stopping) break;
+        rejectRequest = invalidRequest;
+        invalidRequest = false;
+        const double measured =
+            measuredRealTimeFactor.load(std::memory_order_acquire);
+        const double budgetFactor =
+            std::isfinite(measured) ? std::clamp(measured, 0.01, 1.0) : 1.0;
+        stepS = queuedExactSeconds +
+                queuedRealtimeSeconds * budgetFactor;
+        queuedRealtimeSeconds = 0.0;
+        queuedExactSeconds = 0.0;
+        active = true;
+        activeSeconds = stepS;
+      }
+
+      if (rejectRequest) publishInvalidRequest();
+      if (stepS > 0.0) integrate(stepS);
+
+      {
+        std::lock_guard<std::mutex> lock(workMutex);
+        active = false;
+        activeSeconds = 0.0;
+        if (stopping) {
+          queuedRealtimeSeconds = 0.0;
+          queuedExactSeconds = 0.0;
+        }
+      }
+      idle.notify_all();
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(workMutex);
+      active = false;
+      activeSeconds = 0.0;
+    }
+    idle.notify_all();
+  }
+
   void publish() {
     auto next = std::make_shared<Snapshot>();
     const std::size_t count = particles.size();
@@ -174,7 +370,8 @@ struct Simulation::Impl {
       const double vx = particles.vx[i];
       const double vy = particles.vy[i];
       const double vz = particles.vz[i];
-      next->speed[i] = static_cast<float>(std::sqrt(vx * vx + vy * vy + vz * vz));
+      next->speed[i] =
+          static_cast<float>(std::sqrt(vx * vx + vy * vy + vz * vz));
       if (i < particles.colour.size()) {
         next->colour[i] = particles.colour[i];
       } else if (i < particles.phase.size()) {
@@ -195,6 +392,7 @@ struct Simulation::Impl {
     std::lock_guard<std::mutex> lock(publicationMutex);
     published = std::move(next);
     publishedStats = std::move(nextStats);
+    publishedIssue = statusIssue;
   }
 };
 
@@ -326,82 +524,62 @@ bool Simulation::charged() const {
 
 void Simulation::shake(const std::array<double, 3>& axis, double durationS,
                        double frequencyHz, double amplitudeM) {
-  std::lock_guard<std::mutex> lock(impl_->stepMutex);
-  impl_->motion.shakeAxis = normalisedAxis(axis);
-  impl_->motion.shakeRemainingS = std::max(0.0, durationS);
-  impl_->motion.shakeFrequencyHz = std::max(0.0, frequencyHz);
-  impl_->motion.shakeAmplitudeM = std::abs(amplitudeM);
-  impl_->motion.shaking = impl_->motion.shakeRemainingS > 0.0 &&
-                          impl_->motion.shakeFrequencyHz > 0.0 &&
-                          impl_->motion.shakeAmplitudeM > 0.0;
+  std::lock_guard<std::mutex> lock(impl_->controlMutex);
+  impl_->requestedMotion.shakeAxis = normalisedAxis(axis);
+  impl_->requestedMotion.shakeRemainingS = std::max(0.0, durationS);
+  impl_->requestedMotion.shakeFrequencyHz = std::max(0.0, frequencyHz);
+  impl_->requestedMotion.shakeAmplitudeM = std::abs(amplitudeM);
+  impl_->requestedMotion.shaking =
+      impl_->requestedMotion.shakeRemainingS > 0.0 &&
+      impl_->requestedMotion.shakeFrequencyHz > 0.0 &&
+      impl_->requestedMotion.shakeAmplitudeM > 0.0;
+  ++impl_->requestedShakeGeneration;
 }
 
-void Simulation::setManualAcceleration(const std::array<double, 3>& acceleration) {
-  std::lock_guard<std::mutex> lock(impl_->stepMutex);
-  impl_->motion.manualAcceleration = acceleration;
+void Simulation::setManualAcceleration(
+    const std::array<double, 3>& acceleration) {
+  std::lock_guard<std::mutex> lock(impl_->controlMutex);
+  impl_->requestedMotion.manualAcceleration = acceleration;
 }
 
 void Simulation::setPose(const Pose& pose,
                          const std::array<double, 3>& angularVelocity,
                          const std::array<double, 3>& angularAcceleration) {
-  std::lock_guard<std::mutex> lock(impl_->stepMutex);
-  impl_->motion.pose = pose;
-  impl_->motion.angularVelocity = angularVelocity;
-  impl_->motion.angularAcceleration = angularAcceleration;
+  std::lock_guard<std::mutex> lock(impl_->controlMutex);
+  impl_->requestedMotion.pose = pose;
+  impl_->requestedMotion.angularVelocity = angularVelocity;
+  impl_->requestedMotion.angularAcceleration = angularAcceleration;
+}
+
+void Simulation::requestAdvance(double simulatedSeconds) {
+  impl_->enqueueAdvance(simulatedSeconds, true);
+}
+
+bool Simulation::stepping() const {
+  std::lock_guard<std::mutex> lock(impl_->workMutex);
+  return impl_->active;
+}
+
+double Simulation::pendingSeconds() const {
+  std::lock_guard<std::mutex> lock(impl_->workMutex);
+  return impl_->queuedRealtimeSeconds + impl_->queuedExactSeconds;
+}
+
+void Simulation::waitForIdle() {
+  std::unique_lock<std::mutex> lock(impl_->workMutex);
+  impl_->idle.wait(lock, [this] {
+    return impl_->stopping ||
+           (!impl_->active && !impl_->invalidRequest &&
+            impl_->queuedRealtimeSeconds <= 0.0 &&
+            impl_->queuedExactSeconds <= 0.0);
+  });
 }
 
 void Simulation::advance(double dt) {
-  std::lock_guard<std::mutex> lock(impl_->stepMutex);
-  if (!(dt > 0.0) || !std::isfinite(dt)) {
-    impl_->statusIssue = "Advance ignored: timestep must be finite and positive";
-    impl_->publish();
-    return;
-  }
-  if (impl_->particles.empty()) {
-    impl_->statusIssue = impl_->phases.empty()
-                             ? "Advance ignored: configure fluid phases and charge"
-                             : "Advance ignored: no fluid is charged";
-    impl_->publish();
-    return;
-  }
-  const double stepS = std::min(dt, kMaximumAdvanceS);
-
-  try {
-    // Keep the shake armed for the interval that begins while its timer is
-    // positive. The analytic p''(t) in frame.cpp is sampled by every solver
-    // substep; no pointer finite difference enters the forcing term.
-    const VesselMotion motionForStep = impl_->motion;
-    impl_->solver.advance(impl_->particles, impl_->boundary, motionForStep,
-                          impl_->elapsed, stepS);
-    impl_->elapsed += stepS;
-    if (impl_->motion.shaking) {
-      impl_->motion.shakeRemainingS =
-          std::max(0.0, impl_->motion.shakeRemainingS - stepS);
-      if (impl_->motion.shakeRemainingS <= kShakeTimerToleranceS) {
-        impl_->motion.shakeRemainingS = 0.0;
-        impl_->motion.shaking = false;
-      }
-    }
-
-    impl_->diagnosticsClock += stepS;
-    if (!impl_->latestDiagnostics.valid ||
-        impl_->diagnosticsClock >= kDiagnosticsPeriodS) {
-      const double intervalS = impl_->diagnosticsClock;
-      impl_->diagnosticsClock = 0.0;
-      impl_->recomputeDiagnostics(intervalS);
-    }
-    impl_->publish();
-  } catch (const std::exception& error) {
-    impl_->particles.clear();
-    impl_->latestDiagnostics = {};
-    impl_->statusIssue = std::string("Fluid advance stopped: ") + error.what();
-    impl_->publish();
-  } catch (...) {
-    impl_->particles.clear();
-    impl_->latestDiagnostics = {};
-    impl_->statusIssue = "Fluid advance stopped";
-    impl_->publish();
-  }
+  // Batch callers retain the historical exact-dt contract; only live
+  // non-blocking demand is reduced by the measured real-time budget.
+  impl_->enqueueAdvance(dt, false);
+  waitForIdle();
 }
 
 std::shared_ptr<const Snapshot> Simulation::snapshot() const {
@@ -432,8 +610,11 @@ double Simulation::elapsedS() const {
 }
 
 bool Simulation::shaking() const {
-  std::lock_guard<std::mutex> lock(impl_->stepMutex);
-  return impl_->motion.shaking;
+  std::lock_guard<std::mutex> lock(impl_->controlMutex);
+  return impl_->requestedMotion.shaking;
+}
+double Simulation::realTimeFactor() const {
+  return impl_->measuredRealTimeFactor.load(std::memory_order_acquire);
 }
 
 double Simulation::totalVolumeMl() const {
@@ -448,12 +629,11 @@ std::string Simulation::statusLine() const {
   std::shared_ptr<const Snapshot> state;
   std::shared_ptr<const Solver::Stats> stats;
   std::string issue;
-  std::lock_guard<std::mutex> stepLock(impl_->stepMutex);
-  issue = impl_->statusIssue;
   {
     std::lock_guard<std::mutex> publicationLock(impl_->publicationMutex);
     state = impl_->published;
     stats = impl_->publishedStats;
+    issue = impl_->publishedIssue;
   }
   if (!state || !stats) return "Fluid simulation unavailable";
 
@@ -461,15 +641,34 @@ std::string Simulation::statusLine() const {
   if (!issue.empty()) text << issue << " | ";
   text << std::fixed << std::setprecision(1)
        << "dx " << state->particleRadiusM * 2000.0 << " mm | "
-       << state->px.size() << " particles | " << stats->substeps
-       << " substeps | worst density error "
-       << stats->maxDensityError * 100.0 << "% | ";
+       << state->px.size() << " particles | ";
+  if (state->elapsedS > 0.0) {
+    text << stats->substeps << " substeps | worst density error "
+         << stats->maxDensityError * 100.0 << "% | ";
+  } else {
+    text << "solver step pending | ";
+  }
   if (!state->diagnostics.valid) {
-    text << "diagnostics pending";
+    text << "diagnostics pending | ";
+  } else if (state->elapsedS <= 0.0) {
+    text << "interface diagnostics waiting for a completed step | ";
   } else {
     text << "area " << state->diagnostics.interfacialAreaM2 * 1.0e4
          << " cm^2, dispersed " << state->diagnostics.dispersedFraction * 100.0
-         << "%, d32 " << state->diagnostics.sauterDiameterM * 1000.0 << " mm";
+         << "%, d32 ";
+    if (state->diagnostics.sauterDiameterM > 0.0) {
+      text << state->diagnostics.sauterDiameterM * 1000.0 << " mm";
+    } else {
+      text << "no resolved drops";
+    }
+    text << " | ";
+  }
+
+  const double factor = realTimeFactor();
+  if (std::isfinite(factor)) {
+    text << std::setprecision(2) << "physics at " << factor << "x real time";
+  } else {
+    text << "physics rate pending";
   }
   return text.str();
 }

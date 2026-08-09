@@ -4,9 +4,11 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <cstdint>
 #include <limits>
 #include <utility>
+#include <thread>
 
 namespace chemcad::fluid {
 namespace {
@@ -24,10 +26,67 @@ uint64_t spreadByThree(uint32_t value) {
   return x;
 }
 
+
+unsigned configuredWorkerCount(std::size_t workItems) {
+  constexpr unsigned kMaxWorkers = 8;
+  unsigned requested = std::thread::hardware_concurrency();
+  unsigned overrideWorkers = 0;
+#ifdef _WIN32
+  char* text = nullptr;
+  std::size_t textLength = 0;
+  if (_dupenv_s(&text, &textLength, "CHEMCAD_FLUID_WORKERS") == 0 && text != nullptr) {
+    overrideWorkers = static_cast<unsigned>(std::strtoul(text, nullptr, 10));
+    std::free(text);
+  }
+#else
+  if (const char* text = std::getenv("CHEMCAD_FLUID_WORKERS")) {
+    overrideWorkers = static_cast<unsigned>(std::strtoul(text, nullptr, 10));
+  }
+#endif
+  if (overrideWorkers > 0) {
+    const unsigned availableItems =
+        static_cast<unsigned>(std::max<std::size_t>(1, workItems));
+    return std::clamp(overrideWorkers, 1U,
+                      std::min(kMaxWorkers, availableItems));
+  }
+  if (requested == 0) requested = 1;
+  const unsigned useful =
+      static_cast<unsigned>(std::max<std::size_t>(1, (workItems + 255) / 256));
+  return std::clamp(requested, 1U, std::min(kMaxWorkers, useful));
+}
+
+template <typename Fn>
+void parallelFor(std::size_t count, Fn&& fn) {
+  const unsigned workers = configuredWorkerCount(count);
+  std::array<std::thread, 7> threads;
+  for (unsigned worker = 1; worker < workers; ++worker) {
+    threads[worker - 1] = std::thread([&, worker] {
+      fn(count * worker / workers, count * (worker + 1) / workers);
+    });
+  }
+  fn(0, count / workers);
+  for (unsigned worker = 1; worker < workers; ++worker) threads[worker - 1].join();
+}
+
 template <typename T>
-void swapParticleEntries(std::vector<T>& values, std::size_t a, std::size_t b,
-                         std::size_t particleCount) {
-  if (values.size() == particleCount) std::swap(values[a], values[b]);
+void permuteByCycles(std::vector<T>& values, std::size_t particleCount,
+                     const std::vector<uint32_t>& oldToNew,
+                     const std::vector<uint32_t>& cycleLeaders, std::size_t leaderCount) {
+  if (values.size() != particleCount) return;
+  for (std::size_t cycle = 0; cycle < leaderCount; ++cycle) {
+    const std::size_t leader = cycleLeaders[cycle];
+    T carried = std::move(values[leader]);
+    std::size_t current = leader;
+    for (;;) {
+      const std::size_t next = oldToNew[current];
+      if (next == leader) {
+        values[leader] = std::move(carried);
+        break;
+      }
+      std::swap(carried, values[next]);
+      current = next;
+    }
+  }
 }
 
 }  // namespace
@@ -75,12 +134,14 @@ void NeighbourGrid::build(Particles& particles, double support) {
   cells_.clear();
   cells_.reserve(count);
 
-  for (std::size_t i = 0; i < count; ++i) {
-    int32_t cell[3];
-    cellOf(particles.px[i], particles.py[i], particles.pz[i], cell);
-    keys_[i] = keyOf(cell);
-    order_[i] = static_cast<uint32_t>(i);
-  }
+  parallelFor(count, [&](std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      int32_t cell[3];
+      cellOf(particles.px[i], particles.py[i], particles.pz[i], cell);
+      keys_[i] = keyOf(cell);
+      order_[i] = static_cast<uint32_t>(i);
+    }
+  });
 
   // Stable least-significant-digit radix sort. Eight fixed byte passes avoid
   // comparison-sort implementation differences and preserve the prior index
@@ -105,37 +166,58 @@ void NeighbourGrid::build(Particles& particles, double support) {
     order_.swap(scratchKeys_);
   }
 
-  // Convert new-position -> old-position into old-position -> new-position,
-  // then apply one permutation cycle to every structure-of-arrays member at
-  // once. This needs no temporary particle buffers and, critically, keeps the
-  // immutable id travelling with the physical particle.
+  // Convert new-position -> old-position into old-position -> new-position.
+  // The high bit is available because a practical particle set is far below
+  // 2^31 entries; use it briefly to find disjoint permutation cycles without
+  // allocating another particle-sized buffer.
   for (std::size_t newIndex = 0; newIndex < count; ++newIndex) {
     scratchKeys_[order_[newIndex]] = static_cast<uint32_t>(newIndex);
   }
+  constexpr uint32_t kVisited = uint32_t{1} << 31;
+  constexpr uint32_t kIndexMask = ~kVisited;
+  std::size_t leaderCount = 0;
   for (std::size_t i = 0; i < count; ++i) {
-    while (scratchKeys_[i] != i) {
-      const std::size_t j = scratchKeys_[i];
-      std::swap(keys_[i], keys_[j]);
-      swapParticleEntries(particles.px, i, j, count);
-      swapParticleEntries(particles.py, i, j, count);
-      swapParticleEntries(particles.pz, i, j, count);
-      swapParticleEntries(particles.vx, i, j, count);
-      swapParticleEntries(particles.vy, i, j, count);
-      swapParticleEntries(particles.vz, i, j, count);
-      swapParticleEntries(particles.ax, i, j, count);
-      swapParticleEntries(particles.ay, i, j, count);
-      swapParticleEntries(particles.az, i, j, count);
-      swapParticleEntries(particles.delta, i, j, count);
-      swapParticleEntries(particles.pressure, i, j, count);
-      swapParticleEntries(particles.colour, i, j, count);
-      swapParticleEntries(particles.nx, i, j, count);
-      swapParticleEntries(particles.ny, i, j, count);
-      swapParticleEntries(particles.nz, i, j, count);
-      swapParticleEntries(particles.phase, i, j, count);
-      swapParticleEntries(particles.id, i, j, count);
-      std::swap(scratchKeys_[i], scratchKeys_[j]);
-    }
+    if ((scratchKeys_[i] & kVisited) != 0) continue;
+    order_[leaderCount++] = static_cast<uint32_t>(i);
+    std::size_t current = i;
+    do {
+      const std::size_t next = scratchKeys_[current] & kIndexMask;
+      scratchKeys_[current] |= kVisited;
+      current = next;
+    } while (current != i);
   }
+  for (uint32_t& index : scratchKeys_) index &= kIndexMask;
+
+  // Each SoA member is independent, so workers own complete arrays while
+  // applying the same immutable cycle table. This parallelises permutation
+  // without concurrent writes, atomics, or any change to stable Morton order.
+  constexpr std::size_t kFieldCount = 18;
+  parallelFor(kFieldCount * 256, [&](std::size_t scaledBegin, std::size_t scaledEnd) {
+    const std::size_t fieldBegin = scaledBegin / 256;
+    const std::size_t fieldEnd = scaledEnd / 256;
+    for (std::size_t field = fieldBegin; field < fieldEnd; ++field) {
+      switch (field) {
+        case 0: permuteByCycles(keys_, count, scratchKeys_, order_, leaderCount); break;
+        case 1: permuteByCycles(particles.px, count, scratchKeys_, order_, leaderCount); break;
+        case 2: permuteByCycles(particles.py, count, scratchKeys_, order_, leaderCount); break;
+        case 3: permuteByCycles(particles.pz, count, scratchKeys_, order_, leaderCount); break;
+        case 4: permuteByCycles(particles.vx, count, scratchKeys_, order_, leaderCount); break;
+        case 5: permuteByCycles(particles.vy, count, scratchKeys_, order_, leaderCount); break;
+        case 6: permuteByCycles(particles.vz, count, scratchKeys_, order_, leaderCount); break;
+        case 7: permuteByCycles(particles.ax, count, scratchKeys_, order_, leaderCount); break;
+        case 8: permuteByCycles(particles.ay, count, scratchKeys_, order_, leaderCount); break;
+        case 9: permuteByCycles(particles.az, count, scratchKeys_, order_, leaderCount); break;
+        case 10: permuteByCycles(particles.delta, count, scratchKeys_, order_, leaderCount); break;
+        case 11: permuteByCycles(particles.pressure, count, scratchKeys_, order_, leaderCount); break;
+        case 12: permuteByCycles(particles.colour, count, scratchKeys_, order_, leaderCount); break;
+        case 13: permuteByCycles(particles.nx, count, scratchKeys_, order_, leaderCount); break;
+        case 14: permuteByCycles(particles.ny, count, scratchKeys_, order_, leaderCount); break;
+        case 15: permuteByCycles(particles.nz, count, scratchKeys_, order_, leaderCount); break;
+        case 16: permuteByCycles(particles.phase, count, scratchKeys_, order_, leaderCount); break;
+        case 17: permuteByCycles(particles.id, count, scratchKeys_, order_, leaderCount); break;
+      }
+    }
+  });
 
   if (count == 0) return;
   uint32_t begin = 0;

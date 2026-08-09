@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -441,4 +442,68 @@ TEST_CASE("published snapshots remain internally consistent during advance") {
   REQUIRE(finalState);
   checkSnapshotShape(*finalState);
   CHECK(finalState->revision >= lastRevision);
+}
+
+TEST_CASE("asynchronous requests use the deterministic synchronous integration path") {
+  Simulation asynchronous;
+  Simulation synchronous;
+  configureSimulation(asynchronous);
+  configureSimulation(synchronous);
+  asynchronous.shake({0.0, 0.0, 1.0}, 0.10, 3.0, 0.02);
+  synchronous.shake({0.0, 0.0, 1.0}, 0.10, 3.0, 0.02);
+
+  asynchronous.requestAdvance(0.02);
+  asynchronous.waitForIdle();
+  synchronous.advance(0.02);
+
+  const auto asyncState = asynchronous.snapshot();
+  const auto syncState = synchronous.snapshot();
+  REQUIRE(asyncState);
+  REQUIRE(syncState);
+  CHECK(asyncState->elapsedS == syncState->elapsedS);
+  CHECK(asyncState->px == syncState->px);
+  CHECK(asyncState->py == syncState->py);
+  CHECK(asyncState->pz == syncState->pz);
+  CHECK(asyncState->speed == syncState->speed);
+  CHECK(asyncState->colour == syncState->colour);
+  CHECK(asyncState->phase == syncState->phase);
+  CHECK(asynchronous.solverStats().substeps ==
+        synchronous.solverStats().substeps);
+  CHECK(asynchronous.solverStats().maxDensityError ==
+        synchronous.solverStats().maxDensityError);
+}
+
+TEST_CASE("advance bursts coalesce into a bounded backlog") {
+  Simulation simulation;
+  configureSimulation(simulation);
+  for (int i = 0; i < 128; ++i) simulation.requestAdvance(1.0);
+
+  CHECK(simulation.pendingSeconds() <= 0.1);
+  simulation.waitForIdle();
+  CHECK(simulation.pendingSeconds() == 0.0);
+  CHECK_FALSE(simulation.stepping());
+  CHECK(simulation.elapsedS() <= 0.100000000001);
+}
+
+TEST_CASE("destroying a simulation joins an in-flight step") {
+  CHECK_NOTHROW([] {
+    Simulation simulation;
+    configureSimulation(simulation);
+    simulation.shake({1.0, 0.0, 0.0}, 0.1, 3.0, 0.02);
+    simulation.requestAdvance(0.1);
+    for (int attempt = 0; attempt < 100 && !simulation.stepping(); ++attempt)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    CHECK(simulation.stepping());
+  }());
+}
+
+TEST_CASE("real-time factor is finite after a completed step") {
+  Simulation simulation;
+  configureSimulation(simulation);
+  simulation.advance(0.01);
+
+  CHECK(std::isfinite(simulation.realTimeFactor()));
+  CHECK(simulation.realTimeFactor() > 0.0);
+  CHECK(simulation.realTimeFactor() <= 1.0);
+  CHECK(simulation.statusLine().find("physics at") != std::string::npos);
 }
