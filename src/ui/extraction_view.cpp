@@ -223,7 +223,7 @@ void drawReadout(ImDrawList* draw, const sol::Simulation& sim, ImVec2 regionMin,
   const double fraction = sol::emulsifiedFraction(sim);
   const float lineHeight = ImGui::GetTextLineHeightWithSpacing();
   const float padding = m.gap;
-  const float boxWidth = std::min(220.0f, availableWidth);
+  const float boxWidth = std::min(ImGui::GetFontSize() * 11.0f, availableWidth);
   const size_t layerCount = std::min(sim.phases.size(), sim.settledMl.size());
   const int fixedLines = sim.shake.active ? 4 : 3;
   const float availableHeight = std::max(regionSize.y - m.gap * 2.0f, 0.0f);
@@ -645,10 +645,6 @@ bool animatedShakeButton(bool shaking, ImVec2 size) {
   return clicked;
 }
 
-float labelledControlWidth(const char* label) {
-  const float labelWidth = ImGui::CalcTextSize(label).x + ImGui::GetStyle().ItemInnerSpacing.x;
-  return std::max(1.0f, std::min(138.0f, ImGui::GetContentRegionAvail().x - labelWidth));
-}
 
 void drawTransportControls(SolubilityState& s) {
   sol::Simulation& sim = s.funnel;
@@ -690,8 +686,8 @@ void drawTransportControls(SolubilityState& s) {
 
   ImGui::TableNextColumn();
   ImGui::TextDisabled("SIMULATION SPEED");
-  ImGui::SetNextItemWidth(labelledControlWidth("Speed"));
-  ImGui::SliderFloat("Speed", &s.funnelSpeed, 0.1f, 10.0f, "%.1fx");
+  ImGui::SetNextItemWidth(-1.0f);
+  ImGui::SliderFloat("##speed", &s.funnelSpeed, 0.1f, 10.0f, "%.1fx");
   ImGui::EndTable();
 }
 
@@ -703,19 +699,17 @@ void drawDerivedReadout(const sol::Simulation& sim) {
                        sim.shake.sauterRadiusM * 2.0 /
                        std::max(1e-6, sim.phases.empty() ? 0.03
                                                          : sim.phases[0].interfacialTension * 1e-3);
-  char line1[160];
-  char line2[160];
-  std::snprintf(line1, sizeof(line1), "DERIVED   u %.2f m/s   epsilon %.1f W/kg",
+  char line1[112];
+  char line2[96];
+  std::snprintf(line1, sizeof(line1), "DERIVED   u %.2f m/s   eps %.1f W/kg",
                 sim.shake.peakVelocity, sim.shake.specificPower);
-  std::snprintf(line2, sizeof(line2), "d32 %.0f um   Weber %.1f", dUm, weber);
+  std::snprintf(line2, sizeof(line2), "d32 %.0f um   We %.1f", dUm, weber);
 
   const float width = ImGui::GetContentRegionAvail().x;
   if (width <= 0.0f) return;
   const style::Metrics& m = style::metrics();
   const float lineHeight = ImGui::GetTextLineHeight();
-  const bool singleLine =
-      ImGui::CalcTextSize(line1).x + ImGui::CalcTextSize(line2).x + m.gap * 3.0f < width;
-  const ImVec2 size(width, lineHeight * (singleLine ? 1.0f : 2.0f) + m.gap * 1.5f);
+  const ImVec2 size(width, lineHeight * 2.0f + m.gap * 1.5f);
   const ImVec2 min = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("##derived_readout", size);
   const float hover = widgets::hoverT(ImGui::GetItemID(), ImGui::IsItemHovered());
@@ -728,15 +722,12 @@ void drawDerivedReadout(const sol::Simulation& sim) {
                 m.hairline);
 
   const bool mono = style::pushFont(style::fonts::mono());
+  const float textX = min.x + m.gap;
   const float textY = min.y + m.gap * 0.70f;
-  draw->AddText(ImVec2(min.x + m.gap, textY), style::u32(style::col::TextDim), line1);
-  if (singleLine) {
-    const float x = min.x + m.gap * 2.0f + ImGui::CalcTextSize(line1).x;
-    draw->AddText(ImVec2(x, textY), style::u32(style::col::Teal), line2);
-  } else {
-    draw->AddText(ImVec2(min.x + m.gap, textY + lineHeight), style::u32(style::col::Teal),
-                  line2);
-  }
+  draw->PushClipRect(ImVec2(textX, min.y), ImVec2(max.x - m.gap, max.y), true);
+  draw->AddText(ImVec2(textX, textY), style::u32(style::col::TextDim), line1);
+  draw->AddText(ImVec2(textX, textY + lineHeight), style::u32(style::col::Teal), line2);
+  draw->PopClipRect();
   style::popFont(mono);
 
   if (ImGui::IsItemHovered()) {
@@ -779,18 +770,18 @@ void drawShakeControls(SolubilityState& s) {
 
     ImGui::TableNextColumn();
     ImGui::TextDisabled("DURATION");
-    ImGui::SetNextItemWidth(labelledControlWidth("Duration"));
-    ImGui::DragFloat("Duration##shake", &s.shakeDurationS, 0.1f, 1.0f, 30.0f, "%.0f s");
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::DragFloat("##duration", &s.shakeDurationS, 0.1f, 1.0f, 30.0f, "%.0f s");
 
     ImGui::TableNextColumn();
     ImGui::TextDisabled("FREQUENCY");
-    ImGui::SetNextItemWidth(labelledControlWidth("Frequency"));
-    ImGui::DragFloat("Frequency##shake", &s.shakeFrequencyHz, 0.05f, 0.5f, 6.0f, "%.1f Hz");
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::DragFloat("##frequency", &s.shakeFrequencyHz, 0.05f, 0.5f, 6.0f, "%.1f Hz");
 
     ImGui::TableNextColumn();
     ImGui::TextDisabled("AMPLITUDE");
-    ImGui::SetNextItemWidth(labelledControlWidth("Amplitude"));
-    ImGui::DragFloat("Amplitude##shake", &s.shakeAmplitudeCm, 0.1f, 1.0f, 15.0f, "%.0f cm");
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::DragFloat("##amplitude", &s.shakeAmplitudeCm, 0.1f, 1.0f, 15.0f, "%.0f cm");
     ImGui::EndTable();
   }
 
@@ -820,15 +811,22 @@ void drawPhaseTable(SolubilityState& s, bool& changed) {
   constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                                     ImGuiTableFlags_SizingStretchProp |
                                     ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_PadOuterX;
+  const float tableWidth = ImGui::GetContentRegionAvail().x;
+  const bool compactHeaders = tableWidth < ImGui::GetFontSize() * 34.0f;
   if (!ImGui::BeginTable("##phase_table", 8, flags)) return;
   ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthStretch, 1.80f);
   ImGui::TableSetupColumn("mL", ImGuiTableColumnFlags_WidthStretch, 0.85f);
-  ImGui::TableSetupColumn("g/mL", ImGuiTableColumnFlags_WidthStretch, 0.90f);
-  ImGui::TableSetupColumn("mPa.s", ImGuiTableColumnFlags_WidthStretch, 0.90f);
-  ImGui::TableSetupColumn("mN/m", ImGuiTableColumnFlags_WidthStretch, 0.90f);
-  ImGui::TableSetupColumn("Stability", ImGuiTableColumnFlags_WidthStretch, 1.15f);
-  ImGui::TableSetupColumn("Colour", ImGuiTableColumnFlags_WidthFixed, 46.0f);
-  ImGui::TableSetupColumn("##remove", ImGuiTableColumnFlags_WidthFixed, 32.0f);
+  ImGui::TableSetupColumn(compactHeaders ? "rho" : "g/mL",
+                          ImGuiTableColumnFlags_WidthStretch, 0.90f);
+  ImGui::TableSetupColumn(compactHeaders ? "eta" : "mPa.s",
+                          ImGuiTableColumnFlags_WidthStretch, 0.90f);
+  ImGui::TableSetupColumn(compactHeaders ? "IFT" : "mN/m",
+                          ImGuiTableColumnFlags_WidthStretch, 0.90f);
+  ImGui::TableSetupColumn(compactHeaders ? "Stab" : "Stability",
+                          ImGuiTableColumnFlags_WidthStretch, 1.15f);
+  ImGui::TableSetupColumn(compactHeaders ? "Col" : "Colour",
+                          ImGuiTableColumnFlags_WidthStretch, 0.72f);
+  ImGui::TableSetupColumn("##remove", ImGuiTableColumnFlags_WidthStretch, 0.55f);
   ImGui::TableHeadersRow();
 
   int removeIndex = -1;
@@ -898,7 +896,8 @@ void drawPhaseTable(SolubilityState& s, bool& changed) {
     }
 
     ImGui::TableNextColumn();
-    if (widgets::ghostButton("x", ImVec2(24.0f, 0.0f))) removeIndex = static_cast<int>(i);
+    if (widgets::ghostButton("x", ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
+      removeIndex = static_cast<int>(i);
 
     ImGui::PopID();
   }
@@ -933,7 +932,7 @@ void drawPhaseEditor(SolubilityState& s) {
   if (ImGui::GetContentRegionAvail().x > noteWidth + style::metrics().gap) {
     ImGui::SameLine(0.0f, style::metrics().gap);
   }
-  ImGui::TextDisabled("Densest phase settles to the bottom");
+  ImGui::TextWrapped("Densest phase settles to the bottom");
 
   if (changed) {
     sol::reset(s.funnel);
@@ -1058,13 +1057,13 @@ void consumeExtractionImport(SolubilityState& s) {
 void drawSoluteDistribution(const SolubilityState& s) {
   const PartitionContext ctx = partitionContext(s);
   if (!ctx.valid) {
-    ImGui::TextDisabled("A valid solute and at least two charged phases are required.");
+    ImGui::TextWrapped("A valid solute and at least two charged phases are required.");
     return;
   }
   const sol::Simulation& sim = s.funnel;
   const size_t count = sim.phases.size();
 
-  ImGui::TextDisabled("%s  ·  logP %.2f", s.solute.name.c_str(), s.solute.logP);
+  ImGui::TextWrapped("%s  ·  logP %.2f", s.solute.name.c_str(), s.solute.logP);
 
   const int controlColumns = ImGui::GetContentRegionAvail().x >= 520.0f ? 2 : 1;
   constexpr ImGuiTableFlags controlFlags =
@@ -1073,8 +1072,8 @@ void drawSoluteDistribution(const SolubilityState& s) {
     ImGui::TableNextColumn();
     const float aqueousLabelWidth =
         ImGui::CalcTextSize("Aqueous phase").x + ImGui::GetStyle().ItemInnerSpacing.x;
-    ImGui::SetNextItemWidth(std::max(
-        1.0f, std::min(220.0f, ImGui::GetContentRegionAvail().x - aqueousLabelWidth)));
+    ImGui::SetNextItemWidth(
+        std::max(1.0f, ImGui::GetContentRegionAvail().x - aqueousLabelWidth));
     if (ImGui::BeginCombo("Aqueous phase",
                           sim.phases[static_cast<size_t>(ctx.aqueousIndex)].label.c_str())) {
       for (size_t i = 0; i < count; ++i) {
@@ -1090,7 +1089,7 @@ void drawSoluteDistribution(const SolubilityState& s) {
     const float massLabelWidth =
         ImGui::CalcTextSize("Solute mass").x + ImGui::GetStyle().ItemInnerSpacing.x;
     ImGui::SetNextItemWidth(
-        std::max(1.0f, std::min(220.0f, ImGui::GetContentRegionAvail().x - massLabelWidth)));
+        std::max(1.0f, ImGui::GetContentRegionAvail().x - massLabelWidth));
     ImGui::SliderFloat("Solute mass", &soluteMassMgUi, 1.0f, 1000.0f, "%.0f mg");
     ImGui::EndTable();
   }
@@ -1128,9 +1127,9 @@ void drawSoluteDistribution(const SolubilityState& s) {
                 buf);
   }
 
-  ImGui::TextDisabled("%.1f%% extracted into %s · Neutral-species logP approximation (no pH "
-                      "correction)",
-                      p.fractionOrganic * 100.0, ctx.organicLabel.c_str());
+  ImGui::TextWrapped("%.1f%% extracted into %s · Neutral-species logP approximation (no pH "
+                     "correction)",
+                     p.fractionOrganic * 100.0, ctx.organicLabel.c_str());
 }
 
 // ------------------------------------------------ multi-stage extraction
@@ -1147,8 +1146,13 @@ void drawMultiStageExtraction(const SolubilityState& s) {
   const double q = ctx.volAq / (ctx.K * ctx.volOrg + ctx.volAq);  // stays in aqueous
   const double perWash = 1.0 - q;
 
-  ImGui::TextDisabled("Per-wash recovery E = K·Vorg / (K·Vorg + Vaq)");
-  ImGui::SameLine();
+  const char* recoveryLabel = "Per-wash recovery E = K·Vorg / (K·Vorg + Vaq)";
+  const float recoveryValueWidth = ImGui::CalcTextSize("100.0%").x;
+  const bool recoveryOnOneLine =
+      ImGui::CalcTextSize(recoveryLabel).x + recoveryValueWidth + style::metrics().gap <=
+      ImGui::GetContentRegionAvail().x;
+  ImGui::TextWrapped("%s", recoveryLabel);
+  if (recoveryOnOneLine) ImGui::SameLine(0.0f, style::metrics().gap);
   const bool mono = style::pushFont(style::fonts::mono());
   ImGui::TextColored(style::col::Accent, "%.1f%%", perWash * 100.0);
   style::popFont(mono);
@@ -1207,13 +1211,13 @@ void drawMultiStageExtraction(const SolubilityState& s) {
   }
 
   if (recommended > 0) {
-    ImGui::TextDisabled("%d wash%s with fresh %s recovers >= 99%% of the solute.",
-                        recommended, recommended == 1 ? "" : "es",
-                        ctx.organicLabel.c_str());
+    ImGui::TextWrapped("%d wash%s with fresh %s recovers >= 99%% of the solute.",
+                       recommended, recommended == 1 ? "" : "es",
+                       ctx.organicLabel.c_str());
   } else {
-    ImGui::TextDisabled("Even 6 washes leave > 1%% behind (q = %.3f) -- raise the organic "
-                        "volume or pick a better solvent.",
-                        q);
+    ImGui::TextWrapped("Even 6 washes leave > 1%% behind (q = %.3f) -- raise the organic "
+                       "volume or pick a better solvent.",
+                       q);
   }
 }
 

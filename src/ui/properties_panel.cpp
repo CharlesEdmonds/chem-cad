@@ -32,6 +32,22 @@ BuildNameState& buildNameState() {
   return state;
 }
 
+std::string ellipsize(const std::string& text, float maxWidth) {
+  static constexpr const char* suffix = "...";
+  if (maxWidth <= 0.0f) return {};
+  if (ImGui::CalcTextSize(text.c_str()).x <= maxWidth) return text;
+  const float suffixWidth = ImGui::CalcTextSize(suffix).x;
+  if (maxWidth < suffixWidth) return {};
+  const float contentWidth = maxWidth - suffixWidth;
+
+  size_t end = text.size();
+  while (end > 0 && ImGui::CalcTextSize(text.data(), text.data() + end).x > contentWidth) {
+    --end;
+    while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xC0u) == 0x80u) --end;
+  }
+  return text.substr(0, end) + suffix;
+}
+
 core::Molecule flatten(const core::Document& document) {
   core::Molecule result;
   for (const auto& fragment : document.molecules) {
@@ -185,16 +201,19 @@ void drawPropertiesPanel(AppState& st) {
   }
 
   if (!st.props.chemError.empty()) {
+    ImGui::PushTextWrapPos(0.0f);
     ImGui::TextColored(style::col::Danger, "%s", st.props.chemError.c_str());
+    ImGui::PopTextWrapPos();
   } else if (st.props.computedForRevision != st.docRevision) {
     ImGui::TextDisabled("Updating...");
   } else if (st.props.smiles.empty()) {
-    ImGui::TextDisabled("Draw a structure to see its properties.");
+    ImGui::TextWrapped("Draw a structure to see its properties.");
   } else {
     // Identity dashboard: 2x2 stat grid, mono values.
-    const float avail = ImGui::GetContentRegionAvail().x;
+    const float avail = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
-    const float cardW = (avail - spacing) * 0.5f;
+    const bool twoColumns = avail >= ImGui::GetFontSize() * 14.0f;
+    const float cardW = twoColumns ? std::max((avail - spacing) * 0.5f, 1.0f) : avail;
     const float cardH = ImGui::GetFontSize() * 3.1f;
 
     char mw[32];
@@ -204,18 +223,25 @@ void drawPropertiesPanel(AppState& st) {
     char rings[16];
     std::snprintf(rings, sizeof(rings), "%d", st.props.rings);
 
-    widgets::statCard("FORMULA", st.props.formula.c_str(), ImVec2(cardW, cardH));
-    ImGui::SameLine(0.0f, spacing);
+    const float valueWidth =
+        std::max(cardW - style::metrics().gap * 1.8f, 1.0f);
+    const bool formulaFont = style::pushFont(style::fonts::mono());
+    const std::string fittedFormula = ellipsize(st.props.formula, valueWidth);
+    style::popFont(formulaFont);
+    widgets::statCard("FORMULA", fittedFormula.c_str(), ImVec2(cardW, cardH));
+    if (ImGui::IsItemHovered() && fittedFormula != st.props.formula)
+      ImGui::SetTooltip("%s", st.props.formula.c_str());
+    if (twoColumns) ImGui::SameLine(0.0f, spacing);
     widgets::statCard("MW g/mol", mw, ImVec2(cardW, cardH));
     widgets::statCard("CLOGP", logp, ImVec2(cardW, cardH));
-    ImGui::SameLine(0.0f, spacing);
+    if (twoColumns) ImGui::SameLine(0.0f, spacing);
     widgets::statCard("RINGS", rings, ImVec2(cardW, cardH));
 
     ImGui::Spacing();
     std::vector<char> smiles(st.props.smiles.begin(), st.props.smiles.end());
     smiles.push_back('\0');
     const float chip = ImGui::GetFrameHeight();
-    ImGui::SetNextItemWidth(std::max(50.0f, ImGui::GetContentRegionAvail().x - chip -
+    ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - chip -
                                                ImGui::GetStyle().ItemSpacing.x));
     const bool mono = style::pushFont(style::fonts::mono());
     ImGui::InputText("##canonical_smiles", smiles.data(), smiles.size(),
@@ -251,7 +277,7 @@ void drawPropertiesPanel(AppState& st) {
     ImGui::PopTextWrapPos();
     style::popFont(pushed);
   } else if (st.props.nameStatus == Status::Error) {
-    ImGui::TextColored(style::col::TextDim, "%s", st.props.nameError.c_str());
+    ImGui::TextWrapped("%s", st.props.nameError.c_str());
   }
 
   widgets::sectionHeader("Build from name");
@@ -266,11 +292,14 @@ void drawPropertiesPanel(AppState& st) {
   if (enter || widgets::primaryButton("Build")) submitBuild(st);
   if (build.status == Status::Loading) {
     ImGui::EndDisabled();
-    ImGui::SameLine();
+    const float statusWidth = ImGui::CalcTextSize("Resolving...").x;
+    if (ImGui::GetContentRegionAvail().x >=
+        statusWidth + ImGui::GetStyle().ItemSpacing.x)
+      ImGui::SameLine();
     ImGui::TextDisabled("Resolving...");
   }
   if (build.status == Status::Error && !build.error.empty()) {
-    ImGui::TextColored(style::col::Danger, "%s", build.error.c_str());
+    ImGui::TextWrapped("%s", build.error.c_str());
   }
 }
 

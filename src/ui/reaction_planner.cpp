@@ -26,6 +26,22 @@ inline float materialWidth() { return 230.0f * uiScale(); }
 inline float materialHeight() { return 228.0f * uiScale(); }
 inline ImVec2 routeThumbSize() { return ImVec2(88.0f * uiScale(), 66.0f * uiScale()); }
 
+std::string ellipsize(const std::string& text, float maxWidth) {
+  static constexpr const char* suffix = "...";
+  if (maxWidth <= 0.0f) return {};
+  if (ImGui::CalcTextSize(text.c_str()).x <= maxWidth) return text;
+  const float suffixWidth = ImGui::CalcTextSize(suffix).x;
+  if (maxWidth < suffixWidth) return {};
+  const float contentWidth = maxWidth - suffixWidth;
+
+  size_t end = text.size();
+  while (end > 0 && ImGui::CalcTextSize(text.data(), text.data() + end).x > contentWidth) {
+    --end;
+    while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xC0u) == 0x80u) --end;
+  }
+  return text.substr(0, end) + suffix;
+}
+
 constexpr float kRouteEnterSeconds = 0.25f;
 constexpr float kSearchMinimumSeconds = 0.45f;
 
@@ -221,7 +237,8 @@ bool materialBoxWidget(AppState& st, MaterialBox& box, bool target, int startInd
   const float previousHover = ImGui::GetStateStorage()->GetFloat(hoverId, 0.0f);
   ImGui::Dummy(ImVec2(0.0f, liftReserve * (1.0f - previousHover)));
 
-  const ImVec2 cardSize(materialWidth(), materialHeight());
+  const float availableWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+  const ImVec2 cardSize(std::min(materialWidth(), availableWidth), materialHeight());
   if (!widgets::beginCard("##material_box", cardSize)) return false;
 
   const char* heading = target ? "PRODUCT" : "STARTING MATERIAL";
@@ -306,14 +323,25 @@ bool materialBoxWidget(AppState& st, MaterialBox& box, bool target, int startInd
   ImGui::EndDisabled();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     ImGui::SetTooltip("%s", "Copy the largest sketched molecule into this box");
-  ImGui::SameLine();
+  const char* statusText = nullptr;
+  ImVec4 statusColor = style::col::TextDim;
   if (box.status == Status::Loading) {
-    ImGui::TextDisabled("looking up...");
+    statusText = "looking up...";
   } else if (!box.error.empty()) {
-    ImGui::TextColored(style::col::Danger, "Invalid input");
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", box.error.c_str());
+    statusText = "Invalid input";
+    statusColor = style::col::Danger;
   } else if (!box.label.empty()) {
-    ImGui::TextDisabled("%s", box.label.c_str());
+    statusText = box.label.c_str();
+  }
+  if (statusText && ImGui::GetContentRegionAvail().x > ImGui::GetFontSize() * 2.0f) {
+    ImGui::SameLine();
+    const std::string fitted =
+        ellipsize(statusText, std::max(ImGui::GetContentRegionAvail().x, 1.0f));
+    ImGui::TextColored(statusColor, "%s", fitted.c_str());
+    if (ImGui::IsItemHovered() && fitted != statusText)
+      ImGui::SetTooltip("%s", statusText);
+    else if (ImGui::IsItemHovered() && !box.error.empty())
+      ImGui::SetTooltip("%s", box.error.c_str());
   }
 
   widgets::endCard();
@@ -479,18 +507,18 @@ void connectorControls(AppState& st, PlannerAnimationState& animation) {
   ImGui::EndGroup();
 }
 
-void stepArrow(const rxn::Step& step) {
-  const float kWidth = 185.0f * uiScale();
+void stepArrow(const rxn::Step& step, float width) {
+  width = std::max(width, 1.0f);
   ImGui::BeginGroup();
   const std::string reagents = joined(step.reagents);
-  ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + kWidth);
+  ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
   if (reagents.empty())
     ImGui::TextDisabled("no added reagent");
   else
     ImGui::TextWrapped("%s", reagents.c_str());
   ImGui::PopTextWrapPos();
-  drawArrow(ImVec2(kWidth, 22.0f * uiScale()), style::col::TextDim);
-  ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + kWidth);
+  drawArrow(ImVec2(width, 22.0f * uiScale()), style::col::TextDim);
+  ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
   if (step.conditions.empty())
     ImGui::TextDisabled("conditions not specified");
   else
@@ -504,7 +532,31 @@ void drawStep(AppState& st, const rxn::Step& step, const RoutePreviewCache& cach
   ImGui::PushID(stepIndex);
   std::string heading = "Step " + std::to_string(stepIndex + 1);
   if (!step.reactionName.empty()) heading += "  ·  " + step.reactionName;
-  widgets::sectionHeader(heading.c_str(), style::col::Teal);
+  const style::Metrics& metrics = style::metrics();
+  const float tickWidth = std::max(2.0f, ImGui::GetFontSize() * 0.16f);
+  const float headingWidth = std::max(
+      ImGui::GetContentRegionAvail().x - tickWidth - metrics.gap * 1.75f, 1.0f);
+  const bool headingFont = style::pushFont(style::fonts::semibold());
+  const std::string fittedHeading = ellipsize(heading, headingWidth);
+  style::popFont(headingFont);
+  widgets::sectionHeader(fittedHeading.c_str(), style::col::Teal);
+  if (ImGui::IsItemHovered() && fittedHeading != heading)
+    ImGui::SetTooltip("%s", heading.c_str());
+
+  const float rowWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+  const ImVec2 thumbSize(std::min(routeThumbSize().x, rowWidth), routeThumbSize().y);
+  const float openButtonWidth = ImGui::CalcTextSize("Open in Sketch").x +
+                                ImGui::GetStyle().FramePadding.x * 2.0f;
+  const float productWidth = std::max(thumbSize.x, openButtonWidth);
+  const float rowGap = style::metrics().gap;
+  const float minimumArrowWidth = ImGui::GetFontSize() * 6.0f;
+  const bool horizontal =
+      rowWidth >= thumbSize.x + productWidth + minimumArrowWidth + rowGap * 2.0f;
+  const float arrowWidth =
+      horizontal
+          ? std::max(minimumArrowWidth,
+                     rowWidth - thumbSize.x - productWidth - rowGap * 2.0f)
+          : rowWidth;
 
   ImGui::BeginGroup();
   if (step.reactantSmiles.empty()) {
@@ -513,25 +565,20 @@ void drawStep(AppState& st, const rxn::Step& step, const RoutePreviewCache& cach
     for (size_t i = 0; i < step.reactantSmiles.size(); ++i) {
       ImGui::PushID(static_cast<int>(i));
       moleculeThumbButton("##reactant", cachedMolecule(cache, step.reactantSmiles[i]),
-                          routeThumbSize());
+                          thumbSize);
       if (ImGui::IsItemHovered() && !step.reactantSmiles[i].empty())
         ImGui::SetTooltip("%s", step.reactantSmiles[i].c_str());
       ImGui::PopID();
-      if (i + 1 < step.reactantSmiles.size()) {
-        ImGui::SameLine();
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("+");
-        ImGui::SameLine();
-      }
+      if (i + 1 < step.reactantSmiles.size()) ImGui::TextUnformatted("+");
     }
   }
   ImGui::EndGroup();
-  ImGui::SameLine(0.0f, 12.0f);
-  stepArrow(step);
-  ImGui::SameLine(0.0f, 12.0f);
+  if (horizontal) ImGui::SameLine(0.0f, rowGap);
+  stepArrow(step, arrowWidth);
+  if (horizontal) ImGui::SameLine(0.0f, rowGap);
 
   ImGui::BeginGroup();
-  moleculeThumbButton("##product", cachedMolecule(cache, step.productSmiles), routeThumbSize());
+  moleculeThumbButton("##product", cachedMolecule(cache, step.productSmiles), thumbSize);
   if (ImGui::IsItemHovered() && !step.productSmiles.empty())
     ImGui::SetTooltip("%s", step.productSmiles.c_str());
   if (widgets::ghostButton("Open in Sketch")) openInSketch(st, step.productSmiles);
@@ -559,7 +606,13 @@ void drawStep(AppState& st, const rxn::Step& step, const RoutePreviewCache& cach
       ImGui::PopTextWrapPos();
       ImGui::EndGroup();
       ImGui::PopID();
-      if (i + 1 < step.sideProductSmiles.size()) ImGui::SameLine(0.0f, 12.0f);
+      const float contentRight =
+          ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+      if (i + 1 < step.sideProductSmiles.size() &&
+          ImGui::GetItemRectMax().x + style::metrics().gap +
+                  92.0f * uiScale() <=
+              contentRight)
+        ImGui::SameLine(0.0f, style::metrics().gap);
     }
   }
 
@@ -765,8 +818,9 @@ void drawTargetCard(AppState& st, float cardHeight) {
                           style::col::BgSurface))
     return;
   widgets::sectionHeader("TARGET", style::col::Violet);
-  const float offset =
-      std::max((ImGui::GetContentRegionAvail().x - materialWidth()) * 0.5f, 0.0f);
+  const float availableWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+  const float targetWidth = std::min(materialWidth(), availableWidth);
+  const float offset = std::max((availableWidth - targetWidth) * 0.5f, 0.0f);
   ImGui::Indent(offset);
   ImGui::PushID("target");
   materialBoxWidget(st, st.planner.target, true, -1);

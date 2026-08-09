@@ -211,7 +211,13 @@ void drawToolbox(AppState& st) {
   widgets::sectionHeader("REACTION TYPE", style::col::Violet);
   drawChipRow("reaction_types", state.types, state.selectedType);
   widgets::sectionHeader("SUBSTRATE", style::col::Teal);
-  drawChipRow("reaction_substrates", state.substrates, state.selectedSubstrate);
+  // ~70 substrate classes would otherwise eat half the workspace: cap the
+  // chip wall at roughly three rows and let it scroll.
+  const float substrateH = ImGui::GetFrameHeight() * 3.4f;
+  if (ImGui::BeginChild("##substrate_chips", ImVec2(0.0f, substrateH))) {
+    drawChipRow("reaction_substrates", state.substrates, state.selectedSubstrate);
+  }
+  ImGui::EndChild();
 
   const std::string query = lowerCopy(state.query);
   std::vector<const rxn::ReactionTemplate*> visible;

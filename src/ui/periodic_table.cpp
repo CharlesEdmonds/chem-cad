@@ -75,11 +75,15 @@ void elementTooltip(const ElementData& element) {
   const style::Metrics& metrics = style::metrics();
   const float fs = ImGui::GetFontSize();
   const ImVec4 category = categoryColor(element.category);
-  const ImVec2 cardSize(fs * 21.0f, fs * 33.5f);
+  const ImGuiViewport* viewport = ImGui::GetMainViewport();
+  const ImVec2 maxCardSize(
+      std::max(viewport->WorkSize.x - metrics.gap * 2.0f, 1.0f),
+      std::max(viewport->WorkSize.y - metrics.gap * 2.0f, 1.0f));
+  const ImVec2 cardSize(std::min(fs * 21.0f, maxCardSize.x),
+                        std::min(fs * 33.5f, maxCardSize.y));
 
   // Keep the hover card close to the pointer without letting it run off the
   // current viewport. BeginTooltip remains backend-agnostic for headless use.
-  const ImGuiViewport* viewport = ImGui::GetMainViewport();
   const ImVec2 mouse = ImGui::GetMousePos();
   ImVec2 cardPos(mouse.x + metrics.gap * 2.0f, mouse.y + metrics.gap * 1.5f);
   const float viewportRight = viewport->WorkPos.x + viewport->WorkSize.x;
@@ -136,6 +140,7 @@ void elementTooltip(const ElementData& element) {
 
   ImGui::SameLine(0.0f, metrics.gap);
   ImGui::BeginGroup();
+  ImGui::PushTextWrapPos(0.0f);
   const bool nameFont = style::pushFont(style::fonts::semibold());
   ImGui::TextUnformatted(element.name.c_str());
   style::popFont(nameFont);
@@ -143,6 +148,7 @@ void elementTooltip(const ElementData& element) {
   ImGui::TextColored(style::col::TextDim, "Z = %u",
                      static_cast<unsigned>(element.z));
   style::popFont(zFont);
+  ImGui::PopTextWrapPos();
   widgets::badge(categoryDisplayName(element.category), category);
   ImGui::EndGroup();
 
@@ -152,7 +158,10 @@ void elementTooltip(const ElementData& element) {
 
   // Animated atom stage: orbital clouds by default, Bohr shells as backup.
   static bool bohrMode = false;
-  const float stage = ImGui::GetContentRegionAvail().x;
+  const ImVec2 stageAvail = ImGui::GetContentRegionAvail();
+  const float rowsReserve = fs * 10.0f;
+  const float stage =
+      std::max(1.0f, std::min(stageAvail.x, stageAvail.y - rowsReserve));
   const ImVec2 stageMin = ImGui::GetCursorScreenPos();
   ImGui::Dummy(ImVec2(stage, stage));
   const ImVec2 stageMax(stageMin.x + stage, stageMin.y + stage);
@@ -189,16 +198,25 @@ void elementTooltip(const ElementData& element) {
       ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings |
       ImGuiTableFlags_RowBg;
   if (ImGui::BeginTable("##element_stats", 2, tableFlags)) {
-    ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthStretch, 0.62f);
-    ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch, 0.38f);
+    const float statsWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+    const float labelWidth =
+        std::min(ImGui::CalcTextSize("Standard atomic weight").x +
+                     ImGui::GetStyle().CellPadding.x * 2.0f,
+                 statsWidth * 0.62f);
+    ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, labelWidth);
+    ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
 
     const auto row = [](const char* label, const char* value) {
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
+      ImGui::PushTextWrapPos(0.0f);
       ImGui::TextDisabled("%s", label);
+      ImGui::PopTextWrapPos();
       ImGui::TableNextColumn();
       const bool mono = style::pushFont(style::fonts::mono());
+      ImGui::PushTextWrapPos(0.0f);
       ImGui::TextUnformatted(value);
+      ImGui::PopTextWrapPos();
       style::popFont(mono);
     };
 
@@ -220,9 +238,12 @@ void elementTooltip(const ElementData& element) {
   }
 
   ImGui::Spacing();
+  const char* actionDetail = "Select element and activate the Atom tool";
   ImGui::TextColored(style::col::Accent, "CLICK");
-  ImGui::SameLine(0.0f, metrics.gap * 0.5f);
-  ImGui::TextDisabled("Select element and activate the Atom tool");
+  if (ImGui::GetContentRegionAvail().x >=
+      ImGui::CalcTextSize(actionDetail).x + metrics.gap * 0.5f)
+    ImGui::SameLine(0.0f, metrics.gap * 0.5f);
+  ImGui::TextWrapped("%s", actionDetail);
 
   ImGui::EndTooltip();
   ImGui::PopStyleColor(2);
