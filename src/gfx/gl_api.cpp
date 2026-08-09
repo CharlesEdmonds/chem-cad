@@ -54,6 +54,8 @@ namespace chemcad::gfx {
   X(glUniform2f)                                  \
   X(glUniform3f)                                  \
   X(glUniform4f)                                  \
+  X(glUniform1fv)                                 \
+  X(glUniformMatrix3fv)                           \
   X(glUniformMatrix4fv)                           \
   X(glGenTextures)                                \
   X(glDeleteTextures)                             \

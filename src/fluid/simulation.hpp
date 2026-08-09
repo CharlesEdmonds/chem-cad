@@ -37,7 +37,18 @@ struct Snapshot {
   Pose pose;                    // vessel attitude, for the glass and the camera
   double vesselHeightM = 0.19;
   double maxRadiusM = 0.045;
-  double particleRadiusM = 2.0e-3;  // render radius = spacing/2
+  // Solver lattice spacing (dx). The primary quantity: everything else that
+  // needs a length scale derives from it rather than back-computing it.
+  double particleSpacingM = 4.0e-3;
+  // Radius the surface is RENDERED at, which is deliberately not dx/2. An SPH
+  // free surface is the level set of the smoothing kernel, so the surface sits
+  // at roughly half the kernel support (support = 2 dx), i.e. one dx. Drawing
+  // tangent dx/2 spheres instead leaves a crease at every particle and the
+  // screen-space curvature flow cannot close them, so the liquid reads as a
+  // cluster of orbs. At one dx the union is hole-free for any packing at least
+  // as dense as the cubic lattice (which needs dx*sqrt(3)/2) and the surface
+  // smooths to a continuous meniscus.
+  double particleRadiusM = 4.0e-3;
   double elapsedS = 0.0;
   sol::Vessel vessel = sol::Vessel::SeparatoryFunnel;
   uint64_t revision = 0;        // bumped on every completed advance

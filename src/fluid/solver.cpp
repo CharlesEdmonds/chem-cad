@@ -7,14 +7,20 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <ios>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "core/paths.hpp"
 #include "fluid/kernels.hpp"
 
 namespace chemcad::fluid {
@@ -1352,6 +1358,109 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
   return stats_.substeps;
 }
 
+namespace {
+
+// ------------------------------------------------------ calibration cache
+// The Young-Laplace calibration relaxes a test droplet of roughly ten thousand
+// particles for 96 steps: seconds of work, and far more than the vessel charge
+// it is preparing. Its result depends only on the numbers hashed below -- the
+// trial runs at unit interfacial tension and the response is linear, and the
+// vessel is not consulted at all -- so it is memoised in process and persisted
+// under the user's cache directory. Changing solvent, volume or resolution then
+// costs nothing, and only the very first run on a machine ever pays for it.
+//
+// The file name carries the algorithm version: BUMP IT whenever the calibration
+// changes, or entries computed by the old algorithm will be served for the new.
+constexpr const char* kCalibrationCacheFile = "fluid_interface_calibration_v1.txt";
+
+void hashRaw(std::uint64_t& hash, const void* data, std::size_t size) {
+  const auto* bytes = static_cast<const unsigned char*>(data);
+  for (std::size_t i = 0; i < size; ++i) {
+    hash ^= bytes[i];
+    hash *= 0x100000001b3ULL;  // FNV-1a
+  }
+}
+
+template <typename T>
+void hashValue(std::uint64_t& hash, const T& value) {
+  static_assert(std::is_trivially_copyable_v<T>);
+  hashRaw(hash, &value, sizeof value);
+}
+
+// Everything the relaxation reads. Missing one here would silently serve a
+// calibration computed for different physics.
+std::uint64_t calibrationKey(const SolverConfig& config, const std::vector<double>& mass,
+                             double restNumberDensity, std::size_t phaseCount) {
+  std::uint64_t hash = 0xcbf29ce484222325ULL;
+  hashValue(hash, config.resolution.spacing);
+  hashValue(hash, config.resolution.support());
+  hashValue(hash, config.maxSubstepS);
+  hashValue(hash, config.maxPressureIterations);
+  hashValue(hash, config.maxSpeed);
+  hashValue(hash, restNumberDensity);
+  hashValue(hash, phaseCount);
+  for (double m : mass) hashValue(hash, m);
+  return hash;
+}
+
+class CalibrationCache {
+ public:
+  static CalibrationCache& instance() {
+    static CalibrationCache cache;
+    return cache;
+  }
+
+  bool lookup(std::uint64_t key, double& gain) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    loadOnce();
+    const auto entry = entries_.find(key);
+    if (entry == entries_.end()) return false;
+    gain = entry->second;
+    return true;
+  }
+
+  void store(std::uint64_t key, double gain) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    loadOnce();
+    if (!entries_.emplace(key, gain).second) return;
+    if (path_.empty()) return;
+    // Append one line rather than rewriting: a second ChemCAD process may be
+    // calibrating at the same time, and appending keeps the loser of that race
+    // with a readable file instead of a truncated one.
+    std::ofstream out(path_, std::ios::app);
+    if (!out) return;
+    out << std::hex << key << ' ' << std::hexfloat << gain << '\n';
+  }
+
+ private:
+  void loadOnce() {
+    if (loaded_) return;
+    loaded_ = true;
+    // A cache is an optimisation, never a dependency: any filesystem problem
+    // degrades to computing the calibration in memory.
+    try {
+      path_ = core::cacheDir() / kCalibrationCacheFile;
+    } catch (const std::exception&) {
+      path_.clear();
+      return;
+    }
+    std::ifstream in(path_);
+    if (!in) return;
+    std::uint64_t key = 0;
+    double gain = 0.0;
+    while (in >> std::hex >> key >> gain) {
+      if (std::isfinite(gain) && gain > 0.0) entries_.emplace(key, gain);
+    }
+  }
+
+  std::mutex mutex_;
+  bool loaded_ = false;
+  std::filesystem::path path_;
+  std::unordered_map<std::uint64_t, double> entries_;
+};
+
+}  // namespace
+
 void Solver::calibrateInterface(const VesselBoundary& boundary) {
   (void)boundary;
   if (interface_.calibrated) return;
@@ -1367,6 +1476,14 @@ void Solver::calibrateInterface(const VesselBoundary& boundary) {
   if (phases_.size() < 2 || !hasSurfaceTension) {
     // A one-phase or sigma=0 model has no interface to calibrate. Treat this as
     // a successful no-op so callers do not repeatedly perform meaningless work.
+    interface_.calibrated = true;
+    return;
+  }
+
+  const std::uint64_t cacheKey =
+      calibrationKey(config_, mass_, delta0_, phases_.size());
+  if (double cached = 0.0; CalibrationCache::instance().lookup(cacheKey, cached)) {
+    interface_.cohesionGain = cached;
     interface_.calibrated = true;
     return;
   }
@@ -1446,34 +1563,42 @@ void Solver::calibrateInterface(const VesselBoundary& boundary) {
       std::fill(fz.begin(), fz.end(), 0.0f);
 
       for (int iteration = 0; iteration < calibrationIterations; ++iteration) {
-        for (std::size_t i = 0; i < droplet.size(); ++i) {
-          const double mi = phaseMass(mass_, droplet, i);
-          const Vec3d v =
-              velocityOf(droplet, i) +
-              calibrationDt *
-                  Vec3d{droplet.ax[i] + fx[i] / mi, droplet.ay[i] + fy[i] / mi,
-                        droplet.az[i] + fz[i] / mi};
-          const Vec3d q = positionOf(droplet, i) + calibrationDt * v;
-          px[i] = static_cast<float>(q.x);
-          py[i] = static_cast<float>(q.y);
-          pz[i] = static_cast<float>(q.z);
-          pvx[i] = static_cast<float>(v.x);
-          pvy[i] = static_cast<float>(v.y);
-          pvz[i] = static_cast<float>(v.z);
-        }
-        for (std::size_t i = 0; i < droplet.size(); ++i) {
-          double delta = 0.0;
-          const Vec3d qi{px[i], py[i], pz[i]};
-          calibrationGrid.forEachCandidate(i, [&](std::size_t j) {
-            const double r = length(qi - Vec3d{px[j], py[j], pz[j]});
-            if (r < support) delta += wendlandW(r, support);
-          });
-          error[i] = (delta - delta0_) / delta0_;
-          const std::size_t phase = droplet.phase[i];
-          droplet.pressure[i] = static_cast<float>(
-              std::max(0.0, static_cast<double>(droplet.pressure[i]) +
-                                calibrationStiffness[phase] * error[i]));
-        }
+        // Both loops are index-local: every iteration writes only its own slot
+        // and reads neighbours' committed values, so the static partitioning is
+        // deterministic. Leaving them serial while the rest of the solver is
+        // parallel made calibration dominate the first Extraction frame.
+        parallelFor(droplet.size(), [&](std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i) {
+            const double mi = phaseMass(mass_, droplet, i);
+            const Vec3d v =
+                velocityOf(droplet, i) +
+                calibrationDt *
+                    Vec3d{droplet.ax[i] + fx[i] / mi, droplet.ay[i] + fy[i] / mi,
+                          droplet.az[i] + fz[i] / mi};
+            const Vec3d q = positionOf(droplet, i) + calibrationDt * v;
+            px[i] = static_cast<float>(q.x);
+            py[i] = static_cast<float>(q.y);
+            pz[i] = static_cast<float>(q.z);
+            pvx[i] = static_cast<float>(v.x);
+            pvy[i] = static_cast<float>(v.y);
+            pvz[i] = static_cast<float>(v.z);
+          }
+        });
+        parallelFor(droplet.size(), [&](std::size_t begin, std::size_t end) {
+          for (std::size_t i = begin; i < end; ++i) {
+            double delta = 0.0;
+            const Vec3d qi{px[i], py[i], pz[i]};
+            calibrationGrid.forEachCandidate(i, [&](std::size_t j) {
+              const double r = length(qi - Vec3d{px[j], py[j], pz[j]});
+              if (r < support) delta += wendlandW(r, support);
+            });
+            error[i] = (delta - delta0_) / delta0_;
+            const std::size_t phase = droplet.phase[i];
+            droplet.pressure[i] = static_cast<float>(
+                std::max(0.0, static_cast<double>(droplet.pressure[i]) +
+                                  calibrationStiffness[phase] * error[i]));
+          }
+        });
         computePressureForce(droplet, calibrationPairs, support, px, py, pz, delta0_, error,
                              fx, fy, fz);
       }
@@ -1520,6 +1645,7 @@ void Solver::calibrateInterface(const VesselBoundary& boundary) {
     // coefficient reproducing dp=2*sigma/R is c = sigma*c_t/sigma_eff.
     interface_.cohesionGain = kTrialCoefficient / sigmaEffective;
     interface_.calibrated = true;
+    CalibrationCache::instance().store(cacheKey, interface_.cohesionGain);
   } catch (const std::exception& error) {
     calibrationError_ = error.what();
     interface_.cohesionGain = 0.0;

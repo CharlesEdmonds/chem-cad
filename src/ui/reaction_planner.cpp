@@ -62,24 +62,6 @@ float easeOutCubic(float t) {
   return 1.0f - inverse * inverse * inverse;
 }
 
-int resizeStringInput(ImGuiInputTextCallbackData* data) {
-  if (data->EventFlag != ImGuiInputTextFlags_CallbackResize) return 0;
-  auto* value = static_cast<std::string*>(data->UserData);
-  value->resize(static_cast<size_t>(data->BufTextLen));
-  data->Buf = value->data();
-  return 0;
-}
-
-bool stringInputWithHint(const char* label, const char* hint, std::string& value,
-                         ImGuiInputTextFlags flags, bool mono = false) {
-  flags |= ImGuiInputTextFlags_CallbackResize;
-  const bool pushed = mono ? style::pushFont(style::fonts::mono()) : false;
-  const bool result = ImGui::InputTextWithHint(label, hint, value.data(),
-                                               value.capacity() + 1, flags,
-                                               resizeStringInput, &value);
-  style::popFont(pushed);
-  return result;
-}
 
 MaterialBox* materialAt(AppState& st, bool target, int startIndex) {
   if (target) return &st.planner.target;
@@ -282,8 +264,8 @@ bool materialBoxWidget(AppState& st, MaterialBox& box, bool target, int startInd
                                              : "Structure preview");
 
   ImGui::SetNextItemWidth(-1.0f);
-  const bool smilesEnter = stringInputWithHint("##smiles", "SMILES", box.smiles,
-                                               ImGuiInputTextFlags_EnterReturnsTrue, true);
+  const bool smilesEnter = widgets::stringInputWithHint(
+      "##smiles", "SMILES", box.smiles, ImGuiInputTextFlags_EnterReturnsTrue, true);
   const bool smilesCommitted = smilesEnter || ImGui::IsItemDeactivatedAfterEdit();
   if (smilesCommitted) rebuildPreview(box);
   if (ImGui::IsItemHovered())
@@ -294,8 +276,8 @@ bool materialBoxWidget(AppState& st, MaterialBox& box, bool target, int startInd
                             ImGui::GetStyle().ItemSpacing.x;
   ImGui::SetNextItemWidth(
       std::max(1.0f, ImGui::GetContentRegionAvail().x - lookupWidth));
-  const bool nameEnter = stringInputWithHint("##name", "Chemical name", box.nameInput,
-                                             ImGuiInputTextFlags_EnterReturnsTrue);
+  const bool nameEnter = widgets::stringInputWithHint(
+      "##name", "Chemical name", box.nameInput, ImGuiInputTextFlags_EnterReturnsTrue);
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("%s", "IUPAC or common name; resolved via OPSIN / PubChem");
   ImGui::SameLine();

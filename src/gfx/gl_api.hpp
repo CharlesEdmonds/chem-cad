@@ -266,6 +266,9 @@ using PFNGLUNIFORM2FPROC = void (CHEMCAD_GL_APIENTRY*)(GLint, GLfloat, GLfloat);
 using PFNGLUNIFORM3FPROC = void (CHEMCAD_GL_APIENTRY*)(GLint, GLfloat, GLfloat, GLfloat);
 using PFNGLUNIFORM4FPROC =
     void (CHEMCAD_GL_APIENTRY*)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
+using PFNGLUNIFORM1FVPROC = void (CHEMCAD_GL_APIENTRY*)(GLint, GLsizei, const GLfloat*);
+using PFNGLUNIFORMMATRIX3FVPROC =
+    void (CHEMCAD_GL_APIENTRY*)(GLint, GLsizei, GLboolean, const GLfloat*);
 using PFNGLUNIFORMMATRIX4FVPROC =
     void (CHEMCAD_GL_APIENTRY*)(GLint, GLsizei, GLboolean, const GLfloat*);
 using PFNGLGENTEXTURESPROC = void (CHEMCAD_GL_APIENTRY*)(GLsizei, GLuint*);
@@ -343,6 +346,8 @@ extern PFNGLUNIFORM1FPROC glUniform1f;
 extern PFNGLUNIFORM2FPROC glUniform2f;
 extern PFNGLUNIFORM3FPROC glUniform3f;
 extern PFNGLUNIFORM4FPROC glUniform4f;
+extern PFNGLUNIFORM1FVPROC glUniform1fv;
+extern PFNGLUNIFORMMATRIX3FVPROC glUniformMatrix3fv;
 extern PFNGLUNIFORMMATRIX4FVPROC glUniformMatrix4fv;
 extern PFNGLGENTEXTURESPROC glGenTextures;
 extern PFNGLDELETETEXTURESPROC glDeleteTextures;

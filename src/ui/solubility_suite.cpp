@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cfloat>
 #include <cstdarg>
 #include <cmath>
@@ -84,31 +83,6 @@ std::string ellipsizeText(const std::string& text, float maxWidth) {
   return text.substr(0, end) + kEllipsis;
 }
 
-int resizeStringInput(ImGuiInputTextCallbackData* data) {
-  if (data->EventFlag != ImGuiInputTextFlags_CallbackResize) return 0;
-  auto* value = static_cast<std::string*>(data->UserData);
-  value->resize(static_cast<size_t>(data->BufTextLen));
-  data->Buf = value->data();
-  return 0;
-}
-
-bool stringInputWithHint(const char* label, const char* hint, std::string& value,
-                         ImGuiInputTextFlags flags, bool mono = false) {
-  flags |= ImGuiInputTextFlags_CallbackResize;
-  const bool pushed = mono ? style::pushFont(style::fonts::mono()) : false;
-  const bool result = ImGui::InputTextWithHint(label, hint, value.data(), value.capacity() + 1,
-                                               flags, resizeStringInput, &value);
-  style::popFont(pushed);
-  return result;
-}
-
-bool containsCaseInsensitive(const std::string& haystack, const std::string& needle) {
-  if (needle.empty()) return true;
-  const auto lower = [](char c) { return std::tolower(static_cast<unsigned char>(c)); };
-  const auto it = std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(),
-                              [&](char a, char b) { return lower(a) == lower(b); });
-  return it != haystack.end();
-}
 
 // Formats a bare value across the many orders of magnitude a solubility
 // prediction can span: scientific notation below 1e-3, fixed otherwise.
@@ -777,9 +751,9 @@ void drawSoluteCard(AppState& st) {
       sb.soluteError.clear();
     }
     ImGui::SetNextItemWidth(-FLT_MIN);
-    const bool enter = stringInputWithHint("##solute_smiles", "SMILES, e.g. CC(=O)Oc1ccccc1C(=O)O",
-                                           sb.manualSmiles, ImGuiInputTextFlags_EnterReturnsTrue,
-                                           true);
+    const bool enter = widgets::stringInputWithHint(
+        "##solute_smiles", "SMILES, e.g. CC(=O)Oc1ccccc1C(=O)O", sb.manualSmiles,
+        ImGuiInputTextFlags_EnterReturnsTrue, true);
     if (enter || ImGui::IsItemDeactivatedAfterEdit()) recomputeSoluteFromSmiles(st);
   }
 
@@ -869,11 +843,9 @@ void drawSoluteCard(AppState& st) {
   }
 }
 
-void drawSolventSlot(SolubilityState& sb, const std::vector<sol::Solvent>& all, int index,
-                     std::string& filter) {
+void drawSolventSlot(SolubilityState& sb, int index, std::string& query) {
   static const char* kSlotLabel[3] = {"Solvent A", "Solvent B", "Solvent C"};
   std::string& id = sb.solventIds[static_cast<size_t>(index)];
-  const sol::Solvent* current = sol::findSolvent(id);
 
   // Colour chip, slot label, and combo divide exactly the row's current
   // content width. The measured label reservation keeps the combo from
@@ -898,18 +870,7 @@ void drawSolventSlot(SolubilityState& sb, const std::vector<sol::Solvent>& all, 
   } else {
     ImGui::SetNextItemWidth(-FLT_MIN);
   }
-  if (ImGui::BeginCombo("##solvent_pick", current ? current->name.c_str() : "Select solvent...")) {
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    stringInputWithHint("##filter", "Search...", filter, 0);
-    ImGui::Separator();
-    for (const sol::Solvent& sv : all) {
-      if (!containsCaseInsensitive(sv.name, filter)) continue;
-      const bool selected = sv.id == id;
-      if (ImGui::Selectable(sv.name.c_str(), selected)) id = sv.id;
-      if (selected) ImGui::SetItemDefaultFocus();
-    }
-    ImGui::EndCombo();
-  }
+  widgets::solventCombo("##solvent_pick", id, query);
 
   ImGui::SetNextItemWidth(-FLT_MIN);
   ImGui::SliderFloat("##ratio", &sb.ratios[static_cast<size_t>(index)], 0.0f, 10.0f,
@@ -936,10 +897,9 @@ std::vector<const sol::Solvent*> drawSolventMixer(
   }
 
   std::vector<const sol::Solvent*> chosen(static_cast<size_t>(sb.solventCount), nullptr);
-  const std::vector<sol::Solvent>& all = sol::solvents();  // throws only on DB load failure
   for (int i = 0; i < sb.solventCount; ++i) {
     ImGui::PushID(i);
-    drawSolventSlot(sb, all, i, filterBuf[static_cast<size_t>(i)]);
+    drawSolventSlot(sb, i, filterBuf[static_cast<size_t>(i)]);
     ImGui::PopID();
     chosen[static_cast<size_t>(i)] = sol::findSolvent(sb.solventIds[static_cast<size_t>(i)]);
     const sol::Solvent* found = chosen[static_cast<size_t>(i)];

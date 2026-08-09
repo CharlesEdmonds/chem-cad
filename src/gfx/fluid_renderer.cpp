@@ -158,6 +158,7 @@ uniform float uRadius;
 
 out vec2 vCorner;
 out vec3 vCentreEye;
+out vec3 vCentreObject;
 flat out float vPhase;
 flat out float vIndicator;
 flat out float vSpeed;
@@ -168,6 +169,7 @@ void main() {
   gl_Position = uProjection * vec4(cornerEye, 1.0);
   vCorner = aCorner;
   vCentreEye = centreEye;
+  vCentreObject = aCentre;
   vPhase = aPhase;
   vIndicator = aIndicator;
   vSpeed = aSpeed;
@@ -177,12 +179,19 @@ void main() {
 const char* kDepthFragment = R"GLSL(#version 330 core
 in vec2 vCorner;
 in vec3 vCentreEye;
+in vec3 vCentreObject;
 flat in float vPhase;
 flat in float vIndicator;
 flat in float vSpeed;
 
 uniform mat4 uProjection;
 uniform float uRadius;
+// Vessel interior, sampled from the same analytic half-width profile that
+// builds the glass shell, in vessel coordinates.
+uniform mat3 uEyeToObject;
+uniform float uVesselHeight;
+uniform float uVesselMaxRadius;
+uniform float uVesselProfile[72];
 
 layout(location = 0) out vec4 outSurface;
 
@@ -195,6 +204,23 @@ void main() {
   // per-fragment hardware depth for overlap between particles.
   vec3 sphereNormal = vec3(vCorner, sqrt(max(0.0, 1.0 - radius2)));
   vec3 surfaceEye = vCentreEye + uRadius * sphereNormal;
+
+  // Rendering the surface at a full dx makes the union of spheres solid, but
+  // it also lets a wall-adjacent particle bulge through the glass, and in the
+  // stem -- narrower than dx -- it would swell into a string of beads. The
+  // solver already confines the CENTRES, so clipping each fragment against the
+  // vessel profile is what confines the SURFACE. Doing it here rather than in
+  // the thickness pass is sufficient: shading reads thickness only where this
+  // attachment carries a depth.
+  vec3 surfaceObject = vCentreObject + uEyeToObject * (uRadius * sphereNormal);
+  float level = clamp(surfaceObject.z / max(uVesselHeight, 1.0e-6), 0.0, 1.0) *
+                float(uVesselProfile.length() - 1);
+  int lower = int(floor(level));
+  int upper = min(lower + 1, uVesselProfile.length() - 1);
+  float wallRadius = uVesselMaxRadius *
+                     mix(uVesselProfile[lower], uVesselProfile[upper], level - float(lower));
+  if (dot(surfaceObject.xy, surfaceObject.xy) > wallRadius * wallRadius) discard;
+
   vec4 clip = uProjection * vec4(surfaceEye, 1.0);
   gl_FragDepth = 0.5 * (clip.z / clip.w) + 0.5;
   // Depth, nearest phase, solver-smoothed phase indicator, and surface speed
@@ -207,18 +233,70 @@ void main() {
 const char* kThicknessFragment = R"GLSL(#version 330 core
 in vec2 vCorner;
 flat in float vPhase;
-uniform float uRadius;
+// Metres. Calibrated on the CPU so one particle's footprint integrates to
+// exactly the volume of liquid it represents; see the thickness amplitude in
+// drawFrame.
+uniform float uAmplitude;
 layout(location = 0) out vec2 outThickness;
 
 void main() {
   float radius2 = dot(vCorner, vCorner);
   if (radius2 > 1.0) discard;
 
-  // A ray through a sphere at normalised radius r travels 2R sqrt(1-r^2).
-  // Additive blending sums that optical path independently for the two phases.
-  float chord = 2.0 * uRadius * sqrt(max(0.0, 1.0 - radius2));
+  // Not the geometric sphere chord 2R sqrt(1-r^2). That profile has an
+  // infinite slope at the rim, so every particle stamps a visible disc edge
+  // and the summed field is mottled at particle scale even when the surface
+  // above it is smooth. (1-r^2)^(3/2) lands on zero with zero slope, and
+  // because the footprint spans a full dx the discs overlap enough for the sum
+  // to read as one body of liquid. Additive blending keeps the two phases'
+  // optical paths independent.
+  float falloff = max(0.0, 1.0 - radius2);
+  float weight = falloff * sqrt(falloff);
   float phaseB = step(0.5, vPhase);
-  outThickness = chord * vec2(1.0 - phaseB, phaseB);
+  outThickness = uAmplitude * weight * vec2(1.0 - phaseB, phaseB);
+}
+)GLSL";
+
+const char* kThicknessBlurFragment = R"GLSL(#version 330 core
+in vec2 vUv;
+uniform sampler2D uThickness;
+uniform sampler2D uSurface;
+uniform vec2 uViewport;
+uniform vec2 uProjectionScale;
+uniform float uParticleRadius;
+uniform vec2 uDirection;
+layout(location = 0) out vec2 outThickness;
+
+void main() {
+  // Optical path is an integral, so unlike depth it may be filtered directly:
+  // a Gaussian removes the particle-scale granularity of the summed footprints
+  // while preserving the total. Without this the surface above can be perfectly
+  // smooth and the body still looks scaly, because Beer-Lambert turns a 17%
+  // ripple in path length into a visible mottle.
+  const float weights[7] =
+      float[7](0.199681, 0.176221, 0.121107, 0.064836, 0.027019, 0.008766, 0.002216);
+
+  ivec2 pixel = ivec2(gl_FragCoord.xy);
+  vec2 centre = texelFetch(uThickness, pixel, 0).rg;
+  float depth = texelFetch(uSurface, pixel, 0).x;
+  if (depth <= 0.0) {
+    outThickness = centre;
+    return;
+  }
+
+  // Match the kernel to the projected particle radius so the filter follows
+  // zoom instead of being a fixed pixel count. sigma is two taps.
+  vec2 radiusPixels2 =
+      0.5 * uParticleRadius * abs(uProjectionScale) * uViewport / depth;
+  float projectedRadiusPixels = sqrt(max(1.0, radiusPixels2.x * radiusPixels2.y));
+  vec2 stepUv = uDirection * max(1.0, 0.5 * projectedRadiusPixels) / uViewport;
+
+  vec2 total = centre * weights[0];
+  for (int i = 1; i < 7; ++i) {
+    total += texture(uThickness, vUv + float(i) * stepUv).rg * weights[i];
+    total += texture(uThickness, vUv - float(i) * stepUv).rg * weights[i];
+  }
+  outThickness = total;
 }
 )GLSL";
 
@@ -740,6 +818,7 @@ struct FluidRenderer::Impl {
   GLuint depthProgram = 0;
   GLuint blurProgram = 0;
   GLuint thicknessProgram = 0;
+  GLuint thicknessBlurProgram = 0;
   GLuint shadeProgram = 0;
   GLuint glassProgram = 0;
 
@@ -755,10 +834,12 @@ struct FluidRenderer::Impl {
   GLuint depthFbo = 0;
   GLuint blurFbo[2]{};
   GLuint thicknessFbo = 0;
+  GLuint thicknessBlurFbo = 0;
   GLuint compositeFbo = 0;
   GLuint rawSurfaceTexture = 0;
   GLuint blurTexture[2]{};
   GLuint thicknessTexture = 0;
+  GLuint thicknessBlurTexture = 0;
   GLuint compositeTexture = 0;
   GLuint presentedTexture = 0;
   GLuint depthStencil = 0;
@@ -774,6 +855,17 @@ struct FluidRenderer::Impl {
     GLint projection = -1;
     GLint radius = -1;
   } depthUniforms, thicknessUniforms;
+  GLint thicknessAmplitudeUniform = -1;
+  // Vessel interior, uploaded to the depth program so the rendered surface can
+  // never escape the glass. Only the depth pass clips; see kDepthFragment.
+  static constexpr int kVesselLevels = 72;
+  std::array<float, kVesselLevels> vesselProfile{};
+  struct VesselClipUniforms {
+    GLint eyeToObject = -1;
+    GLint vesselHeight = -1;
+    GLint vesselMaxRadius = -1;
+    GLint vesselProfile = -1;
+  } depthClipUniforms;
   struct BlurUniforms {
     GLint surface = -1;
     GLint inverseProjection = -1;
@@ -781,6 +873,14 @@ struct FluidRenderer::Impl {
     GLint projectionScale = -1;
     GLint particleRadius = -1;
   } blurUniforms;
+  struct ThicknessBlurUniforms {
+    GLint thickness = -1;
+    GLint surface = -1;
+    GLint viewport = -1;
+    GLint projectionScale = -1;
+    GLint particleRadius = -1;
+    GLint direction = -1;
+  } thicknessBlurUniforms;
   struct ShadeUniforms {
     GLint surface = -1;
     GLint thickness = -1;
@@ -816,9 +916,9 @@ struct FluidRenderer::Impl {
       depthProgram = blurProgram = thicknessProgram = shadeProgram = glassProgram = 0;
       particleVao = fullscreenVao = glassVao = 0;
       quadVbo = instanceVbo = glassVbo = glassEbo = 0;
-      depthFbo = thicknessFbo = compositeFbo = 0;
+      depthFbo = thicknessFbo = thicknessBlurFbo = compositeFbo = 0;
       blurFbo[0] = blurFbo[1] = 0;
-      rawSurfaceTexture = thicknessTexture = compositeTexture = 0;
+      rawSurfaceTexture = thicknessTexture = thicknessBlurTexture = compositeTexture = 0;
       blurTexture[0] = blurTexture[1] = 0;
       depthStencil = 0;
       valid = false;
@@ -827,28 +927,29 @@ struct FluidRenderer::Impl {
       return;
     }
 
-    const GLuint programs[] = {depthProgram, blurProgram, thicknessProgram, shadeProgram,
-                               glassProgram};
+    const GLuint programs[] = {depthProgram,        blurProgram,  thicknessProgram,
+                               thicknessBlurProgram, shadeProgram, glassProgram};
     for (GLuint program : programs)
       if (program != 0) glDeleteProgram(program);
     const GLuint buffers[] = {quadVbo, instanceVbo, glassVbo, glassEbo};
     glDeleteBuffers(4, buffers);
     const GLuint vaos[] = {particleVao, fullscreenVao, glassVao};
     glDeleteVertexArrays(3, vaos);
-    const GLuint textures[] = {rawSurfaceTexture, blurTexture[0], blurTexture[1],
-                               thicknessTexture, compositeTexture};
-    glDeleteTextures(5, textures);
-    const GLuint framebuffers[] = {depthFbo, blurFbo[0], blurFbo[1], thicknessFbo,
-                                   compositeFbo};
-    glDeleteFramebuffers(5, framebuffers);
+    const GLuint textures[] = {rawSurfaceTexture, blurTexture[0],       blurTexture[1],
+                               thicknessTexture,  thicknessBlurTexture, compositeTexture};
+    glDeleteTextures(6, textures);
+    const GLuint framebuffers[] = {depthFbo,         blurFbo[0],       blurFbo[1],
+                                   thicknessFbo,     thicknessBlurFbo, compositeFbo};
+    glDeleteFramebuffers(6, framebuffers);
     if (depthStencil != 0) glDeleteRenderbuffers(1, &depthStencil);
 
-    depthProgram = blurProgram = thicknessProgram = shadeProgram = glassProgram = 0;
+    depthProgram = blurProgram = thicknessProgram = thicknessBlurProgram = shadeProgram =
+        glassProgram = 0;
     particleVao = fullscreenVao = glassVao = 0;
     quadVbo = instanceVbo = glassVbo = glassEbo = 0;
-    depthFbo = thicknessFbo = compositeFbo = 0;
+    depthFbo = thicknessFbo = thicknessBlurFbo = compositeFbo = 0;
     blurFbo[0] = blurFbo[1] = 0;
-    rawSurfaceTexture = thicknessTexture = compositeTexture = 0;
+    rawSurfaceTexture = thicknessTexture = thicknessBlurTexture = compositeTexture = 0;
     blurTexture[0] = blurTexture[1] = 0;
     depthStencil = 0;
     glassIndexCount = 0;
@@ -863,10 +964,23 @@ struct FluidRenderer::Impl {
                      glGetUniformLocation(depthProgram, "uView"),
                      glGetUniformLocation(depthProgram, "uProjection"),
                      glGetUniformLocation(depthProgram, "uRadius")};
+    depthClipUniforms = {
+        glGetUniformLocation(depthProgram, "uEyeToObject"),
+        glGetUniformLocation(depthProgram, "uVesselHeight"),
+        glGetUniformLocation(depthProgram, "uVesselMaxRadius"),
+        glGetUniformLocation(depthProgram, "uVesselProfile")};
     thicknessUniforms = {glGetUniformLocation(thicknessProgram, "uModel"),
                          glGetUniformLocation(thicknessProgram, "uView"),
                          glGetUniformLocation(thicknessProgram, "uProjection"),
                          glGetUniformLocation(thicknessProgram, "uRadius")};
+    thicknessAmplitudeUniform = glGetUniformLocation(thicknessProgram, "uAmplitude");
+    thicknessBlurUniforms = {
+        glGetUniformLocation(thicknessBlurProgram, "uThickness"),
+        glGetUniformLocation(thicknessBlurProgram, "uSurface"),
+        glGetUniformLocation(thicknessBlurProgram, "uViewport"),
+        glGetUniformLocation(thicknessBlurProgram, "uProjectionScale"),
+        glGetUniformLocation(thicknessBlurProgram, "uParticleRadius"),
+        glGetUniformLocation(thicknessBlurProgram, "uDirection")};
     blurUniforms = {glGetUniformLocation(blurProgram, "uSurface"),
                     glGetUniformLocation(blurProgram, "uInverseProjection"),
                     glGetUniformLocation(blurProgram, "uViewport"),
@@ -903,6 +1017,9 @@ struct FluidRenderer::Impl {
     thicknessProgram =
         linkProgram(kParticleVertex, kThicknessFragment, "fluid thickness", failure);
     if (thicknessProgram == 0) return false;
+    thicknessBlurProgram = linkProgram(kFullscreenVertex, kThicknessBlurFragment,
+                                       "fluid thickness smoothing", failure);
+    if (thicknessBlurProgram == 0) return false;
     shadeProgram = linkProgram(kFullscreenVertex, kShadeFragment, "fluid shading", failure);
     if (shadeProgram == 0) return false;
     glassProgram = linkProgram(kGlassVertex, kGlassFragment, "vessel glass", failure);
@@ -951,10 +1068,12 @@ struct FluidRenderer::Impl {
     glGenFramebuffers(1, &depthFbo);
     glGenFramebuffers(2, blurFbo);
     glGenFramebuffers(1, &thicknessFbo);
+    glGenFramebuffers(1, &thicknessBlurFbo);
     glGenFramebuffers(1, &compositeFbo);
     glGenTextures(1, &rawSurfaceTexture);
     glGenTextures(2, blurTexture);
     glGenTextures(1, &thicknessTexture);
+    glGenTextures(1, &thicknessBlurTexture);
     glGenTextures(1, &compositeTexture);
     glGenRenderbuffers(1, &depthStencil);
   }
@@ -992,6 +1111,8 @@ struct FluidRenderer::Impl {
                     GL_NEAREST, width, height);
     allocateTexture(thicknessTexture, static_cast<GLint>(GL_RG16F), GL_RG, GL_FLOAT, GL_LINEAR,
                     width, height);
+    allocateTexture(thicknessBlurTexture, static_cast<GLint>(GL_RG16F), GL_RG, GL_FLOAT,
+                    GL_LINEAR, width, height);
     allocateTexture(compositeTexture, static_cast<GLint>(GL_RGBA8), GL_RGBA, GL_UNSIGNED_BYTE,
                     GL_LINEAR, width, height);
 
@@ -1021,6 +1142,12 @@ struct FluidRenderer::Impl {
     glDrawBuffers(1, &colourAttachment);
     if (!checkFramebuffer("thickness")) return false;
 
+    glBindFramebuffer(GL_FRAMEBUFFER, thicknessBlurFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           thicknessBlurTexture, 0);
+    glDrawBuffers(1, &colourAttachment);
+    if (!checkFramebuffer("thickness smoothing")) return false;
+
     glBindFramebuffer(GL_FRAMEBUFFER, compositeFbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, compositeTexture,
                            0);
@@ -1044,13 +1171,17 @@ struct FluidRenderer::Impl {
         snapshot.maxRadiusM == glassRadius)
       return;
 
-    constexpr int levelCount = 72;
+    constexpr int levelCount = kVesselLevels;
     constexpr int sliceCount = 96;
     constexpr double pi = 3.14159265358979323846;
     std::array<double, levelCount> radii{};
     for (int level = 0; level < levelCount; ++level) {
       const double fraction = static_cast<double>(level) / static_cast<double>(levelCount - 1);
-      radii[level] = snapshot.maxRadiusM * sol::vesselWidthAt(snapshot.vessel, fraction);
+      const double width = sol::vesselWidthAt(snapshot.vessel, fraction);
+      // The depth pass clips against the same profile the glass is revolved
+      // from, kept normalised so it survives a vessel-height change untouched.
+      vesselProfile[level] = static_cast<float>(width);
+      radii[level] = snapshot.maxRadiusM * width;
     }
 
     std::vector<GlassVertex> vertices;
@@ -1145,6 +1276,18 @@ struct FluidRenderer::Impl {
     const Mat4 projection = camera.projection(aspect);
     const Mat4 inverseProjection = inverse(projection);
     const float radius = std::max(1.0e-5f, static_cast<float>(snapshot.particleRadiusM));
+    // The thickness pass measures optical path, so its footprint is calibrated
+    // by volume rather than by silhouette. Each particle stands for one lattice
+    // cell, dx^3 of liquid, and its (1-r^2)^(3/2) footprint of radius R
+    // integrates to A * pi * R^2 / 2.5. Setting that equal to dx^3 gives the
+    // amplitude below, so the summed field is a true path length in metres no
+    // matter what radius the surface is drawn at. Getting this wrong is
+    // visible: the old dx/2 sphere chord under-reported the path by 1/0.524
+    // and made 100 mL of dichloromethane look like haze.
+    const double spacing = std::max(1.0e-6, snapshot.particleSpacingM);
+    constexpr double pi = 3.14159265358979323846;
+    const float thicknessAmplitude = static_cast<float>(
+        2.5 * spacing * spacing * spacing / (pi * static_cast<double>(radius) * radius));
     const GLsizei particleCount = static_cast<GLsizei>(instances.size());
     const GLenum colourAttachment = GL_COLOR_ATTACHMENT0;
     const GLfloat zero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -1168,6 +1311,25 @@ struct FluidRenderer::Impl {
     glDisable(GL_CULL_FACE);
     glUseProgram(depthProgram);
     setParticleUniforms(depthUniforms, model, view, projection, radius);
+    // The clip needs the eye-space impostor offset back in vessel coordinates.
+    // model and view are both rigid (a normalised quaternion and a look-at), so
+    // the inverse of the 3x3 of view*model is simply its transpose. Mat4 is
+    // column-major, so element (row, col) lives at [col * 4 + row] and the
+    // transpose is written out directly.
+    float eyeToObject[9];
+    for (int row = 0; row < 3; ++row) {
+      for (int col = 0; col < 3; ++col) {
+        float product = 0.0f;
+        for (int k = 0; k < 3; ++k) product += view[k * 4 + row] * model[col * 4 + k];
+        eyeToObject[row * 3 + col] = product;  // transposed on write
+      }
+    }
+    glUniformMatrix3fv(depthClipUniforms.eyeToObject, 1, GL_FALSE, eyeToObject);
+    glUniform1f(depthClipUniforms.vesselHeight,
+                static_cast<float>(snapshot.vesselHeightM));
+    glUniform1f(depthClipUniforms.vesselMaxRadius,
+                static_cast<float>(snapshot.maxRadiusM));
+    glUniform1fv(depthClipUniforms.vesselProfile, kVesselLevels, vesselProfile.data());
     glBindVertexArray(particleVao);
     glDrawArraysInstanced(GL_TRIANGLES, 0, 6, particleCount);
 
@@ -1211,9 +1373,40 @@ struct FluidRenderer::Impl {
     glBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
     glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ONE);
     glUseProgram(thicknessProgram);
+    // The footprint spans the same radius as the surface so the discs overlap;
+    // the amplitude, not the radius, carries the volume calibration.
     setParticleUniforms(thicknessUniforms, model, view, projection, radius);
+    glUniform1f(thicknessAmplitudeUniform, thicknessAmplitude);
     glBindVertexArray(particleVao);
     glDrawArraysInstanced(GL_TRIANGLES, 0, 6, particleCount);
+
+    // Pass 3b: separable Gaussian over the optical path. The surface can be
+    // perfectly smooth and the body still look scaly, because the summed
+    // footprints carry a particle-scale ripple that Beer-Lambert makes visible.
+    glDisable(GL_BLEND);
+    glUseProgram(thicknessBlurProgram);
+    glUniform1i(thicknessBlurUniforms.thickness, 0);
+    glUniform1i(thicknessBlurUniforms.surface, 1);
+    glUniform2f(thicknessBlurUniforms.viewport, static_cast<float>(width),
+                static_cast<float>(height));
+    glUniform2f(thicknessBlurUniforms.projectionScale, projection[0], projection[5]);
+    glUniform1f(thicknessBlurUniforms.particleRadius, radius);
+    glActiveTexture(GL_TEXTURE0 + 1);
+    glBindTexture(GL_TEXTURE_2D, smoothedSurface);
+    glBindVertexArray(fullscreenVao);
+    const GLuint thicknessPingPong[2] = {thicknessBlurFbo, thicknessFbo};
+    const GLuint thicknessSource[2] = {thicknessTexture, thicknessBlurTexture};
+    GLuint filteredThickness = thicknessTexture;
+    for (int axis = 0; axis < 2; ++axis) {
+      glBindFramebuffer(GL_FRAMEBUFFER, thicknessPingPong[axis]);
+      glDrawBuffers(1, &colourAttachment);
+      glUniform2f(thicknessBlurUniforms.direction, axis == 0 ? 1.0f : 0.0f,
+                  axis == 0 ? 0.0f : 1.0f);
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, thicknessSource[axis]);
+      glDrawArrays(GL_TRIANGLES, 0, 3);
+      filteredThickness = axis == 0 ? thicknessBlurTexture : thicknessTexture;
+    }
 
     // Pass 4: reconstruct the smooth surface, shade, and write straight RGBA.
     glBindFramebuffer(GL_FRAMEBUFFER, compositeFbo);
@@ -1227,7 +1420,7 @@ struct FluidRenderer::Impl {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, smoothedSurface);
     glActiveTexture(GL_TEXTURE0 + 1);
-    glBindTexture(GL_TEXTURE_2D, thicknessTexture);
+    glBindTexture(GL_TEXTURE_2D, filteredThickness);
     glUniform1i(shadeUniforms.surface, 0);
     glUniform1i(shadeUniforms.thickness, 1);
     glUniformMatrix4fv(shadeUniforms.inverseProjection, 1, GL_FALSE, inverseProjection.data());

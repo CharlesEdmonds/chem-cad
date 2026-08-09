@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstddef>
 #include <cfloat>
 #include <cmath>
@@ -58,23 +57,6 @@ struct ResultAnimation {
   std::unordered_map<std::string, int> currentRanks;
 };
 
-int resizeStringInput(ImGuiInputTextCallbackData* data) {
-  if (data->EventFlag != ImGuiInputTextFlags_CallbackResize) return 0;
-  auto* value = static_cast<std::string*>(data->UserData);
-  value->resize(static_cast<size_t>(data->BufTextLen));
-  data->Buf = value->data();
-  return 0;
-}
-
-bool stringInputWithHint(const char* label, const char* hint, std::string& value,
-                         ImGuiInputTextFlags flags = 0, bool mono = false) {
-  flags |= ImGuiInputTextFlags_CallbackResize;
-  const bool pushed = mono ? style::pushFont(style::fonts::mono()) : false;
-  const bool changed = ImGui::InputTextWithHint(
-      label, hint, value.data(), value.capacity() + 1, flags, resizeStringInput, &value);
-  style::popFont(pushed);
-  return changed;
-}
 
 std::string ellipsizeText(const std::string& text, float maximumWidth) {
   if (maximumWidth <= 0.0f) return {};
@@ -90,13 +72,6 @@ std::string ellipsizeText(const std::string& text, float maximumWidth) {
   return text.substr(0, end) + kEllipsis;
 }
 
-bool containsCaseInsensitive(const std::string& text, const std::string& needle) {
-  if (needle.empty()) return true;
-  return std::search(text.begin(), text.end(), needle.begin(), needle.end(),
-                     [](unsigned char left, unsigned char right) {
-                       return std::tolower(left) == std::tolower(right);
-                     }) != text.end();
-}
 
 float easeOutCubic(float value) {
   const float t = std::clamp(value, 0.0f, 1.0f);
@@ -669,7 +644,7 @@ void drawSpeciesBuilder(AppState& state) {
     }
   } else if (selection.addMode == 1) {
     ImGui::SetNextItemWidth(-FLT_MIN);
-    const bool enter = stringInputWithHint("##species_smiles", "SMILES, e.g. CC(=O)Oc1ccccc1C(=O)O",
+    const bool enter = widgets::stringInputWithHint("##species_smiles", "SMILES, e.g. CC(=O)Oc1ccccc1C(=O)O",
                                            selection.smilesInput,
                                            ImGuiInputTextFlags_EnterReturnsTrue, true);
     if (enter || widgets::primaryButton("Add SMILES", ImVec2(ImGui::GetContentRegionAvail().x, 0.0f))) {
@@ -677,7 +652,7 @@ void drawSpeciesBuilder(AppState& state) {
     }
   } else {
     ImGui::SetNextItemWidth(-FLT_MIN);
-    const bool enter = stringInputWithHint("##species_name", "IUPAC or common name",
+    const bool enter = widgets::stringInputWithHint("##species_name", "IUPAC or common name",
                                            selection.nameInput,
                                            ImGuiInputTextFlags_EnterReturnsTrue);
     if (selection.nameLookupRunning) ImGui::BeginDisabled();
@@ -1253,7 +1228,7 @@ void drawResultControls(SelectionState& state) {
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::SetNextItemWidth(-FLT_MIN);
-    stringInputWithHint("##solvent_search", "Filter solvent names", state.resultSearch);
+    widgets::stringInputWithHint("##solvent_search", "Filter solvent names", state.resultSearch);
     ImGui::TableNextColumn();
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::Combo("##result_sort", &state.sortMode, kSortLabels.data(),
@@ -1263,7 +1238,7 @@ void drawResultControls(SelectionState& state) {
     ImGui::EndTable();
   } else {
     ImGui::SetNextItemWidth(-FLT_MIN);
-    stringInputWithHint("##solvent_search", "Filter solvent names", state.resultSearch);
+    widgets::stringInputWithHint("##solvent_search", "Filter solvent names", state.resultSearch);
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::Combo("##result_sort", &state.sortMode, kSortLabels.data(),
                  static_cast<int>(kSortLabels.size()));
@@ -1277,8 +1252,8 @@ std::vector<const sol::SolventCandidate*> visibleCandidates(const SelectionState
   for (const sol::SolventCandidate& candidate : state.candidates) {
     const std::string primary = candidate.solvent ? candidate.solvent->name : std::string();
     const std::string partner = candidate.partner ? candidate.partner->name : std::string();
-    if (!containsCaseInsensitive(primary, state.resultSearch) &&
-        !containsCaseInsensitive(partner, state.resultSearch)) {
+    if (!widgets::containsCaseInsensitive(primary, state.resultSearch) &&
+        !widgets::containsCaseInsensitive(partner, state.resultSearch)) {
       continue;
     }
     result.push_back(&candidate);

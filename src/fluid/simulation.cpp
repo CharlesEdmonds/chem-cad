@@ -410,7 +410,8 @@ struct Simulation::Impl {
     next->pose = motion.pose;
     next->vesselHeightM = boundary.heightM();
     next->maxRadiusM = boundary.maxRadiusM();
-    next->particleRadiusM = 0.5 * resolution.spacing;
+    next->particleSpacingM = resolution.spacing;
+    next->particleRadiusM = resolution.spacing;
     next->elapsedS = elapsed;
     next->vessel = vessel;
     next->revision = ++revision;
@@ -680,7 +681,7 @@ std::string Simulation::statusLine() const {
   std::ostringstream text;
   if (!issue.empty()) text << issue << " | ";
   text << std::fixed << std::setprecision(1)
-       << "dx " << state->particleRadiusM * 2000.0 << " mm | "
+       << "dx " << state->particleSpacingM * 1000.0 << " mm | "
        << state->px.size() << " particles | ";
   if (state->elapsedS > 0.0) {
     text << stats->substeps << " substeps, " << stats->pressureIterations

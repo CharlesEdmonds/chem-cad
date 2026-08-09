@@ -24,27 +24,6 @@ struct ToolboxState {
   bool indexed = false;
 };
 
-int resizeStringInput(ImGuiInputTextCallbackData* data) {
-  if (data->EventFlag != ImGuiInputTextFlags_CallbackResize) return 0;
-  auto* value = static_cast<std::string*>(data->UserData);
-  value->resize(static_cast<std::size_t>(data->BufTextLen));
-  data->Buf = value->data();
-  return 0;
-}
-
-std::string lowerCopy(const std::string& value) {
-  std::string lowered;
-  lowered.reserve(value.size());
-  for (unsigned char ch : value) lowered.push_back(static_cast<char>(std::tolower(ch)));
-  return lowered;
-}
-
-bool containsCaseInsensitive(const std::string& text, const std::string& lowercaseNeedle) {
-  return std::search(text.begin(), text.end(), lowercaseNeedle.begin(), lowercaseNeedle.end(),
-                     [](unsigned char textChar, unsigned char needleChar) {
-                       return std::tolower(textChar) == needleChar;
-                     }) != text.end();
-}
 
 std::string upperCopy(const std::string& value) {
   std::string upper;
@@ -64,13 +43,13 @@ std::string join(const std::vector<std::string>& values) {
 
 bool matchesQuery(const rxn::ReactionTemplate& reaction, const std::string& query) {
   if (query.empty()) return true;
-  if (containsCaseInsensitive(reaction.name, query) ||
-      containsCaseInsensitive(reaction.substrate, query) ||
-      containsCaseInsensitive(reaction.notes, query)) {
+  if (widgets::containsCaseInsensitive(reaction.name, query) ||
+      widgets::containsCaseInsensitive(reaction.substrate, query) ||
+      widgets::containsCaseInsensitive(reaction.notes, query)) {
     return true;
   }
   for (const std::string& reagent : reaction.reagents) {
-    if (containsCaseInsensitive(reagent, query)) return true;
+    if (widgets::containsCaseInsensitive(reagent, query)) return true;
   }
   return false;
 }
@@ -203,10 +182,8 @@ void drawToolbox(AppState& st) {
 
   widgets::sectionHeader("REACTION TOOLBOX", style::col::Accent);
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-  ImGuiInputTextFlags inputFlags = ImGuiInputTextFlags_CallbackResize;
-  ImGui::InputTextWithHint("##toolbox_search", "Search names, reagents, substrates or notes",
-                           state.query.data(), state.query.capacity() + 1, inputFlags,
-                           resizeStringInput, &state.query);
+  widgets::stringInputWithHint("##toolbox_search",
+                               "Search names, reagents, substrates or notes", state.query);
 
   widgets::sectionHeader("REACTION TYPE", style::col::Violet);
   drawChipRow("reaction_types", state.types, state.selectedType);
@@ -219,7 +196,7 @@ void drawToolbox(AppState& st) {
   }
   ImGui::EndChild();
 
-  const std::string query = lowerCopy(state.query);
+  const std::string& query = state.query;
   std::vector<const rxn::ReactionTemplate*> visible;
   visible.reserve(knowledge->size());
   for (const rxn::ReactionTemplate& reaction : *knowledge) {

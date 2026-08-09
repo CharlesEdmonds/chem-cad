@@ -1,10 +1,120 @@
 #include "ui/widgets.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cfloat>
+#include <cstddef>
+#include <cstdio>
+
+#include "sol/solvent.hpp"
 
 #include "imgui_internal.h"
 
 namespace chemcad::ui::widgets {
+
+namespace {
+
+int resizeStringInput(ImGuiInputTextCallbackData* data) {
+  if (data->EventFlag != ImGuiInputTextFlags_CallbackResize) return 0;
+  auto* value = static_cast<std::string*>(data->UserData);
+  value->resize(static_cast<std::size_t>(data->BufTextLen));
+  data->Buf = value->data();
+  return 0;
+}
+
+}  // namespace
+
+bool containsCaseInsensitive(std::string_view haystack, std::string_view needle) {
+  if (needle.empty()) return true;
+  return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(),
+                     [](unsigned char left, unsigned char right) {
+                       return std::tolower(left) == std::tolower(right);
+                     }) != haystack.end();
+}
+
+bool stringInputWithHint(const char* id, const char* hint, std::string& value) {
+  return stringInputWithHint(id, hint, value, 0);
+}
+
+bool stringInputWithHint(const char* id, const char* hint, std::string& value,
+                         ImGuiInputTextFlags flags, bool mono) {
+  flags |= ImGuiInputTextFlags_CallbackResize;
+  const bool pushed = mono ? style::pushFont(style::fonts::mono()) : false;
+  const bool changed = ImGui::InputTextWithHint(
+      id, hint, value.data(), value.capacity() + 1, flags, resizeStringInput, &value);
+  style::popFont(pushed);
+  return changed;
+}
+
+bool solventCombo(const char* id, std::string& solventId, std::string& query) {
+  const sol::Solvent* current = sol::findSolvent(solventId);
+  const char* preview = current ? current->name.c_str() : "Select solvent";
+  bool changed = false;
+
+  // ImGui caps a combo popup at roughly eight rows. Scrolling to reach water
+  // would defeat the point of curating, so the popup is sized to hold the whole
+  // curated list plus the search field and its hint; a wide search result set
+  // then scrolls inside the same box.
+  const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
+  const int curatedRows = static_cast<int>(sol::commonSolvents().size());
+  const float resultsHeight =
+      rowHeight * static_cast<float>(std::clamp(curatedRows, 6, 16));
+  const float popupChrome =
+      ImGui::GetFrameHeightWithSpacing() + rowHeight * 2.0f + ImGui::GetStyle().WindowPadding.y * 2.0f;
+  ImGui::SetNextWindowSizeConstraints(ImVec2(ImGui::GetFontSize() * 13.0f, 0.0f),
+                                      ImVec2(FLT_MAX, resultsHeight + popupChrome));
+
+  if (ImGui::BeginCombo(id, preview)) {
+    if (ImGui::IsWindowAppearing()) {
+      query.clear();
+      ImGui::SetKeyboardFocusHere();
+    }
+
+    char hint[64];
+    std::snprintf(hint, sizeof(hint), "Search all %zu solvents...", sol::solvents().size());
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    stringInputWithHint("##solvent_search", hint, query);
+    ImGui::Separator();
+
+    ImGui::BeginChild("##solvent_results", ImVec2(0.0f, resultsHeight),
+                      ImGuiChildFlags_Borders);
+    bool matched = false;
+    const auto drawResult = [&](const sol::Solvent& solvent) {
+      if (!query.empty() && !containsCaseInsensitive(solvent.name, query) &&
+          !containsCaseInsensitive(solvent.id, query)) {
+        return;
+      }
+      matched = true;
+      const bool selected = solvent.id == solventId;
+      if (ImGui::Selectable(solvent.name.c_str(), selected)) {
+        solventId = solvent.id;
+        changed = true;
+      }
+      if (selected) ImGui::SetItemDefaultFocus();
+    };
+
+    if (query.empty()) {
+      for (const sol::Solvent* solvent : sol::commonSolvents()) drawResult(*solvent);
+    } else {
+      for (const sol::Solvent& solvent : sol::solvents()) drawResult(solvent);
+    }
+
+    if (!matched) {
+      ImGui::PushStyleColor(ImGuiCol_Text, style::col::TextDim);
+      ImGui::Text("No solvent matches \"%s\"", query.c_str());
+      ImGui::PopStyleColor();
+    }
+    ImGui::EndChild();
+
+    if (query.empty()) {
+      ImGui::PushStyleColor(ImGuiCol_Text, style::col::TextDim);
+      ImGui::TextUnformatted("Type above to search every solvent");
+      ImGui::PopStyleColor();
+    }
+    ImGui::EndCombo();
+  }
+  return changed;
+}
 
 float hoverT(ImGuiID id, bool hovered) {
   ImGuiStorage* storage = ImGui::GetStateStorage();

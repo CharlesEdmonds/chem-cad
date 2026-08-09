@@ -290,12 +290,35 @@ void buildScreenOutline(const VesselGeometry& geo, const Transform& tf,
   }
 }
 
-void drawVesselGlass(ImDrawList* draw, const VesselGeometry& geo, const Transform& tf) {
-  static thread_local std::vector<ImVec2> screenOutline;
-  buildScreenOutline(geo, tf, screenOutline);
-  if (screenOutline.size() < 3) return;
-  draw->AddConcavePolyFilled(screenOutline.data(), static_cast<int>(screenOutline.size()),
-                             style::u32(style::col::Text, 0.10f));
+double halfWidthAtHeight(const sol::Simulation& sim, const VesselGeometry& geo,
+                         double heightM);
+
+// The vessel body is a surface of revolution, so its section is the region
+// |x| <= w(z): a stack of trapezoids. Handing the concave outline to
+// AddConcavePolyFilled instead used to fill something close to its convex hull,
+// which is a kite far larger than the funnel and read as a glow around it.
+void drawVesselGlass(ImDrawList* draw, const sol::Simulation& sim,
+                     const VesselGeometry& geo, const Transform& tf) {
+  constexpr int kStrips = 96;
+  const ImU32 body = style::u32(style::col::Text, 0.10f);
+  const ImDrawListFlags savedFlags = draw->Flags;
+  // Shared strip edges would otherwise show as seams through their AA fringes.
+  draw->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+  double lowerZ = 0.0;
+  double lowerHalf = halfWidthAtHeight(sim, geo, 0.0);
+  for (int strip = 1; strip <= kStrips; ++strip) {
+    const double upperZ = geo.heightMetres * static_cast<double>(strip) / kStrips;
+    const double upperHalf = halfWidthAtHeight(sim, geo, upperZ);
+    if (lowerHalf > 1.0e-9 || upperHalf > 1.0e-9) {
+      const ImVec2 quad[4] = {
+          toScreen(tf, -lowerHalf, lowerZ), toScreen(tf, lowerHalf, lowerZ),
+          toScreen(tf, upperHalf, upperZ), toScreen(tf, -upperHalf, upperZ)};
+      draw->AddConvexPolyFilled(quad, 4, body);
+    }
+    lowerZ = upperZ;
+    lowerHalf = upperHalf;
+  }
+  draw->Flags = savedFlags;
 }
 
 void drawVesselWall(ImDrawList* draw, const VesselGeometry& geo, const Transform& tf) {
@@ -443,43 +466,170 @@ void drawBulkBands(ImDrawList* draw, const fluid::Snapshot& snapshot,
   }
 }
 
-void drawParticleCut(ImDrawList* draw, const fluid::Snapshot& snapshot,
-                     const sol::Simulation& charge, const VesselGeometry& geo,
-                     const Transform& tf) {
+// The particles are point samples of a continuum, not beads of liquid. Drawing
+// one translucent circle each is what made the section read as a bag of orbs:
+// at dx = 8 mm there are only about ten particles across the funnel, so every
+// one of them was individually legible. This instead reconstructs the field the
+// particles sample and fills its iso-contour, which is the 2D counterpart of
+// what the screen-space renderer does in 3D, and the two views therefore agree.
+//
+// Marching TRIANGLES rather than squares: splitting each cell on a diagonal
+// removes the saddle ambiguity entirely and every emitted polygon is convex,
+// which is exactly what ImDrawList::AddConvexPolyFilled requires.
+void drawLiquidSection(ImDrawList* draw, const fluid::Snapshot& snapshot,
+                       const sol::Simulation& charge, const VesselGeometry& geo,
+                       const Transform& tf) {
   const size_t count =
       std::min({snapshot.px.size(), snapshot.py.size(), snapshot.pz.size(),
                 snapshot.phase.size()});
-  const double slabHalfWidthM = snapshot.particleRadiusM * 1.5;
+  if (count == 0 || snapshot.phases.empty()) return;
+
+  const double slabHalfWidthM = snapshot.particleSpacingM * 0.75;
   const float radiusPx =
       std::max(static_cast<float>(snapshot.particleRadiusM) * tf.scale, 1.0f);
-  const int segments = radiusPx < 3.0f ? 8 : 0;
+  // A lone particle must resolve to a disc of exactly radiusPx, so the influence
+  // radius and the iso level are chosen together: with w(d) = (1 - (d/R)^2)^2
+  // and R = 1.6 r, w(r) is the level below.
+  const float influencePx = radiusPx * 1.6f;
+  constexpr float kIsoLevel = 0.372f;  // (1 - (1/1.6)^2)^2
 
-  // This is a true x-z section, not a silhouette: only particles whose centres
-  // lie in the near-axis slab are painted.
+  const ImVec2 topLeft = toScreen(tf, -geo.halfWidthMetres, geo.heightMetres);
+  const ImVec2 bottomRight = toScreen(tf, geo.halfWidthMetres, 0.0);
+  const float padding = influencePx + 2.0f;
+  const float minX = topLeft.x - padding, maxX = bottomRight.x + padding;
+  const float minY = topLeft.y - padding, maxY = bottomRight.y + padding;
+  if (!(maxX > minX) || !(maxY > minY)) return;
+
+  // Cell size follows the particle radius so the contour stays smooth at any
+  // zoom, and the node budget bounds the cost when the stage is large.
+  constexpr int kMaxNodes = 24000;
+  float cell = std::clamp(radiusPx * 0.5f, 3.0f, 16.0f);
+  int nx = static_cast<int>((maxX - minX) / cell) + 2;
+  int ny = static_cast<int>((maxY - minY) / cell) + 2;
+  if (nx * ny > kMaxNodes) {
+    cell *= std::sqrt(static_cast<float>(nx * ny) / static_cast<float>(kMaxNodes));
+    nx = static_cast<int>((maxX - minX) / cell) + 2;
+    ny = static_cast<int>((maxY - minY) / cell) + 2;
+  }
+  if (nx < 2 || ny < 2) return;
+
+  // Reused across frames: the section is redrawn every frame and this must not
+  // allocate in the draw path.
+  static std::vector<float> field;
+  static std::vector<float> phaseWeight;
+  field.assign(static_cast<size_t>(nx) * ny, 0.0f);
+  phaseWeight.assign(static_cast<size_t>(nx) * ny, 0.0f);
+
+  const float inverseCell = 1.0f / cell;
+  const float influence2 = influencePx * influencePx;
   for (size_t i = 0; i < count; ++i) {
+    // A true x-z section: only particles near the cutting plane contribute.
     if (std::fabs(static_cast<double>(snapshot.py[i])) >= slabHalfWidthM) continue;
     const size_t phaseIndex = snapshot.phase[i];
     if (phaseIndex >= snapshot.phases.size()) continue;
+    const ImVec2 centre = toScreen(tf, snapshot.px[i], snapshot.pz[i]);
+    const float phaseB = phaseIndex == 0 ? 0.0f : 1.0f;
 
-    const double x = snapshot.px[i];
-    const double z = snapshot.pz[i];
-    if (z < 0.0 || z > geo.heightMetres) continue;
-    const double halfWidth = halfWidthAtHeight(charge, geo, z);
-    if (std::fabs(x) > halfWidth) continue;
-    const float xFraction =
-        static_cast<float>(x / std::max(halfWidth, static_cast<double>(1e-9)));
-    const ImVec2 centre = toScreen(tf, x, z);
-    const fluid::PhaseMaterial& phase = snapshot.phases[phaseIndex];
-    draw->AddCircleFilled(centre, radiusPx, phaseShade(phase, xFraction, 0.96f), segments);
-    draw->AddCircle(centre, radiusPx, phaseShade(phase, xFraction, 1.0f), segments,
-                    std::max(style::metrics().hairline, radiusPx * 0.12f));
-    if (radiusPx >= 2.4f) {
-      draw->AddCircleFilled(ImVec2(centre.x - radiusPx * 0.28f,
-                                   centre.y - radiusPx * 0.28f),
-                            std::max(radiusPx * 0.20f, 0.6f),
-                            style::u32(style::col::Text, 0.30f), 6);
+    const int i0 = std::max(0, static_cast<int>((centre.x - influencePx - minX) * inverseCell));
+    const int i1 = std::min(nx - 1, static_cast<int>((centre.x + influencePx - minX) * inverseCell) + 1);
+    const int j0 = std::max(0, static_cast<int>((centre.y - influencePx - minY) * inverseCell));
+    const int j1 = std::min(ny - 1, static_cast<int>((centre.y + influencePx - minY) * inverseCell) + 1);
+    for (int j = j0; j <= j1; ++j) {
+      const float ny_ = minY + static_cast<float>(j) * cell - centre.y;
+      for (int k = i0; k <= i1; ++k) {
+        const float nx_ = minX + static_cast<float>(k) * cell - centre.x;
+        const float d2 = nx_ * nx_ + ny_ * ny_;
+        if (d2 >= influence2) continue;
+        const float t = 1.0f - d2 / influence2;
+        const float w = t * t;
+        const size_t node = static_cast<size_t>(j) * nx + k;
+        field[node] += w;
+        phaseWeight[node] += w * phaseB;
+      }
     }
   }
+
+  // Confining the liquid to the glass by zeroing whole nodes quantises the wall
+  // to the cell size and leaves a visible staircase. Each emitted vertex is
+  // projected onto the wall instead, so the liquid meets the glass exactly.
+  const auto clampToVessel = [&](ImVec2 point) {
+    const double z = static_cast<double>(tf.origin.y - point.y) / tf.scale;
+    const double halfWidth =
+        (z < 0.0 || z > geo.heightMetres) ? 0.0 : halfWidthAtHeight(charge, geo, z);
+    const float limit = static_cast<float>(halfWidth) * tf.scale;
+    point.x = std::clamp(point.x, tf.origin.x - limit, tf.origin.x + limit);
+    return point;
+  };
+
+  const auto nodePosition = [&](int k, int j) {
+    return ImVec2(minX + static_cast<float>(k) * cell, minY + static_cast<float>(j) * cell);
+  };
+  const auto crossing = [&](int ka, int ja, int kb, int jb) {
+    const float fa = field[static_cast<size_t>(ja) * nx + ka];
+    const float fb = field[static_cast<size_t>(jb) * nx + kb];
+    const float denominator = fb - fa;
+    const float t = std::fabs(denominator) < 1.0e-6f
+                        ? 0.5f
+                        : std::clamp((kIsoLevel - fa) / denominator, 0.0f, 1.0f);
+    const ImVec2 a = nodePosition(ka, ja);
+    const ImVec2 b = nodePosition(kb, jb);
+    return ImVec2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+  };
+
+  // Anti-aliased fills put a blended fringe around every polygon. Adjacent
+  // triangles share their edges exactly, so those fringes would print the
+  // triangulation onto the liquid as a visible mesh. The outer silhouette is
+  // covered by the drawn glass wall, so plain fills are the right trade.
+  const ImDrawListFlags savedFlags = draw->Flags;
+  draw->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+
+  const fluid::PhaseMaterial& phaseA = snapshot.phases[0];
+  const fluid::PhaseMaterial& phaseB =
+      snapshot.phases[snapshot.phases.size() > 1 ? 1 : 0];
+  ImVec2 polygon[4];
+  const int corners[2][3][2] = {{{0, 0}, {1, 0}, {1, 1}}, {{0, 0}, {1, 1}, {0, 1}}};
+  for (int j = 0; j + 1 < ny; ++j) {
+    for (int k = 0; k + 1 < nx; ++k) {
+      for (const auto& triangle : corners) {
+        int used = 0;
+        float phaseSum = 0.0f;
+        float weightSum = 0.0f;
+        for (int v = 0; v < 3; ++v) {
+          const int ka = k + triangle[v][0], ja = j + triangle[v][1];
+          const int kb = k + triangle[(v + 1) % 3][0], jb = j + triangle[(v + 1) % 3][1];
+          const size_t nodeA = static_cast<size_t>(ja) * nx + ka;
+          const size_t nodeB = static_cast<size_t>(jb) * nx + kb;
+          const bool insideA = field[nodeA] >= kIsoLevel;
+          const bool insideB = field[nodeB] >= kIsoLevel;
+          if (insideA && used < 4) {
+            polygon[used++] = clampToVessel(nodePosition(ka, ja));
+            phaseSum += phaseWeight[nodeA];
+            weightSum += field[nodeA];
+          }
+          if (insideA != insideB && used < 4)
+            polygon[used++] = clampToVessel(crossing(ka, ja, kb, jb));
+        }
+        if (used < 3) continue;
+
+        // Interpolate the two liquids by their local mixture. Picking a single
+        // dominant phase instead would flip between colours wherever the mix
+        // sits near a half, which prints the triangulation as a checkerboard.
+        const float mix =
+            weightSum > 0.0f ? std::clamp(phaseSum / weightSum, 0.0f, 1.0f) : 0.0f;
+        fluid::PhaseMaterial shaded = phaseA;
+        for (int channel = 0; channel < 4; ++channel) {
+          shaded.colour[channel] = phaseA.colour[channel] +
+                                   (phaseB.colour[channel] - phaseA.colour[channel]) * mix;
+        }
+        const float xFraction = std::clamp(
+            (polygon[0].x - tf.origin.x) /
+                std::max(1.0f, static_cast<float>(geo.halfWidthMetres) * tf.scale),
+            -1.0f, 1.0f);
+        draw->AddConvexPolyFilled(polygon, used, phaseShade(shaded, xFraction, 0.96f));
+      }
+    }
+  }
+  draw->Flags = savedFlags;
 }
 
 void drawCrossSection(const fluid::Snapshot& snapshot, const sol::Simulation& charge,
@@ -492,10 +642,10 @@ void drawCrossSection(const fluid::Snapshot& snapshot, const sol::Simulation& ch
   const VesselGeometry& geo = cachedGeometry(charge);
   const Transform tf = buildTransform(geo, regionMin, regionSize);
   drawGroundShadow(draw, geo, tf);
-  drawVesselGlass(draw, geo, tf);
+  drawVesselGlass(draw, charge, geo, tf);
   drawGraduation(draw, geo, tf, regionMin);
   drawBulkBands(draw, snapshot, charge, geo, tf);
-  drawParticleCut(draw, snapshot, charge, geo, tf);
+  drawLiquidSection(draw, snapshot, charge, geo, tf);
   drawGlassHighlights(draw, charge, geo, tf);
   drawVesselWall(draw, geo, tf);
   drawFurniture(draw, charge, geo, tf);
@@ -511,7 +661,7 @@ void drawAnalyticFallback(const sol::Simulation& charge, ImVec2 regionMin,
   const VesselGeometry& geometry = cachedGeometry(charge);
   const Transform transform = buildTransform(geometry, regionMin, regionSize);
   drawGroundShadow(draw, geometry, transform);
-  drawVesselGlass(draw, geometry, transform);
+  drawVesselGlass(draw, charge, geometry, transform);
   drawGraduation(draw, geometry, transform, regionMin);
 
   static thread_local std::vector<ImVec2> band;
@@ -820,7 +970,11 @@ bool rechargeFluid(SolubilityState& s, bool forceAttempt = false) {
 fluid::Simulation* availableFluid(SolubilityState& s) {
   FluidBoundaryState& state = fluidBoundaryState(s);
   if (state.unavailable) return nullptr;
-  if (!s.fluid && !rechargeFluid(s)) return nullptr;
+  if (!s.fluid) {
+    // Deferred until the workspace is active; see fluidConstructionAllowed.
+    if (!s.fluidConstructionAllowed) return nullptr;
+    if (!rechargeFluid(s)) return nullptr;
+  }
   return s.fluid.get();
 }
 
@@ -1892,7 +2046,7 @@ bool stageChoiceButton(const char* id, const char* label, bool selected,
 void drawStageToolbar(SolubilityState& s) {
   constexpr ImGuiTableFlags flags =
       ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
-  if (ImGui::BeginTable("##stage_modes", 4, flags)) {
+  if (ImGui::BeginTable("##stage_modes", 3, flags)) {
     ImGui::TableNextColumn();
     if (stageChoiceButton("##fluid_3d", "3D fluid",
                           s.extractionRenderMode == ExtractionRenderMode::Fluid3D)) {
@@ -1904,19 +2058,8 @@ void drawStageToolbar(SolubilityState& s) {
             "##schematic_2d", "2D schematic",
             s.extractionRenderMode == ExtractionRenderMode::Schematic2D)) {
       s.extractionRenderMode = ExtractionRenderMode::Schematic2D;
-      s.fluidGrabMode = false;
       s.fluidGrabActive = false;
     }
-
-    ImGui::TableNextColumn();
-    ImGui::BeginDisabled(s.extractionRenderMode != ExtractionRenderMode::Fluid3D);
-    if (stageChoiceButton("##grab_vessel",
-                          s.fluidGrabMode ? "Grab: on" : "Grab vessel",
-                          s.fluidGrabMode)) {
-      s.fluidGrabMode = !s.fluidGrabMode;
-      if (!s.fluidGrabMode) s.fluidGrabActive = false;
-    }
-    ImGui::EndDisabled();
 
     ImGui::TableNextColumn();
     ImGui::BeginDisabled(s.extractionRenderMode != ExtractionRenderMode::Fluid3D);
@@ -1927,18 +2070,102 @@ void drawStageToolbar(SolubilityState& s) {
     ImGui::EndTable();
   }
 
-  const char* hint = nullptr;
-  if (s.extractionRenderMode == ExtractionRenderMode::Schematic2D) {
-    hint = "Particle cut: |y| < 1.5 particle radii.";
-  } else if (s.fluidGrabMode) {
-    hint = "Drag in any direction; vertical drag drives world +z / -z.";
-  } else {
-    hint = "Left-drag orbit | wheel zoom | double-click re-frame.";
-  }
+  // Grab is no longer a mode: the left button always shakes, in both views.
+  const char* hint =
+      s.extractionRenderMode == ExtractionRenderMode::Schematic2D
+          ? "Drag the vessel to shake it | particle cut: |y| < 1.5 particle radii."
+          : "Drag the vessel to shake it | right-drag orbit | wheel zoom | "
+            "double-click re-frame.";
   const std::string fitted =
       ellipsizeText(hint, ImGui::GetContentRegionAvail().x);
   ImGui::TextDisabled("%s", fitted.c_str());
   if (ImGui::IsItemHovered() && fitted != hint) ImGui::SetTooltip("%s", hint);
+}
+
+// Pixels a metre of world motion covers on the stage, from the perspective
+// projection at the orbit distance. Dragging then moves the vessel with the
+// pointer instead of by an arbitrary screen-size-dependent amount.
+double stagePixelsPerMetre(const gfx::Camera3D& camera, float canvasHeightPx) {
+  constexpr double kPi = 3.14159265358979323846;
+  const double halfHeightM = std::max(
+      1.0e-6, static_cast<double>(camera.distanceM) *
+                  std::tan(0.5 * static_cast<double>(camera.fovDeg) * kPi / 180.0));
+  return 0.5 * static_cast<double>(canvasHeightPx) / halfHeightM;
+}
+
+// Advances the hand-follower one frame and publishes the resulting fictitious
+// acceleration. `handDelta` is this frame's commanded hand movement in world
+// metres; it is zero on the frames the user is not dragging, which lets the
+// spring ring down and settle instead of cutting the force off abruptly.
+void advanceVesselShake(SolubilityState& s, fluid::Simulation& simulation,
+                        const std::array<double, 3>& handDelta, double dt) {
+  if (!(dt > 0.0)) return;
+  constexpr double kGravity = 9.80665;
+  // A hand holding glassware is stiff: 6 Hz, near-critically damped. At that
+  // stiffness a 3 cm wiggle is about 4 g, which is a vigorous shake, while a
+  // steady drag keeps the vessel within a millimetre of the hand and produces
+  // almost nothing. Both match the real apparatus.
+  constexpr double kNaturalHz = 6.0;
+  constexpr double kStiffness = 4.0 * 3.14159265358979323846 *
+                                3.14159265358979323846 * kNaturalHz * kNaturalHz;
+  const double damping = 2.0 * 0.7 * std::sqrt(kStiffness);
+  constexpr double kMaxExcursionM = 0.12;
+  constexpr double kMaxAcceleration = 8.0 * kGravity;
+
+  const bool holding = s.fluidGrabActive;
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    double& hand = s.fluidGrabHandM[axis];
+    hand += handDelta[axis];
+    // Releasing returns the hand to the origin so the vessel settles back to
+    // rest rather than being left permanently displaced.
+    if (!holding) hand *= std::exp(-dt / 0.12);
+    hand = std::clamp(hand, -kMaxExcursionM, kMaxExcursionM);
+
+    double& position = s.fluidGrabOffsetM[axis];
+    double& velocity = s.fluidGrabVelocityMs[axis];
+    double acceleration = kStiffness * (hand - position) - damping * velocity;
+    acceleration = std::clamp(acceleration, -kMaxAcceleration, kMaxAcceleration);
+    // Semi-implicit Euler: stable for a stiff spring at frame rates a UI sees.
+    velocity += acceleration * dt;
+    position += velocity * dt;
+
+    s.fluidManualAcceleration[axis] = acceleration;
+    if (!holding && std::fabs(acceleration) < 1.0e-3 && std::fabs(velocity) < 1.0e-4) {
+      s.fluidManualAcceleration[axis] = 0.0;
+      velocity = 0.0;
+      position = 0.0;
+      hand = 0.0;
+    }
+  }
+
+  const double magnitude = std::sqrt(s.fluidManualAcceleration[0] * s.fluidManualAcceleration[0] +
+                                     s.fluidManualAcceleration[1] * s.fluidManualAcceleration[1] +
+                                     s.fluidManualAcceleration[2] * s.fluidManualAcceleration[2]);
+  if (magnitude > kMaxAcceleration) {
+    const double scale = kMaxAcceleration / magnitude;
+    for (double& component : s.fluidManualAcceleration) component *= scale;
+  }
+
+  runFluidInteraction(
+      s, [&] { simulation.setManualAcceleration(s.fluidManualAcceleration); });
+}
+
+// Tracks the pointer while the left button is held and reports this frame's
+// hand movement in screen pixels. Shared by both stage views.
+std::array<double, 2> pollGrabDeltaPixels(SolubilityState& s, bool allowStart) {
+  const ImGuiIO& io = ImGui::GetIO();
+  if (allowStart && ImGui::IsItemActivated()) {
+    s.fluidGrabActive = true;
+    s.fluidGrabAnchorPx = {io.MousePos.x, io.MousePos.y};
+    s.funnelRunning = true;  // a shake is meaningless against a paused solver
+  }
+  if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) s.fluidGrabActive = false;
+  if (!s.fluidGrabActive) return {0.0, 0.0};
+  const std::array<double, 2> delta{
+      static_cast<double>(io.MousePos.x - s.fluidGrabAnchorPx[0]),
+      static_cast<double>(io.MousePos.y - s.fluidGrabAnchorPx[1])};
+  s.fluidGrabAnchorPx = {io.MousePos.x, io.MousePos.y};
+  return delta;
 }
 
 void updateStageInput(SolubilityState& s, fluid::Simulation& simulation,
@@ -1961,75 +2188,35 @@ void updateStageInput(SolubilityState& s, fluid::Simulation& simulation,
     stage.camera.zoom(io.MouseWheel);
   }
 
-  if (s.fluidGrabMode && !reframe && ImGui::IsItemActivated()) {
-    s.fluidGrabActive = true;
-    s.fluidGrabAnchorPx = {io.MousePos.x, io.MousePos.y};
-    s.funnelRunning = true;
-  }
-  if (!s.fluidGrabMode || !ImGui::IsMouseDown(ImGuiMouseButton_Left))
-    s.fluidGrabActive = false;
-
-  std::array<double, 3> targetAcceleration{0.0, 0.0, 0.0};
-  if (s.fluidGrabMode && s.fluidGrabActive && active && dt > 0.0) {
-    const std::array<float, 3> eye = stage.camera.eye();
-    const double horizontalLength =
-        std::max(std::hypot(static_cast<double>(eye[0]), static_cast<double>(eye[1])),
-                 1.0e-9);
-    const std::array<double, 3> cameraRight{
-        -static_cast<double>(eye[1]) / horizontalLength,
-        static_cast<double>(eye[0]) / horizontalLength, 0.0};
-
-    // A full-height one-frame gesture maps to 4 g and is magnitude-clamped
-    // there. This makes screen scale irrelevant while bounding a noisy input
-    // device before it reaches the pressure solve.
-    constexpr double kGravity = 9.80665;
-    const double accelerationPerPixel =
-        4.0 * kGravity / std::max(static_cast<double>(canvasSize.y), 1.0);
-    const double pointerDeltaX =
-        static_cast<double>(io.MousePos.x - s.fluidGrabAnchorPx[0]);
-    const double pointerDeltaY =
-        static_cast<double>(io.MousePos.y - s.fluidGrabAnchorPx[1]);
-    s.fluidGrabAnchorPx = {io.MousePos.x, io.MousePos.y};
-    const double horizontal = pointerDeltaX * accelerationPerPixel;
-    const double vertical = -pointerDeltaY * accelerationPerPixel;
-    targetAcceleration = {cameraRight[0] * horizontal,
-                          cameraRight[1] * horizontal, vertical};
-    const double magnitude =
-        std::sqrt(targetAcceleration[0] * targetAcceleration[0] +
-                  targetAcceleration[1] * targetAcceleration[1] +
-                  targetAcceleration[2] * targetAcceleration[2]);
-    if (magnitude > 4.0 * kGravity) {
-      const double scale = 4.0 * kGravity / magnitude;
-      for (double& component : targetAcceleration) component *= scale;
-    }
-  } else if (!s.fluidGrabMode && active && !reframe) {
+  // Orbit is on the right button so the left button can do the thing the panel
+  // is actually about: picking the vessel up and shaking it.
+  if ((hovered || active) && ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
     stage.camera.orbit(io.MouseDelta.x, io.MouseDelta.y);
   }
 
-  if (dt > 0.0) {
-    // Exponential filtering is independent of frame rate. Release targets zero
-    // with a slightly slower decay so the fictitious acceleration does not
-    // acquire a discontinuity at the end of a hand stroke.
-    const double timeConstant = s.fluidGrabActive ? 0.055 : 0.090;
-    const double blend = 1.0 - std::exp(-dt / timeConstant);
-    for (size_t component = 0; component < 3; ++component) {
-      s.fluidManualAcceleration[component] +=
-          (targetAcceleration[component] - s.fluidManualAcceleration[component]) * blend;
-      if (!s.fluidGrabActive &&
-          std::fabs(s.fluidManualAcceleration[component]) < 1.0e-4) {
-        s.fluidManualAcceleration[component] = 0.0;
-      }
-    }
+  const std::array<double, 2> deltaPx = pollGrabDeltaPixels(s, !reframe);
+  std::array<double, 3> handDelta{0.0, 0.0, 0.0};
+  if (s.fluidGrabActive && active) {
+    const double metresPerPixel = 1.0 / stagePixelsPerMetre(stage.camera, canvasSize.y);
+    // Screen right is the camera's horizontal axis in the world; screen up is
+    // world +z, so a vertical drag shakes along the funnel axis.
+    const std::array<float, 3> eye = stage.camera.eye();
+    const double horizontalLength = std::max(
+        std::hypot(static_cast<double>(eye[0]), static_cast<double>(eye[1])), 1.0e-9);
+    const std::array<double, 3> cameraRight{-static_cast<double>(eye[1]) / horizontalLength,
+                                            static_cast<double>(eye[0]) / horizontalLength,
+                                            0.0};
+    const double horizontal = deltaPx[0] * metresPerPixel;
+    const double vertical = -deltaPx[1] * metresPerPixel;
+    handDelta = {cameraRight[0] * horizontal, cameraRight[1] * horizontal, vertical};
   }
-  runFluidInteraction(
-      s, [&] { simulation.setManualAcceleration(s.fluidManualAcceleration); });
+  advanceVesselShake(s, simulation, handDelta, dt);
 }
 
 bool drawPhysicsUnavailableState(SolubilityState& s, gfx::FluidStage& stage) {
   FluidBoundaryState& boundary = fluidBoundaryState(s);
   stage.requested = false;
   s.extractionRenderMode = ExtractionRenderMode::Schematic2D;
-  s.fluidGrabMode = false;
   s.fluidGrabActive = false;
   stage.snapshot.reset();
 
@@ -2060,7 +2247,16 @@ void drawFluidStage(AppState& st, SolubilityState& s) {
 
   fluid::Simulation* simulation = availableFluid(s);
   if (!simulation) {
-    drawPhysicsUnavailableState(s, stage);
+    if (fluidBoundaryState(s).unavailable) {
+      drawPhysicsUnavailableState(s, stage);
+    } else {
+      // Construction is merely deferred, so nothing is wrong and the user's
+      // render-mode preference must survive: drawPhysicsUnavailableState would
+      // force the 2D schematic on and silently lose it.
+      stage.requested = false;
+      stage.snapshot.reset();
+      ImGui::TextDisabled("Preparing the vessel physics...");
+    }
     return;
   }
 
@@ -2112,18 +2308,26 @@ void drawFluidStage(AppState& st, SolubilityState& s) {
 
   const ImVec2 cursor = ImGui::GetCursorPos();
   ImGui::InvisibleButton("##fluid_stage_input", canvasSize,
-                         ImGuiButtonFlags_MouseButtonLeft);
+                         ImGuiButtonFlags_MouseButtonLeft |
+                             ImGuiButtonFlags_MouseButtonRight);
   const ImVec2 rectMin = ImGui::GetItemRectMin();
   if (wants3D) {
     updateStageInput(s, *simulation, stage, *snapshot, canvasSize);
   } else {
-    s.fluidGrabActive = false;
+    // The schematic is an exact x-z section, so the pointer maps straight onto
+    // the vessel axes and shaking works here too -- there is no camera to
+    // orbit, which makes this the most direct way to shake the funnel.
     const double dt =
         std::clamp(static_cast<double>(ImGui::GetIO().DeltaTime), 0.0, 0.1);
-    const double decay = dt > 0.0 ? std::exp(-dt / 0.090) : 1.0;
-    for (double& component : s.fluidManualAcceleration) component *= decay;
-    runFluidInteraction(
-        s, [&] { simulation->setManualAcceleration(s.fluidManualAcceleration); });
+    const VesselGeometry& geometry = cachedGeometry(s.funnel);
+    const Transform transform = buildTransform(geometry, rectMin, canvasSize);
+    const double metresPerPixel = 1.0 / std::max(transform.scale, 1.0e-6f);
+    const std::array<double, 2> deltaPx = pollGrabDeltaPixels(s, true);
+    std::array<double, 3> handDelta{0.0, 0.0, 0.0};
+    if (s.fluidGrabActive && ImGui::IsItemActive()) {
+      handDelta = {deltaPx[0] * metresPerPixel, 0.0, -deltaPx[1] * metresPerPixel};
+    }
+    advanceVesselShake(s, *simulation, handDelta, dt);
   }
 
   if (fluidBoundaryState(s).unavailable) {
@@ -2144,6 +2348,16 @@ void drawFluidStage(AppState& st, SolubilityState& s) {
 
 void drawExtractionLab(AppState& st) {
   SolubilityState& s = st.solubility;
+  // ImGui submits every docked panel on the frame the dock layout is built,
+  // before it knows which tab is on top, and reports that panel as focused.
+  // From the next frame Begin() hides unselected tabs correctly, so being drawn
+  // on two consecutive frames is the first trustworthy evidence that the user
+  // is on this workspace. The particle simulation is far too expensive to build
+  // on a guess: it used to be the entire cost of the application's first frame.
+  const int frame = ImGui::GetFrameCount();
+  const bool drawnLastFrame = s.extractionLastDrawnFrame == frame - 1;
+  s.extractionLastDrawnFrame = frame;
+  s.fluidConstructionAllowed = drawnLastFrame && st.tab == MainTab::Extraction;
   consumeExtractionImport(s);
   seedDefaultPhases(s.funnel);
   availableFluid(s);

@@ -41,6 +41,8 @@ struct Solvent {
   std::string name;           // display name, e.g. "Ethyl acetate"
   std::string smiles;
   std::string family;         // "alkane" | "aromatic" | "alcohol" | "ether" | "ester" | "ketone" | "halogenated" | "amide" | "nitrile" | "sulfoxide" | "acid" | "water" | "amine"
+  // Curated bench-rack shortlist shown before a solvent search narrows the list.
+  bool common = false;
   double molarMass = 0.0;     // g/mol
   double density = 0.0;       // g/mL at 25 C
   double molarVolume = 0.0;   // cm3/mol
@@ -66,6 +68,9 @@ struct Solvent {
 // Loaded once from <data dir>/solvents.json (core::dataDir()). Throws SolError
 // when the file is missing or malformed; returns the same vector afterwards.
 const std::vector<Solvent>& solvents();
+
+// Curated subset in the same alphabetical order as solvents().
+const std::vector<const Solvent*>& commonSolvents();
 
 // nullptr when no solvent has that id.
 const Solvent* findSolvent(std::string_view id);

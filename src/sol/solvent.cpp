@@ -81,6 +81,7 @@ Solvent parseSolvent(const nlohmann::json& entry) {
   s.name = requireString(entry, "name", id);
   s.smiles = requireString(entry, "smiles", id);
   s.family = requireString(entry, "family", id);
+  optionalBoolean(entry, "common", id, s.common);
   s.molarMass = requireNumber(entry, "molar_mass", id);
   s.density = requireNumber(entry, "density", id);
   s.molarVolume = requireNumber(entry, "molar_volume", id);
@@ -183,32 +184,56 @@ std::vector<Solvent> loadSolvents() {
     loaded.push_back(parsed);
   }
 
+  if (std::none_of(loaded.begin(), loaded.end(),
+                   [](const Solvent& solvent) { return solvent.common; })) {
+    throw SolError("No common solvents marked in " + path.string());
+  }
+
   std::sort(loaded.begin(), loaded.end(),
             [](const Solvent& a, const Solvent& b) { return a.name < b.name; });
   return loaded;
 }
 
+struct SolventDatabase {
+  std::vector<Solvent> table;
+  std::vector<const Solvent*> common;
+  std::once_flag once;
+  std::exception_ptr loadError;
+};
+
+SolventDatabase& database() {
+  static SolventDatabase cache;
+  return cache;
+}
+
+void ensureDatabaseLoaded() {
+  SolventDatabase& cache = database();
+  std::call_once(cache.once, [&cache] {
+    try {
+      cache.table = loadSolvents();
+      cache.common.reserve(cache.table.size());
+      for (const Solvent& solvent : cache.table) {
+        if (solvent.common) cache.common.push_back(&solvent);
+      }
+    } catch (...) {
+      cache.loadError = std::current_exception();
+    }
+  });
+  if (cache.loadError) std::rethrow_exception(cache.loadError);
+}
+
 }  // namespace
 
 const std::vector<Solvent>& solvents() {
-  // Loaded exactly once behind call_once; a parse failure is captured and
-  // rethrown on every later call instead of retrying a broken file each
-  // frame. After the first call this is a lock-free flag check, safe to call
-  // from the render loop.
-  static std::vector<Solvent> table;
-  static std::once_flag once;
-  static std::exception_ptr loadError;
+  // Parsing and both views share one call_once so their pointers and failure
+  // semantics cannot drift apart.
+  ensureDatabaseLoaded();
+  return database().table;
+}
 
-  std::call_once(once, [] {
-    try {
-      table = loadSolvents();
-    } catch (...) {
-      loadError = std::current_exception();
-    }
-  });
-
-  if (loadError) std::rethrow_exception(loadError);
-  return table;
+const std::vector<const Solvent*>& commonSolvents() {
+  ensureDatabaseLoaded();
+  return database().common;
 }
 
 const Solvent* findSolvent(std::string_view id) {

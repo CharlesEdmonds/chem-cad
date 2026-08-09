@@ -51,6 +51,34 @@ TEST_CASE("solvent database loads with unique ids and known entries") {
   CHECK(sol::findSolvent("definitely_not_a_solvent") == nullptr);
 }
 
+TEST_CASE("common solvents are a complete curated subset of the database") {
+  const std::vector<sol::Solvent>& db = sol::solvents();
+  const std::vector<const sol::Solvent*>& common = sol::commonSolvents();
+  REQUIRE_FALSE(common.empty());
+  REQUIRE(common.size() < db.size());
+
+  for (const sol::Solvent* solvent : common) {
+    REQUIRE(solvent != nullptr);
+    CHECK(solvent->common);
+    CHECK(std::find_if(db.begin(), db.end(), [&](const sol::Solvent& entry) {
+            return &entry == solvent;
+          }) != db.end());
+  }
+
+  for (const sol::Solvent& solvent : db) {
+    const bool listed = std::find(common.begin(), common.end(), &solvent) != common.end();
+    CHECK(solvent.common == listed);
+  }
+
+  constexpr std::array<const char*, 5> required = {
+      "water", "chloroform", "diethyl_ether", "hexane", "toluene"};
+  for (const char* id : required) {
+    CHECK(std::find_if(common.begin(), common.end(), [&](const sol::Solvent* solvent) {
+            return solvent->id == id;
+          }) != common.end());
+  }
+}
+
 TEST_CASE("solvent molar volume agrees with molar mass over density") {
   for (const sol::Solvent& s : sol::solvents()) {
     REQUIRE(s.density > 0.0);

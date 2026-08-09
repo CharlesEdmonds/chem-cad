@@ -138,9 +138,17 @@ struct SolubilityState {
   // ---------------------------------------------------------- extraction
   // The legacy analytic funnel remains the editable charge model used by the
   // partition and wash calculators. The non-copyable particle simulation is
-  // created only when the Extraction Lab is first drawn.
+  // created only once the user is demonstrably on the Extraction workspace.
+  // ImGui submits every docked panel on the frame the dock layout is built and
+  // reports it focused, so a single draw proves nothing; building the
+  // simulation on that guess used to be the entire cost of the application's
+  // first frame. `extractionLastDrawnFrame` turns that into evidence: from the
+  // second frame onwards Begin() hides unselected dock tabs correctly, so two
+  // consecutive draws mean the panel really is on top.
   sol::Simulation funnel;
   std::unique_ptr<fluid::Simulation> fluid;
+  int extractionLastDrawnFrame = -1;
+  bool fluidConstructionAllowed = false;
   bool funnelRunning = false;
   float funnelSpeed = 1.0f;
   int funnelVessel = 0;  // mirrors sol::Vessel, kept as int for a plain ImGui combo
@@ -170,12 +178,19 @@ struct SolubilityState {
   // Toolbar actions are consumed by the stage after its snapshot is available.
   bool fluidReframeRequested = false;
 
-  // A dedicated stage toggle distinguishes grab-and-shake from camera orbit.
-  // Pointer deltas are converted into world acceleration and filtered before
-  // they cross the Simulation API.
-  bool fluidGrabMode = false;
+  // Dragging the stage shakes the vessel, in both the 3D and the schematic
+  // view; orbiting the 3D camera is on the right button. The pointer does not
+  // set an acceleration directly -- a per-frame pointer delta scaled to g gives
+  // a hand stroke almost no authority, and differentiating pointer position
+  // twice amplifies its integer jitter. Instead the pointer commands where the
+  // hand IS, and the vessel follows it as a stiff spring-damper: a slow drag
+  // then produces almost no acceleration and a wiggle produces a real shake,
+  // which is exactly how a funnel behaves in a hand.
   bool fluidGrabActive = false;
   std::array<float, 2> fluidGrabAnchorPx{};
+  std::array<double, 3> fluidGrabHandM{};      // commanded hand position, m
+  std::array<double, 3> fluidGrabOffsetM{};    // vessel position, m
+  std::array<double, 3> fluidGrabVelocityMs{}; // vessel velocity, m/s
   std::array<double, 3> fluidManualAcceleration{};
 
   // Pose animation state. The angular rate is retained so setPose receives an
