@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -245,6 +246,16 @@ ImU32 phaseShade(const fluid::PhaseMaterial& phase, float xFrac,
                  std::min(phase.colour[3] * alphaScale, 1.0f));
   return ImGui::ColorConvertFloat4ToU32(c);
 }
+ImU32 phaseShade(const sol::Phase& phase, float xFrac,
+                 float alphaScale = 1.0f) {
+  const float shade = glassShade(xFrac);
+  const ImVec4 colour(std::min(phase.colour[0] * shade, 1.0f),
+                      std::min(phase.colour[1] * shade, 1.0f),
+                      std::min(phase.colour[2] * shade, 1.0f),
+                      std::min(phase.colour[3] * alphaScale, 1.0f));
+  return ImGui::ColorConvertFloat4ToU32(colour);
+}
+
 
 void drawGroundShadow(ImDrawList* draw, const VesselGeometry& geo, const Transform& tf) {
   const ImVec2 c = toScreen(tf, 0.0, 0.0);
@@ -489,6 +500,80 @@ void drawCrossSection(const fluid::Snapshot& snapshot, const sol::Simulation& ch
   drawFurniture(draw, charge, geo, tf);
   draw->PopClipRect();
 }
+void drawAnalyticFallback(const sol::Simulation& charge, ImVec2 regionMin,
+                          ImVec2 regionSize) {
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  const ImVec2 regionMax(regionMin.x + regionSize.x, regionMin.y + regionSize.y);
+  draw->PushClipRect(regionMin, regionMax, true);
+  draw->AddRectFilled(regionMin, regionMax, style::u32(style::col::BgSurface));
+
+  const VesselGeometry& geometry = cachedGeometry(charge);
+  const Transform transform = buildTransform(geometry, regionMin, regionSize);
+  drawGroundShadow(draw, geometry, transform);
+  drawVesselGlass(draw, geometry, transform);
+  drawGraduation(draw, geometry, transform, regionMin);
+
+  static thread_local std::vector<ImVec2> band;
+  constexpr int kWallSamples = 32;
+  const size_t phaseCount = std::min(charge.phases.size(), charge.settledMl.size());
+  double lowerMl = 0.0;
+  for (size_t phaseIndex = 0; phaseIndex < phaseCount; ++phaseIndex) {
+    const double upperMl =
+        lowerMl + std::max(static_cast<double>(charge.settledMl[phaseIndex]), 0.0);
+    const double lowerM =
+        heightFractionForVolume(geometry, lowerMl) * geometry.heightMetres;
+    const double upperM =
+        heightFractionForVolume(geometry, upperMl) * geometry.heightMetres;
+    lowerMl = upperMl;
+    if (upperM <= lowerM) continue;
+
+    band.clear();
+    for (int sample = 0; sample <= kWallSamples; ++sample) {
+      const double t = static_cast<double>(sample) / kWallSamples;
+      const double height = lowerM + (upperM - lowerM) * t;
+      band.push_back(
+          toScreen(transform, -halfWidthAtHeight(charge, geometry, height), height));
+    }
+    for (int sample = kWallSamples; sample >= 0; --sample) {
+      const double t = static_cast<double>(sample) / kWallSamples;
+      const double height = lowerM + (upperM - lowerM) * t;
+      band.push_back(
+          toScreen(transform, halfWidthAtHeight(charge, geometry, height), height));
+    }
+    draw->AddConcavePolyFilled(
+        band.data(), static_cast<int>(band.size()),
+        phaseShade(charge.phases[phaseIndex], -0.15f, 0.62f));
+  }
+
+  for (const sol::Droplet& droplet : charge.droplets) {
+    if (droplet.phase < 0 ||
+        static_cast<size_t>(droplet.phase) >= charge.phases.size())
+      continue;
+    const double x = droplet.position.x;
+    const double height = droplet.position.y;
+    if (height <= 0.0 || height >= geometry.heightMetres ||
+        std::fabs(x) >= halfWidthAtHeight(charge, geometry, height))
+      continue;
+    const double parcelRadiusM =
+        std::cbrt(3.0 * std::max(static_cast<double>(droplet.parcelMl), 0.0) *
+                  1.0e-6 / (4.0 * kPi));
+    const float radius =
+        std::max(static_cast<float>(parcelRadiusM) * transform.scale * 0.42f,
+                 style::metrics().hairline);
+    const ImVec2 centre = toScreen(transform, x, height);
+    const sol::Phase& phase = charge.phases[static_cast<size_t>(droplet.phase)];
+    draw->AddCircleFilled(centre, radius, phaseShade(phase, 0.0f, 0.76f),
+                          radius < 3.0f ? 8 : 0);
+    draw->AddCircle(centre, radius, phaseShade(phase, 0.0f), radius < 3.0f ? 8 : 0,
+                    style::metrics().hairline);
+  }
+
+  drawGlassHighlights(draw, charge, geometry, transform);
+  drawVesselWall(draw, geometry, transform);
+  drawFurniture(draw, charge, geometry, transform);
+  draw->PopClipRect();
+}
+
 
 // ---------------------------------------------------------------- editing
 void seedDefaultPhases(sol::Simulation& sim) {
@@ -531,6 +616,28 @@ double selectedFluidSpacing(const SolubilityState& s) {
   const size_t index = static_cast<size_t>(s.fluidResolution);
   return kFluidSpacingM[std::min(index, kFluidSpacingM.size() - 1)];
 }
+template <typename T>
+void hashFluidValue(size_t& seed, const T& value) {
+  seed ^= std::hash<T>{}(value) + 0x9e3779b9u + (seed << 6u) + (seed >> 2u);
+}
+
+size_t fluidConfigurationSignature(const SolubilityState& s) {
+  size_t signature = 0;
+  hashFluidValue(signature, static_cast<int>(s.funnel.vessel));
+  hashFluidValue(signature, s.funnel.vesselVolumeMl);
+  hashFluidValue(signature, static_cast<int>(s.fluidResolution));
+  hashFluidValue(signature, s.funnel.phases.size());
+  for (const sol::Phase& phase : s.funnel.phases) {
+    hashFluidValue(signature, phase.label);
+    hashFluidValue(signature, phase.volumeMl);
+    hashFluidValue(signature, phase.density);
+    hashFluidValue(signature, phase.viscosity);
+    hashFluidValue(signature, phase.interfacialTension);
+    for (float channel : phase.colour) hashFluidValue(signature, channel);
+  }
+  return signature;
+}
+
 
 std::vector<fluid::PhaseMaterial> fluidMaterials(const sol::Simulation& charge) {
   std::vector<fluid::PhaseMaterial> materials;
@@ -566,19 +673,92 @@ std::vector<double> interfaceTensions(const sol::Simulation& charge) {
   return sigma;
 }
 
-void rechargeFluid(SolubilityState& s) {
-  if (!s.fluid) s.fluid = std::make_unique<fluid::Simulation>();
-  s.fluid->setPhases(fluidMaterials(s.funnel), interfaceTensions(s.funnel));
-  s.fluid->setVessel(s.funnel.vessel, s.funnel.vesselVolumeMl);
-  s.fluid->setResolution(selectedFluidSpacing(s));
-  s.fluid->charge();
-  s.fluidManualAcceleration = {0.0, 0.0, 0.0};
-  s.fluid->setManualAcceleration(s.fluidManualAcceleration);
+struct FluidBoundaryState {
+  const SolubilityState* owner = nullptr;
+  fluid::Simulation* observedSimulation = nullptr;
+  size_t configuration = 0;
+  bool unavailable = false;
+  std::string reason;
+};
+
+FluidBoundaryState& fluidBoundaryState(SolubilityState& s) {
+  static FluidBoundaryState state;
+  const size_t configuration = fluidConfigurationSignature(s);
+  const bool replacedState =
+      state.owner != &s ||
+      (state.observedSimulation != nullptr && s.fluid.get() != state.observedSimulation);
+  if (replacedState) {
+    state = {};
+    state.owner = &s;
+    state.configuration = configuration;
+  } else if (state.configuration != configuration) {
+    // A changed charge is a new attempt. The failed instance stays quarantined
+    // until this exact configuration boundary changes or Retry is pressed.
+    state.configuration = configuration;
+    state.unavailable = false;
+    state.reason.clear();
+  }
+  state.observedSimulation = s.fluid.get();
+  return state;
 }
 
-fluid::Simulation& ensureFluid(SolubilityState& s) {
-  if (!s.fluid) rechargeFluid(s);
-  return *s.fluid;
+void recordFluidFailure(SolubilityState& s, const std::exception& error) {
+  FluidBoundaryState& state = fluidBoundaryState(s);
+  state.unavailable = true;
+  state.reason = error.what();
+  if (state.reason.empty()) state.reason = "The fluid solver reported an unknown error.";
+  state.observedSimulation = s.fluid.get();
+  s.funnelRunning = false;
+  s.fluidGrabActive = false;
+  s.fluidManualAcceleration = {0.0, 0.0, 0.0};
+  s.extractionRenderMode = ExtractionRenderMode::Schematic2D;
+  s.statusMessage = "Physics unavailable: " + state.reason;
+}
+
+template <typename Interaction>
+bool runFluidInteraction(SolubilityState& s, Interaction&& interaction,
+                         bool forceAttempt = false) {
+  FluidBoundaryState& state = fluidBoundaryState(s);
+  if (state.unavailable && !forceAttempt) return false;
+  try {
+    interaction();
+    state.observedSimulation = s.fluid.get();
+    return true;
+  } catch (const std::exception& error) {
+    recordFluidFailure(s, error);
+    return false;
+  }
+}
+
+bool rechargeFluid(SolubilityState& s, bool forceAttempt = false) {
+  const bool charged = runFluidInteraction(
+      s,
+      [&s] {
+        // Configure a fresh candidate so a failed calibration cannot leave the
+        // panel holding a partially configured Simulation.
+        auto candidate = std::make_unique<fluid::Simulation>();
+        candidate->setVessel(s.funnel.vessel, s.funnel.vesselVolumeMl);
+        candidate->setResolution(selectedFluidSpacing(s));
+        candidate->setPhases(fluidMaterials(s.funnel), interfaceTensions(s.funnel));
+        candidate->charge();
+        s.fluidManualAcceleration = {0.0, 0.0, 0.0};
+        candidate->setManualAcceleration(s.fluidManualAcceleration);
+        s.fluid = std::move(candidate);
+      },
+      forceAttempt);
+  if (charged) {
+    FluidBoundaryState& state = fluidBoundaryState(s);
+    state.unavailable = false;
+    state.reason.clear();
+  }
+  return charged;
+}
+
+fluid::Simulation* availableFluid(SolubilityState& s) {
+  FluidBoundaryState& state = fluidBoundaryState(s);
+  if (state.unavailable) return nullptr;
+  if (!s.fluid && !rechargeFluid(s)) return nullptr;
+  return s.fluid.get();
 }
 
 int resizeStringInput(ImGuiInputTextCallbackData* data) {
@@ -646,15 +826,30 @@ fluid::VesselMotion shakeReportMotion(const SolubilityState& s) {
 }
 
 void drawFluidDiagnostics(SolubilityState& s) {
-  fluid::Simulation& simulation = ensureFluid(s);
-  const fluid::Diagnostics& diagnostics = simulation.diagnostics();
-  const std::string status = simulation.statusLine();
   const size_t resolutionIndex =
       std::min(static_cast<size_t>(s.fluidResolution), kFluidResolutionNames.size() - 1);
 
   ImGui::Spacing();
   ImGui::Separator();
   ImGui::TextDisabled("REAL FLUID READOUT");
+
+  fluid::Simulation* simulation = availableFluid(s);
+  fluid::Diagnostics diagnostics;
+  std::string status;
+  const bool readable =
+      simulation &&
+      runFluidInteraction(s, [&] {
+        diagnostics = simulation->diagnostics();
+        status = simulation->statusLine();
+      });
+  if (!readable) {
+    const FluidBoundaryState& state = fluidBoundaryState(s);
+    ImGui::TextColored(style::col::Danger, "Physics unavailable");
+    ImGui::TextWrapped("%s", state.reason.empty() ? "Fluid setup did not complete."
+                                                  : state.reason.c_str());
+    return;
+  }
+
   ImGui::TextWrapped("%s", status.c_str());
   if (!diagnostics.valid) {
     ImGui::TextWrapped(
@@ -718,8 +913,8 @@ void drawTransportControls(SolubilityState& s) {
     s.funnelVessel = std::clamp(s.funnelVessel, 0, 2);
     charge.vessel = static_cast<sol::Vessel>(s.funnelVessel);
     sol::reset(charge);
-    rechargeFluid(s);
-    s.statusMessage = std::string("Recharged into ") + kVesselNames[s.funnelVessel];
+    if (rechargeFluid(s))
+      s.statusMessage = std::string("Recharged into ") + kVesselNames[s.funnelVessel];
   }
 
   ImGui::TableNextColumn();
@@ -735,12 +930,12 @@ void drawTransportControls(SolubilityState& s) {
   if (actionsFit) ImGui::SameLine(0.0f, actionSpacing);
   if (widgets::ghostButton("Reset", resetSize)) {
     sol::reset(charge);
-    rechargeFluid(s);
+    const bool recharged = rechargeFluid(s);
     s.funnelRunning = false;
     s.fluidTiltTargetDeg = 0.0f;
     s.fluidTiltCurrentDeg = 0.0f;
     s.fluidTiltAngularVelocityRadS = 0.0f;
-    s.statusMessage = "Particle vessel recharged";
+    if (recharged) s.statusMessage = "Particle vessel recharged";
   }
 
   ImGui::TableNextColumn();
@@ -757,9 +952,10 @@ void drawTransportControls(SolubilityState& s) {
     resolution = std::clamp(resolution, 0,
                             static_cast<int>(kFluidResolutionNames.size()) - 1);
     s.fluidResolution = static_cast<FluidResolution>(resolution);
-    rechargeFluid(s);
-    s.statusMessage = std::string("Recharged at ") + kFluidResolutionNames[resolution] +
-                      " particle resolution";
+    if (rechargeFluid(s)) {
+      s.statusMessage = std::string("Recharged at ") + kFluidResolutionNames[resolution] +
+                        " particle resolution";
+    }
   }
   ImGui::EndTable();
 }
@@ -803,7 +999,10 @@ void drawDerivedReadout(const SolubilityState& s) {
 }
 
 void drawShakeControls(SolubilityState& s) {
-  fluid::Simulation& simulation = ensureFluid(s);
+  fluid::Simulation* simulation = availableFluid(s);
+  bool shaking = false;
+  if (simulation)
+    runFluidInteraction(s, [&] { shaking = simulation->shaking(); });
   const float width = ImGui::GetContentRegionAvail().x;
   const int columns = width >= 800.0f ? 5 : (width >= 420.0f ? 2 : 1);
   constexpr ImGuiTableFlags flags =
@@ -811,19 +1010,28 @@ void drawShakeControls(SolubilityState& s) {
   if (ImGui::BeginTable("##shake_grid", columns, flags)) {
     ImGui::TableNextColumn();
     ImGui::TextDisabled("ACTION");
-    if (animatedShakeButton(simulation.shaking(), textButtonSize("Shake"))) {
+    ImGui::BeginDisabled(simulation == nullptr);
+    const bool shakeRequested =
+        animatedShakeButton(shaking, textButtonSize("Shake"));
+    ImGui::EndDisabled();
+    if (shakeRequested && simulation) {
       const std::array<double, 3> axis = selectedShakeAxis(s.shakeAxis);
       const double amplitudeM = static_cast<double>(s.shakeAmplitudeCm) * 0.01;
-      simulation.shake(axis, s.shakeDurationS, s.shakeFrequencyHz, amplitudeM);
-      s.funnelRunning = true;
-      const fluid::VesselMotion report = shakeReportMotion(s);
-      char message[176];
-      std::snprintf(message, sizeof(message),
-                    "%s shake: %.0f s at %.1f Hz, %.0f cm; u %.2f m/s, power %.1f W/kg",
-                    kShakeAxisNames[static_cast<size_t>(s.shakeAxis)], s.shakeDurationS,
-                    s.shakeFrequencyHz, s.shakeAmplitudeCm,
-                    fluid::shakePeakVelocity(report), fluid::shakeSpecificPower(report));
-      s.statusMessage = message;
+      const bool started = runFluidInteraction(s, [&] {
+        simulation->shake(axis, s.shakeDurationS, s.shakeFrequencyHz, amplitudeM);
+      });
+      if (started) {
+        s.funnelRunning = true;
+        const fluid::VesselMotion report = shakeReportMotion(s);
+        char message[176];
+        std::snprintf(
+            message, sizeof(message),
+            "%s shake: %.0f s at %.1f Hz, %.0f cm; u %.2f m/s, power %.1f W/kg",
+            kShakeAxisNames[static_cast<size_t>(s.shakeAxis)], s.shakeDurationS,
+            s.shakeFrequencyHz, s.shakeAmplitudeCm, fluid::shakePeakVelocity(report),
+            fluid::shakeSpecificPower(report));
+        s.statusMessage = message;
+      }
     }
 
     ImGui::TableNextColumn();
@@ -1044,12 +1252,14 @@ void drawPhaseEditor(SolubilityState& s) {
 
   if (changed) {
     sol::reset(s.funnel);
-    rechargeFluid(s);
-    const double total = sol::totalVolumeMl(s.funnel);
-    char buf[128];
-    std::snprintf(buf, sizeof(buf), "Recharged vessel: %d phase(s), %.0f mL total",
-                 static_cast<int>(s.funnel.phases.size()), total);
-    s.statusMessage = buf;
+    const bool recharged = rechargeFluid(s);
+    if (recharged) {
+      const double total = sol::totalVolumeMl(s.funnel);
+      char buf[128];
+      std::snprintf(buf, sizeof(buf), "Recharged vessel: %d phase(s), %.0f mL total",
+                    static_cast<int>(s.funnel.phases.size()), total);
+      s.statusMessage = buf;
+    }
   }
 }
 
@@ -1089,14 +1299,17 @@ void updateFluidPose(SolubilityState& s, fluid::Simulation& simulation, double d
 }
 
 void stepSimulation(SolubilityState& s) {
-  fluid::Simulation& simulation = ensureFluid(s);
+  fluid::Simulation* simulation = availableFluid(s);
+  if (!simulation) return;
   // Clamp a hitched frame before scaling so neither a high speed setting nor a
   // debugger pause can hand the CFL-controlled solver an unbounded interval.
   const double dt = std::clamp(
       static_cast<double>(ImGui::GetIO().DeltaTime) * s.funnelSpeed, 0.0, 0.1);
   if (dt <= 0.0) return;
-  updateFluidPose(s, simulation, dt);
-  if (s.funnelRunning) simulation.advance(dt);
+  runFluidInteraction(s, [&] {
+    updateFluidPose(s, *simulation, dt);
+    if (s.funnelRunning) simulation->advance(dt);
+  });
 }
 
 // -------------------------------------------------------- suite hand-off
@@ -1192,10 +1405,12 @@ void consumeExtractionImport(SolubilityState& s) {
 
   s.funnel.phases = {makeImportedPhase(a, imp.volumeMlA), makeImportedPhase(b, imp.volumeMlB)};
   sol::reset(s.funnel);
-  rechargeFluid(s);
+  const bool recharged = rechargeFluid(s);
   s.funnelRunning = false;
   soluteMassMgUi = static_cast<float>(imp.soluteMassMg);
-  s.statusMessage = "Imported " + a->name + " + " + b->name + " from the Solubility Suite";
+  if (recharged)
+    s.statusMessage =
+        "Imported " + a->name + " + " + b->name + " from the Solubility Suite";
 }
 
 // ------------------------------------------------------ solute distribution
@@ -1503,9 +1718,9 @@ void drawStageToolbar(SolubilityState& s) {
   }
 }
 
-void updateStageInput(SolubilityState& s, gfx::FluidStage& stage,
-                      const fluid::Snapshot& snapshot, ImVec2 canvasSize) {
-  fluid::Simulation& simulation = ensureFluid(s);
+void updateStageInput(SolubilityState& s, fluid::Simulation& simulation,
+                      gfx::FluidStage& stage, const fluid::Snapshot& snapshot,
+                      ImVec2 canvasSize) {
   const ImGuiIO& io = ImGui::GetIO();
   const double dt = std::clamp(static_cast<double>(io.DeltaTime), 0.0, 0.1);
   const bool hovered = ImGui::IsItemHovered();
@@ -1581,13 +1796,48 @@ void updateStageInput(SolubilityState& s, gfx::FluidStage& stage,
       }
     }
   }
-  simulation.setManualAcceleration(s.fluidManualAcceleration);
+  runFluidInteraction(
+      s, [&] { simulation.setManualAcceleration(s.fluidManualAcceleration); });
+}
+
+bool drawPhysicsUnavailableState(SolubilityState& s, gfx::FluidStage& stage) {
+  FluidBoundaryState& boundary = fluidBoundaryState(s);
+  stage.requested = false;
+  s.extractionRenderMode = ExtractionRenderMode::Schematic2D;
+  s.fluidGrabMode = false;
+  s.fluidGrabActive = false;
+  stage.snapshot.reset();
+
+  ImGui::TextColored(style::col::Danger, "Physics unavailable");
+  ImGui::TextWrapped("The 3D stage is missing because: %s",
+                     boundary.reason.empty() ? "fluid setup did not complete."
+                                             : boundary.reason.c_str());
+  ImGui::TextDisabled(
+      "The calculator remains available; showing the 2D charge schematic instead.");
+
+  if (widgets::ghostButton("Retry physics", textButtonSize("Retry physics"))) {
+    if (rechargeFluid(s, true)) {
+      s.statusMessage = "Fluid physics restored; showing the 2D schematic";
+      return false;
+    }
+  }
+
+  const ImVec2 canvasSize = ImGui::GetContentRegionAvail();
+  if (canvasSize.x <= 0.0f || canvasSize.y <= 0.0f) return true;
+  ImGui::InvisibleButton("##physics_unavailable_stage", canvasSize);
+  drawAnalyticFallback(s.funnel, ImGui::GetItemRectMin(), canvasSize);
+  return true;
 }
 
 void drawFluidStage(AppState& st, SolubilityState& s) {
-  fluid::Simulation& simulation = ensureFluid(s);
   gfx::FluidStage& stage = st.fluidStage;
   drawStageToolbar(s);
+
+  fluid::Simulation* simulation = availableFluid(s);
+  if (!simulation) {
+    drawPhysicsUnavailableState(s, stage);
+    return;
+  }
 
   const bool wants3D =
       s.extractionRenderMode == ExtractionRenderMode::Fluid3D;
@@ -1610,9 +1860,14 @@ void drawFluidStage(AppState& st, SolubilityState& s) {
     return;
   }
 
-  std::shared_ptr<const fluid::Snapshot> snapshot = simulation.snapshot();
+  std::shared_ptr<const fluid::Snapshot> snapshot;
+  if (!runFluidInteraction(s, [&] { snapshot = simulation->snapshot(); })) {
+    drawPhysicsUnavailableState(s, stage);
+    return;
+  }
   if (!snapshot) {
     stage.requested = false;
+    stage.snapshot.reset();
     ImGui::TextDisabled("Fluid snapshot unavailable; recharge the vessel.");
     return;
   }
@@ -1634,18 +1889,23 @@ void drawFluidStage(AppState& st, SolubilityState& s) {
   ImGui::InvisibleButton("##fluid_stage_input", canvasSize,
                          ImGuiButtonFlags_MouseButtonLeft);
   const ImVec2 rectMin = ImGui::GetItemRectMin();
-  if (wants3D)
-    updateStageInput(s, stage, *snapshot, canvasSize);
-  else {
+  if (wants3D) {
+    updateStageInput(s, *simulation, stage, *snapshot, canvasSize);
+  } else {
     s.fluidGrabActive = false;
     const double dt =
         std::clamp(static_cast<double>(ImGui::GetIO().DeltaTime), 0.0, 0.1);
     const double decay = dt > 0.0 ? std::exp(-dt / 0.090) : 1.0;
     for (double& component : s.fluidManualAcceleration) component *= decay;
-    simulation.setManualAcceleration(s.fluidManualAcceleration);
+    runFluidInteraction(
+        s, [&] { simulation->setManualAcceleration(s.fluidManualAcceleration); });
   }
 
-  if (wants3D && rendererReady) {
+  if (fluidBoundaryState(s).unavailable) {
+    stage.requested = false;
+    stage.snapshot.reset();
+    drawAnalyticFallback(s.funnel, rectMin, canvasSize);
+  } else if (wants3D && rendererReady) {
     // The behaviour item is submitted first and owns all input; Image is then
     // placed over exactly the same rectangle using the previous FBO frame.
     ImGui::SetCursorPos(cursor);
@@ -1661,8 +1921,18 @@ void drawExtractionLab(AppState& st) {
   SolubilityState& s = st.solubility;
   consumeExtractionImport(s);
   seedDefaultPhases(s.funnel);
-  ensureFluid(s);
+  availableFluid(s);
   st.fluidStage.requested = false;
+
+  if (!s.statusMessage.empty()) {
+    const bool physicsUnavailable = fluidBoundaryState(s).unavailable;
+    ImGui::PushStyleColor(
+        ImGuiCol_Text,
+        physicsUnavailable ? style::col::Danger : style::col::TextDim);
+    ImGui::TextWrapped("%s", s.statusMessage.c_str());
+    ImGui::PopStyleColor();
+    ImGui::Spacing();
+  }
 
   // Wide panels reserve a persistent stage column; narrow panels stack a
   // minimum-height stage into the parent scroll region rather than clipping it
