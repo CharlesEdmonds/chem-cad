@@ -227,8 +227,14 @@ TEST_CASE("parcel clouds remain inside their analytic vessel over thirty seconds
       const double y = double(droplet.position.y);
       const double wall =
           maxHalfWidth * sol::vesselWidthAt(sim.vessel, y / height);
-      CAPTURE(frame, droplet.phase, droplet.position.x, droplet.position.y,
-              droplet.radius, droplet.parcelMl);
+      // doctest 2.4.11 declares CAPTURE with a single parameter, so each value
+      // gets its own call rather than relying on a variadic macro.
+      CAPTURE(frame);
+      CAPTURE(droplet.phase);
+      CAPTURE(droplet.position.x);
+      CAPTURE(droplet.position.y);
+      CAPTURE(droplet.radius);
+      CAPTURE(droplet.parcelMl);
       CHECK(droplet.radius >= 20e-6f);
       CHECK(droplet.radius <= 3e-3f);
       CHECK(y >= 0.0);
@@ -277,7 +283,10 @@ TEST_CASE("column height and analytic profile reproduce rated vessel capacity") 
     integral /= 3.0 * kIntegrationSteps;
     const double integratedMl =
         kPi * maxHalfWidth * maxHalfWidth * height * integral * 1e6;
-    CAPTURE(static_cast<int>(vessel), height, maxHalfWidth, integratedMl);
+CAPTURE(static_cast<int>(vessel));
+    CAPTURE(height);
+    CAPTURE(maxHalfWidth);
+    CAPTURE(integratedMl);
     CHECK(integratedMl == doctest::Approx(sim.vesselVolumeMl).epsilon(0.01));
   }
 }
@@ -288,7 +297,9 @@ TEST_CASE("Squibb profile widens to its high shoulder and never forms a kite") {
   for (int i = 1; i <= kSamples; ++i) {
     const double t = 0.72 * double(i) / kSamples;
     const double width = sol::vesselWidthAt(sol::Vessel::SeparatoryFunnel, t);
-    CAPTURE(t, width, previous);
+CAPTURE(t);
+    CAPTURE(width);
+    CAPTURE(previous);
     CHECK(width >= previous - 1e-12);
     previous = width;
   }
@@ -297,7 +308,9 @@ TEST_CASE("Squibb profile widens to its high shoulder and never forms a kite") {
   for (int i = 1; i <= kSamples; ++i) {
     const double t = 0.72 + 0.14 * double(i) / kSamples;
     const double width = sol::vesselWidthAt(sol::Vessel::SeparatoryFunnel, t);
-    CAPTURE(t, width, previous);
+CAPTURE(t);
+    CAPTURE(width);
+    CAPTURE(previous);
     CHECK(width <= previous + 1e-12);
     previous = width;
   }

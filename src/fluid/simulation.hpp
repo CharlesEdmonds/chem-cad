@@ -72,7 +72,8 @@ class Simulation {
                const std::array<double, 3>& angularAcceleration);
 
   // Queues simulated time for the dedicated physics worker. Requests coalesce
-  // into a bounded backlog, so this call never waits for a solve in flight.
+  // into a bounded backlog, but accepted time is never scaled down to disguise
+  // a slow solve, so this call remains non-blocking and the reported rate honest.
   void requestAdvance(double simulatedSeconds);
   bool stepping() const;
   double pendingSeconds() const;
@@ -91,14 +92,14 @@ class Simulation {
   double elapsedS() const;
   bool shaking() const;
   // Ratio of simulated time completed to wall time spent on the latest solve.
-  // Values below one mean physics is deliberately advancing slower than real time.
+  // Values below one mean physics is genuinely advancing slower than real time.
   double realTimeFactor() const;
 
   // Total charged volume, mL, and the per-phase charge.
   double totalVolumeMl() const;
 
   // Human-readable description of what the solver is doing, for the UI's
-  // honesty panel: resolution, particle count, substeps, density error.
+  // honesty panel: resolution, particles, substeps, compression, deficit, cost.
   std::string statusLine() const;
 
  private:

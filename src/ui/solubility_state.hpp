@@ -73,9 +73,9 @@ enum class FluidShakeAxis : uint8_t {
 };
 
 enum class FluidResolution : uint8_t {
-  Coarse,
-  Normal,
-  Fine,
+  Interactive,
+  Balanced,
+  Quality,
 };
 
 struct SolubilityState {
@@ -152,7 +152,23 @@ struct SolubilityState {
   float shakeAmplitudeCm = 5.0f;
   FluidShakeAxis shakeAxis = FluidShakeAxis::Vertical;
   ExtractionRenderMode extractionRenderMode = ExtractionRenderMode::Fluid3D;
-  FluidResolution fluidResolution = FluidResolution::Normal;
+  FluidResolution fluidResolution = FluidResolution::Interactive;
+
+  // Measured throughput is retained per resolution so the preset picker can
+  // show an observed cost alongside the particle count before switching.
+  std::array<double, 3> fluidPresetRealTimeFactor{};
+  std::array<bool, 3> fluidPresetRealTimeFactorValid{};
+  std::array<uint64_t, 3> fluidPresetMeasuredParticles{};
+
+  // Shake progress is measured against Simulation::elapsedS(), never wall
+  // time. A slow solver therefore advances this countdown only when it
+  // actually completes simulated time.
+  double fluidShakeStartElapsedS = 0.0;
+  double fluidShakeEndElapsedS = 0.0;
+  bool fluidShakeProgressValid = false;
+
+  // Toolbar actions are consumed by the stage after its snapshot is available.
+  bool fluidReframeRequested = false;
 
   // A dedicated stage toggle distinguishes grab-and-shake from camera orbit.
   // Pointer deltas are converted into world acceleration and filtered before

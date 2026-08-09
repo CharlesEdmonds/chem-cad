@@ -610,12 +610,67 @@ void seedDefaultPhases(sol::Simulation& sim) {
   sol::reset(sim);
 }
 
-constexpr std::array<double, 3> kFluidSpacingM{6.0e-3, 4.0e-3, 3.0e-3};
-constexpr std::array<const char*, 3> kFluidResolutionNames{"Coarse", "Normal", "Fine"};
+struct FluidResolutionPreset {
+  const char* name;
+  const char* choiceLabel;
+  double spacingM;
+};
+
+constexpr std::array<FluidResolutionPreset, 3> kFluidPresets{{
+    {"Interactive", "Interactive", 8.0e-3},
+    {"Balanced", "Balanced", 6.0e-3},
+    {"Quality", "Quality - slower than real time", 4.0e-3},
+}};
+
+size_t selectedFluidPreset(const SolubilityState& s) {
+  return std::min(static_cast<size_t>(s.fluidResolution),
+                  kFluidPresets.size() - 1);
+}
 
 double selectedFluidSpacing(const SolubilityState& s) {
-  const size_t index = static_cast<size_t>(s.fluidResolution);
-  return kFluidSpacingM[std::min(index, kFluidSpacingM.size() - 1)];
+  return kFluidPresets[selectedFluidPreset(s)].spacingM;
+}
+
+uint64_t estimatedParticleCount(const SolubilityState& s, size_t presetIndex) {
+  const double volumeM3 = std::max(sol::totalVolumeMl(s.funnel), 0.0) * 1.0e-6;
+  const double spacing =
+      kFluidPresets[std::min(presetIndex, kFluidPresets.size() - 1)].spacingM;
+  return static_cast<uint64_t>(
+      std::llround(volumeM3 / (spacing * spacing * spacing)));
+}
+
+void rememberFluidRate(SolubilityState& s, double realTimeFactor) {
+  if (!std::isfinite(realTimeFactor) || realTimeFactor < 0.0) return;
+  const size_t preset = selectedFluidPreset(s);
+  s.fluidPresetRealTimeFactor[preset] = realTimeFactor;
+  s.fluidPresetRealTimeFactorValid[preset] = true;
+  s.fluidPresetMeasuredParticles[preset] =
+      estimatedParticleCount(s, preset);
+}
+
+std::string fluidPresetTradeText(const SolubilityState& s,
+                                 size_t presetIndex) {
+  const size_t preset = std::min(presetIndex, kFluidPresets.size() - 1);
+  const uint64_t estimatedParticles = estimatedParticleCount(s, preset);
+  const bool hasComparableRate =
+      s.fluidPresetRealTimeFactorValid[preset] &&
+      s.fluidPresetMeasuredParticles[preset] == estimatedParticles;
+  char text[192];
+  if (hasComparableRate) {
+    std::snprintf(text, sizeof(text),
+                  "%s | dx %.0f mm | ~%llu particles | last measured %.2fx",
+                  kFluidPresets[preset].choiceLabel,
+                  kFluidPresets[preset].spacingM * 1000.0,
+                  static_cast<unsigned long long>(estimatedParticles),
+                  s.fluidPresetRealTimeFactor[preset]);
+  } else {
+    std::snprintf(text, sizeof(text),
+                  "%s | dx %.0f mm | ~%llu particles | rate not measured",
+                  kFluidPresets[preset].choiceLabel,
+                  kFluidPresets[preset].spacingM * 1000.0,
+                  static_cast<unsigned long long>(estimatedParticles));
+  }
+  return text;
 }
 template <typename T>
 void hashFluidValue(size_t& seed, const T& value) {
@@ -745,6 +800,9 @@ bool rechargeFluid(SolubilityState& s, bool forceAttempt = false) {
         s.fluidManualAcceleration = {0.0, 0.0, 0.0};
         candidate->setManualAcceleration(s.fluidManualAcceleration);
         s.fluid = std::move(candidate);
+        s.fluidShakeProgressValid = false;
+        s.fluidShakeStartElapsedS = 0.0;
+        s.fluidShakeEndElapsedS = 0.0;
       },
       forceAttempt);
   if (charged) {
@@ -826,10 +884,24 @@ fluid::VesselMotion shakeReportMotion(const SolubilityState& s) {
   return motion;
 }
 
+template <typename Stats>
+double maxDensityCompression(const Stats& stats) {
+  if constexpr (requires(const Stats& value) { value.maxDensityCompression; }) {
+    return stats.maxDensityCompression;
+  }
+  return std::numeric_limits<double>::quiet_NaN();
+}
+
+template <typename Stats>
+double maxDensityDeficit(const Stats& stats) {
+  if constexpr (requires(const Stats& value) { value.maxDensityDeficit; }) {
+    return stats.maxDensityDeficit;
+  }
+  return std::numeric_limits<double>::quiet_NaN();
+}
+
 void drawFluidDiagnostics(SolubilityState& s) {
-  const size_t resolutionIndex =
-      std::min(static_cast<size_t>(s.fluidResolution),
-               kFluidResolutionNames.size() - 1);
+  const size_t resolutionIndex = selectedFluidPreset(s);
 
   ImGui::Spacing();
   ImGui::Separator();
@@ -862,11 +934,16 @@ void drawFluidDiagnostics(SolubilityState& s) {
   ImGui::TextColored(s.funnelRunning ? style::col::Success : style::col::TextDim,
                      "%s%s", runState, stepping ? " - physics step active" : "");
   ImGui::TextWrapped("%s", status.c_str());
-  ImGui::TextWrapped("Particle-resolved %s-resolution estimates (dx %.0f mm)",
-                     kFluidResolutionNames[resolutionIndex],
-                     selectedFluidSpacing(s) * 1000.0);
+  ImGui::TextWrapped("Particle-resolved %s preset (dx %.0f mm, ~%llu particles)",
+                     kFluidPresets[resolutionIndex].name,
+                     selectedFluidSpacing(s) * 1000.0,
+                     static_cast<unsigned long long>(
+                         estimatedParticleCount(s, resolutionIndex)));
 
   const bool completedStep = snapshot->elapsedS > 0.0;
+  if (completedStep) rememberFluidRate(s, realTimeFactor);
+  const double compression = maxDensityCompression(stats);
+  const double deficit = maxDensityDeficit(stats);
   const fluid::Diagnostics& diagnostics = snapshot->diagnostics;
   const int columns = ImGui::GetContentRegionAvail().x >= 500.0f ? 3 : 1;
   constexpr ImGuiTableFlags flags =
@@ -877,12 +954,19 @@ void drawFluidDiagnostics(SolubilityState& s) {
     if (completedStep && stats.substeps > 0)
       ImGui::Text("%d", stats.substeps);
     else
-      ImGui::TextUnformatted("Waiting for completed step");
+      ImGui::TextUnformatted("Unavailable");
 
     ImGui::TableNextColumn();
-    ImGui::TextDisabled("WORST DENSITY ERROR");
-    if (completedStep && stats.substeps > 0)
-      ImGui::Text("%.2f%%", stats.maxDensityError * 100.0);
+    ImGui::TextDisabled("WORST COMPRESSION");
+    if (completedStep && stats.substeps > 0 && std::isfinite(compression))
+      ImGui::Text("%.2f%%", compression * 100.0);
+    else
+      ImGui::TextUnformatted("Unavailable");
+
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("FREE-SURFACE DEFICIT");
+    if (completedStep && stats.substeps > 0 && std::isfinite(deficit))
+      ImGui::Text("%.2f%%", deficit * 100.0);
     else
       ImGui::TextUnformatted("Unavailable");
 
@@ -891,7 +975,7 @@ void drawFluidDiagnostics(SolubilityState& s) {
     if (completedStep && std::isfinite(realTimeFactor))
       ImGui::Text("%.2fx", realTimeFactor);
     else
-      ImGui::TextUnformatted("Waiting for completed step");
+      ImGui::TextUnformatted("Unavailable");
 
     ImGui::TableNextColumn();
     ImGui::TextDisabled("DISPERSED");
@@ -937,6 +1021,8 @@ void drawFluidDiagnostics(SolubilityState& s) {
     }
     ImGui::EndTable();
   }
+  ImGui::TextWrapped(
+      "A free-surface density deficit is expected in SPH; pressure controls compression.");
 }
 
 void drawTransportControls(SolubilityState& s) {
@@ -990,18 +1076,43 @@ void drawTransportControls(SolubilityState& s) {
 
   ImGui::TableNextColumn();
   ImGui::TextDisabled("RESOLUTION");
-  int resolution = static_cast<int>(s.fluidResolution);
-  ImGui::SetNextItemWidth(-1.0f);
-  if (ImGui::Combo("##resolution", &resolution, kFluidResolutionNames.data(),
-                   static_cast<int>(kFluidResolutionNames.size()))) {
-    resolution = std::clamp(resolution, 0,
-                            static_cast<int>(kFluidResolutionNames.size()) - 1);
-    s.fluidResolution = static_cast<FluidResolution>(resolution);
-    if (rechargeFluid(s)) {
-      s.statusMessage = std::string("Recharged at ") + kFluidResolutionNames[resolution] +
-                        " particle resolution";
+  if (fluid::Simulation* simulation = s.fluid.get()) {
+    double measured = std::numeric_limits<double>::quiet_NaN();
+    if (runFluidInteraction(
+            s, [&] { measured = simulation->realTimeFactor(); })) {
+      rememberFluidRate(s, measured);
     }
   }
+
+  size_t resolution = selectedFluidPreset(s);
+  ImGui::SetNextItemWidth(-1.0f);
+  if (ImGui::BeginCombo("##resolution", kFluidPresets[resolution].name)) {
+    for (size_t candidate = 0; candidate < kFluidPresets.size(); ++candidate) {
+      const std::string choice = fluidPresetTradeText(s, candidate);
+      const bool selected = candidate == resolution;
+      if (ImGui::Selectable(choice.c_str(), selected) && !selected) {
+        s.fluidResolution = static_cast<FluidResolution>(candidate);
+        resolution = candidate;
+        if (rechargeFluid(s)) {
+          char message[144];
+          std::snprintf(
+              message, sizeof(message),
+              "%s preset charged: dx %.0f mm, about %llu particles",
+              kFluidPresets[candidate].name,
+              kFluidPresets[candidate].spacingM * 1000.0,
+              static_cast<unsigned long long>(
+                  estimatedParticleCount(s, candidate)));
+          s.statusMessage = message;
+        }
+      }
+      if (selected) ImGui::SetItemDefaultFocus();
+    }
+    ImGui::EndCombo();
+  }
+  const std::string trade = fluidPresetTradeText(s, resolution);
+  ImGui::PushStyleColor(ImGuiCol_Text, style::col::TextDim);
+  ImGui::TextWrapped("%s", trade.c_str());
+  ImGui::PopStyleColor();
   ImGui::EndTable();
 }
 
@@ -1046,8 +1157,22 @@ void drawDerivedReadout(const SolubilityState& s) {
 void drawShakeControls(SolubilityState& s) {
   fluid::Simulation* simulation = availableFluid(s);
   bool shaking = false;
-  if (simulation)
-    runFluidInteraction(s, [&] { shaking = simulation->shaking(); });
+  double elapsedS = 0.0;
+  double realTimeFactor = std::numeric_limits<double>::quiet_NaN();
+  if (simulation) {
+    runFluidInteraction(s, [&] {
+      shaking = simulation->shaking();
+      elapsedS = simulation->elapsedS();
+      realTimeFactor = simulation->realTimeFactor();
+    });
+    rememberFluidRate(s, realTimeFactor);
+    if (shaking && !s.fluidShakeProgressValid) {
+      s.fluidShakeStartElapsedS = elapsedS;
+      s.fluidShakeEndElapsedS =
+          elapsedS + static_cast<double>(s.shakeDurationS);
+      s.fluidShakeProgressValid = true;
+    }
+  }
   const float width = ImGui::GetContentRegionAvail().x;
   const int columns = width >= 800.0f ? 5 : (width >= 420.0f ? 2 : 1);
   constexpr ImGuiTableFlags flags =
@@ -1067,6 +1192,11 @@ void drawShakeControls(SolubilityState& s) {
       });
       if (started) {
         s.funnelRunning = true;
+        shaking = true;
+        s.fluidShakeStartElapsedS = elapsedS;
+        s.fluidShakeEndElapsedS =
+            elapsedS + static_cast<double>(s.shakeDurationS);
+        s.fluidShakeProgressValid = true;
         const fluid::VesselMotion report = shakeReportMotion(s);
         char message[176];
         std::snprintf(
@@ -1106,6 +1236,36 @@ void drawShakeControls(SolubilityState& s) {
     ImGui::DragFloat("##amplitude", &s.shakeAmplitudeCm, 0.1f, 1.0f, 15.0f,
                      "%.0f cm");
     ImGui::EndTable();
+  }
+  if (std::isfinite(realTimeFactor)) {
+    if (realTimeFactor < 1.0) {
+      ImGui::TextColored(
+          style::col::Accent,
+          "Physics at %.2fx real time -- the shake will look slow.",
+          realTimeFactor);
+    } else {
+      ImGui::TextDisabled("Physics at %.2fx real time.", realTimeFactor);
+    }
+  } else {
+    ImGui::TextDisabled(
+        "Physics rate will appear after the first completed step.");
+  }
+
+  if (s.fluidShakeProgressValid) {
+    const double duration =
+        std::max(s.fluidShakeEndElapsedS - s.fluidShakeStartElapsedS, 0.0);
+    double remaining =
+        std::clamp(s.fluidShakeEndElapsedS - elapsedS, 0.0, duration);
+    if (!shaking) remaining = 0.0;
+    const float progress =
+        duration > 0.0
+            ? static_cast<float>(std::clamp(1.0 - remaining / duration,
+                                            0.0, 1.0))
+            : 1.0f;
+    char progressLabel[64];
+    std::snprintf(progressLabel, sizeof(progressLabel),
+                  "%.1f simulated s remaining", remaining);
+    ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f), progressLabel);
   }
 
   ImGui::Spacing();
@@ -1711,24 +1871,27 @@ bool stageChoiceButton(const char* id, const char* label, bool selected,
                 selected ? style::u32(style::col::AccentHover)
                          : style::u32(style::col::Border),
                 metrics.radiusSm, 0, metrics.hairline);
-  const ImVec2 text = ImGui::CalcTextSize(label);
+  const std::string fitted =
+      ellipsizeText(label, std::max(size.x - metrics.gap * 2.0f, 0.0f));
+  const ImVec2 text = ImGui::CalcTextSize(fitted.c_str());
   draw->AddText(ImVec2(min.x + (size.x - text.x) * 0.5f,
                        min.y + (size.y - text.y) * 0.5f),
                 style::u32(selected ? style::col::OnAccent : style::col::TextDim),
-                label);
+                fitted.c_str());
+  if (hovered && fitted != label) ImGui::SetTooltip("%s", label);
   return clicked;
 }
 
 void drawStageToolbar(SolubilityState& s) {
-  const int columns = ImGui::GetContentRegionAvail().x >= 450.0f ? 3 : 1;
   constexpr ImGuiTableFlags flags =
       ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
-  if (ImGui::BeginTable("##stage_modes", columns, flags)) {
+  if (ImGui::BeginTable("##stage_modes", 4, flags)) {
     ImGui::TableNextColumn();
     if (stageChoiceButton("##fluid_3d", "3D fluid",
                           s.extractionRenderMode == ExtractionRenderMode::Fluid3D)) {
       s.extractionRenderMode = ExtractionRenderMode::Fluid3D;
     }
+
     ImGui::TableNextColumn();
     if (stageChoiceButton(
             "##schematic_2d", "2D schematic",
@@ -1737,30 +1900,38 @@ void drawStageToolbar(SolubilityState& s) {
       s.fluidGrabMode = false;
       s.fluidGrabActive = false;
     }
+
     ImGui::TableNextColumn();
     ImGui::BeginDisabled(s.extractionRenderMode != ExtractionRenderMode::Fluid3D);
-    const float grabButtonHeight = ImGui::GetFrameHeight();
-    if (stageChoiceButton("##grab_shake", "G", s.fluidGrabMode,
-                          ImVec2(grabButtonHeight, grabButtonHeight))) {
+    if (stageChoiceButton("##grab_vessel",
+                          s.fluidGrabMode ? "Grab: on" : "Grab vessel",
+                          s.fluidGrabMode)) {
       s.fluidGrabMode = !s.fluidGrabMode;
       if (!s.fluidGrabMode) s.fluidGrabActive = false;
     }
-    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemSpacing.x);
-    ImGui::TextUnformatted(s.fluidGrabMode ? "GRAB active" : "GRAB off");
+    ImGui::EndDisabled();
+
+    ImGui::TableNextColumn();
+    ImGui::BeginDisabled(s.extractionRenderMode != ExtractionRenderMode::Fluid3D);
+    if (stageChoiceButton("##reframe_stage", "Re-frame", false)) {
+      s.fluidReframeRequested = true;
+    }
     ImGui::EndDisabled();
     ImGui::EndTable();
   }
 
-  // A dedicated square toggle makes the gesture discoverable and prevents
-  // left-drag orbit from competing with hand forcing.
+  const char* hint = nullptr;
   if (s.extractionRenderMode == ExtractionRenderMode::Schematic2D) {
-    ImGui::TextWrapped("Particle cut: |y| < 1.5 particle radii.");
+    hint = "Particle cut: |y| < 1.5 particle radii.";
   } else if (s.fluidGrabMode) {
-    ImGui::TextWrapped(
-        "Drag in any direction; vertical drag drives world +z / -z.");
+    hint = "Drag in any direction; vertical drag drives world +z / -z.";
   } else {
-    ImGui::TextWrapped("Left-drag orbit | wheel zoom | double-click re-frame.");
+    hint = "Left-drag orbit | wheel zoom | double-click re-frame.";
   }
+  const std::string fitted =
+      ellipsizeText(hint, ImGui::GetContentRegionAvail().x);
+  ImGui::TextDisabled("%s", fitted.c_str());
+  if (ImGui::IsItemHovered() && fitted != hint) ImGui::SetTooltip("%s", hint);
 }
 
 void updateStageInput(SolubilityState& s, fluid::Simulation& simulation,
@@ -1771,7 +1942,9 @@ void updateStageInput(SolubilityState& s, fluid::Simulation& simulation,
   const bool hovered = ImGui::IsItemHovered();
   const bool active = ImGui::IsItemActive();
   const bool reframe =
-      hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+      s.fluidReframeRequested ||
+      (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left));
+  s.fluidReframeRequested = false;
 
   if (reframe) {
     stage.camera.frame(snapshot.vesselHeightM, snapshot.maxRadiusM,

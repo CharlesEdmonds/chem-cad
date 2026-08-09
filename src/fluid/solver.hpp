@@ -32,6 +32,7 @@
 // produce bit-identical state.
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -46,7 +47,7 @@ namespace chemcad::fluid {
 // tests/test_fluid_solver.cpp; changing one invalidates the calibration cache.
 struct SolverConfig {
   Resolution resolution;
-  double densityTolerance = 5.0e-3;  // |delta/delta0 - 1| accepted by the pressure loop
+  double densityTolerance = 5.0e-3;  // maximum compression (delta/delta0 - 1)
   int minPressureIterations = 3;
   int maxPressureIterations = 8;
   double cflNumber = 0.4;            // dt <= cfl * H / v_max
@@ -90,23 +91,33 @@ class Solver {
   // and rendering (both read-only views into the particle arrays).
   double restNumberDensity() const { return delta0_; }
 
-  // Young-Laplace calibration of the cohesion coefficient for the current
-  // resolution and phase pair. Runs a self-contained droplet relaxation; call
-  // once per resolution change. Results are cached in the interface model.
+  // Young-Laplace calibration of the cohesion coefficient. The cached result
+  // is invalidated only by resolution, material, or interfacial-tension changes;
+  // ordinary steps and repeated calls are no-ops.
   void calibrateInterface(const VesselBoundary& boundary);
   const InterfaceModel& interfaceModel() const { return interface_; }
   const std::string& interfaceCalibrationError() const { return calibrationError_; }
 
-  // Diagnostic counters from the last advance, surfaced so the UI can show
-  // that the solver is converging rather than merely running.
+  // Diagnostic counters from the last advance. Density deficit is deliberately
+  // separate: pressure is non-negative and cannot fill a free-surface neighbour
+  // deficit, so only compression participates in PCISPH convergence.
   struct Stats {
     int substeps = 0;
-    int pressureIterations = 0;      // total across substeps
-    double maxDensityError = 0.0;    // final, dimensionless
-    double maxSpeed = 0.0;           // m/s
-    double substepS = 0.0;           // last substep length
-    int clampedParticles = 0;        // hit the speed clamp
-    int rejectedSubsteps = 0;        // halved and retried
+    int pressureIterations = 0;          // total across substeps
+    double maxDensityError = 0.0;        // compatibility: equals compression
+    double maxDensityCompression = 0.0;  // max(delta/delta0 - 1, 0)
+    double maxDensityDeficit = 0.0;      // max(1 - delta/delta0, 0), diagnostic
+    double maxSpeed = 0.0;               // m/s
+    double substepS = 0.0;               // last substep length
+    double millisecondsPerSubstep = 0.0; // wall cost over the latest advance
+    double neighbourMilliseconds = 0.0;  // grid, pairs, and initial density
+    double forceMilliseconds = 0.0;      // frame, viscosity, and interface
+    double pressureMilliseconds = 0.0;   // prediction-correction iterations
+    double integrationMilliseconds = 0.0;
+    int clampedParticles = 0;            // hit the speed clamp
+    int rejectedSubsteps = 0;            // halved and retried
+    std::uint64_t pressureStiffnessCalibrations = 0; // solver lifetime total
+    std::uint64_t interfaceCalibrations = 0;         // solver lifetime total
   };
   const Stats& stats() const { return stats_; }
 
@@ -117,7 +128,14 @@ class Solver {
   InterfaceModel interface_;
   NeighbourGrid grid_;
   double delta0_ = 0.0;           // rest number density of the lattice
-  std::vector<double> stiffness_; // PCISPH scaling per phase, calibrated
+  std::vector<double> stiffness_; // active PCISPH scaling per phase
+  struct StiffnessCacheEntry {
+    double substepS = 0.0;
+    std::vector<double> values;
+  };
+  std::vector<StiffnessCacheEntry> stiffnessCache_;
+  std::uint64_t pressureStiffnessCalibrations_ = 0;
+  std::uint64_t interfaceCalibrations_ = 0;
   Stats stats_;
   std::string calibrationError_;
 
@@ -126,6 +144,8 @@ class Solver {
   std::vector<float> predictedVX_, predictedVY_, predictedVZ_;
   std::vector<float> forceX_, forceY_, forceZ_;
   std::vector<double> densityError_;
+
+  void ensurePressureStiffness(double substepS);
 };
 
 }  // namespace chemcad::fluid

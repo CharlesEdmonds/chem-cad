@@ -504,6 +504,8 @@ TEST_CASE("real-time factor is finite after a completed step") {
 
   CHECK(std::isfinite(simulation.realTimeFactor()));
   CHECK(simulation.realTimeFactor() > 0.0);
-  CHECK(simulation.realTimeFactor() <= 1.0);
+  // A factor above 1 is not an error: it means the solver integrated the
+  // requested simulated time faster than wall clock, which is exactly what a
+  // coarse test charge does. Only a non-finite or non-positive value is a bug.
   CHECK(simulation.statusLine().find("physics at") != std::string::npos);
 }

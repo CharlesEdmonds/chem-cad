@@ -125,20 +125,14 @@ void setFluidWorkers(unsigned workers) {
 #endif
 }
 
-fluid::Particles benchmarkParticles(std::size_t count, double spacing) {
-  fluid::Particles particles;
-  const std::size_t side =
-      static_cast<std::size_t>(std::ceil(std::cbrt(static_cast<double>(count))));
-  for (std::size_t i = 0; i < count; ++i) {
-    const std::size_t x = i % side;
-    const std::size_t y = (i / side) % side;
-    const std::size_t z = i / (side * side);
-    particles.add(static_cast<float>((static_cast<double>(x) - 0.5 * side) * spacing),
-                  static_cast<float>((static_cast<double>(y) - 0.5 * side) * spacing),
-                  static_cast<float>(1.0 + static_cast<double>(z) * spacing),
-                  static_cast<uint8_t>(z >= side / 2));
-  }
-  return particles;
+fluid::VesselBoundary separatoryFunnel(const fluid::SolverConfig& config) {
+  sol::Simulation sizing;
+  sizing.vessel = sol::Vessel::SeparatoryFunnel;
+  sizing.vesselVolumeMl = 250.0;
+  fluid::VesselBoundary boundary;
+  boundary.build(sizing.vessel, sol::columnHeightM(sizing), config.resolution.support(),
+                 config.resolution.spacing);
+  return boundary;
 }
 
 }  // namespace
@@ -162,24 +156,30 @@ TEST_CASE("a coarse PCISPH column recovers hydrostatic density and pressure") {
 
   double freeSurface = 0.0;
   for (float z : particles.pz) freeSurface = std::max(freeSurface, static_cast<double>(z));
-  double maxDensityError = 0.0;
+  double maxDensityCompression = 0.0;
   std::vector<double> depths;
   std::vector<double> pressures;
   for (std::size_t i = 0; i < particles.size(); ++i) {
-    const fluid::SurfaceQuery wall =
-        boundary.query(particles.px[i], particles.py[i], particles.pz[i]);
-    if (wall.distance < -0.4 * config.resolution.spacing &&
-        particles.pz[i] < freeSurface - 1.5 * config.resolution.support()) {
-      maxDensityError =
-          std::max(maxDensityError,
-                   std::abs(static_cast<double>(particles.delta[i]) / solver.restNumberDensity() -
-                            1.0));
+    if (particles.pz[i] < freeSurface - 1.5 * config.resolution.support()) {
+      maxDensityCompression =
+          std::max(maxDensityCompression,
+                   std::max(0.0, static_cast<double>(particles.delta[i]) /
+                                         solver.restNumberDensity() -
+                                     1.0));
       depths.push_back(particles.pz[i]);
       pressures.push_back(particles.pressure[i]);
     }
   }
+  std::cout << "[hydro diagnostic] particles=" << particles.size()
+            << " interior=" << depths.size()
+            << " surface-z=" << freeSurface
+            << " compression=" << solver.stats().maxDensityCompression
+            << " deficit=" << solver.stats().maxDensityDeficit
+            << " iterations=" << solver.stats().pressureIterations << '\n';
   REQUIRE(depths.size() >= 6);
-  CHECK(maxDensityError <= 0.60);
+  CHECK(maxDensityCompression <= config.densityTolerance);
+  CHECK(solver.stats().maxDensityCompression <= config.densityTolerance);
+  CHECK(solver.stats().maxDensityDeficit > 0.1);
 
   double meanZ = 0.0;
   double meanP = 0.0;
@@ -197,9 +197,9 @@ TEST_CASE("a coarse PCISPH column recovers hydrostatic density and pressure") {
   }
   REQUIRE(variance > 0.0);
   const double pressureGradient = covariance / variance;
-  // At this coarse resolution the locally planar wall correction dominates
-  // magnitude; retain the physical requirements of compression below unity
-  // and pressure increasing monotonically with depth.
+  // The wall correction is locally planar at this coarse resolution. The
+  // controlled quantity nevertheless meets the configured compression limit,
+  // while pressure still increases monotonically with depth.
   CHECK(pressureGradient < 0.0);
   CHECK(std::abs(pressureGradient) <= 3.0 * phases[0].restDensity * kGravity);
 }
@@ -249,6 +249,7 @@ TEST_CASE("interface calibration is a safe no-op without a physical interface") 
   CHECK(solver.interfaceModel().calibrated);
   CHECK(solver.interfaceModel().cohesionGain == 0.0);
   CHECK(solver.interfaceCalibrationError().empty());
+  CHECK(solver.stats().interfaceCalibrations == 1);
 
   solver.setPhases(
       {phase("a", 1000.0, 1.0e-3, 5.0), phase("b", 900.0, 1.0e-3, 5.0)}, {0.0});
@@ -256,6 +257,31 @@ TEST_CASE("interface calibration is a safe no-op without a physical interface") 
   CHECK(solver.interfaceModel().calibrated);
   CHECK(solver.interfaceModel().cohesionGain == 0.0);
   CHECK(solver.interfaceCalibrationError().empty());
+  CHECK(solver.stats().interfaceCalibrations == 2);
+  CHECK_NOTHROW(solver.calibrateInterface(boundary));
+  CHECK(solver.stats().interfaceCalibrations == 2);
+}
+
+TEST_CASE("pressure stiffness cache absorbs frame-clock wobble") {
+  fluid::SolverConfig config = coarseConfig();
+  config.enableSurfaceTension = false;
+  fluid::Solver solver;
+  solver.configure(config);
+  const std::vector<fluid::PhaseMaterial> phases{
+      phase("liquid", 1000.0, 1.0e-3, 20.0)};
+  solver.setPhases(phases, {});
+  fluid::VesselBoundary boundary = cylinder(config);
+  fluid::Particles particles;
+  REQUIRE(boundary.chargeLattice(phases, config.resolution.spacing, particles) > 0);
+
+  const double nominal = 0.9 * config.maxSubstepS;
+  solver.advance(particles, boundary, noGravity(), 0.0, nominal);
+  const std::uint64_t calibrated = solver.stats().pressureStiffnessCalibrations;
+  for (int frame = 1; frame <= 32; ++frame) {
+    const double wobble = nominal + 1.0e-6 * static_cast<double>(frame % 3 - 1);
+    solver.advance(particles, boundary, noGravity(), frame * nominal, wobble);
+  }
+  CHECK(solver.stats().pressureStiffnessCalibrations == calibrated);
 }
 
 TEST_CASE("shaking conserves particles and the analytic wall contains them") {
@@ -304,11 +330,16 @@ TEST_CASE("off-axis shaking injects energy and interface, then both decay") {
   INFO("calibration=", solver.interfaceCalibrationError(),
        " gain=", solver.interfaceModel().cohesionGain);
   REQUIRE(solver.interfaceModel().calibrated);
+  const std::uint64_t interfaceCalibrations = solver.stats().interfaceCalibrations;
+  CHECK(interfaceCalibrations == 1);
+  solver.calibrateInterface(boundary);
+  CHECK(solver.stats().interfaceCalibrations == interfaceCalibrations);
   fluid::Particles particles;
   boundary.chargeLattice(phases, config.resolution.spacing, particles);
 
   double time = 0.0;
   runSteps(solver, particles, boundary, {}, 240, time);
+  CHECK(solver.stats().interfaceCalibrations == interfaceCalibrations);
   const double restingEnergy =
       kineticEnergy(particles, phases, config.resolution.particleVolume());
   const std::size_t restingInterface = interfaceParticles(particles);
@@ -424,35 +455,67 @@ TEST_CASE("identical fluid runs are bit deterministic") {
   CHECK(a.vz == c.vz);
 }
 
-TEST_CASE("shipping-resolution substep timing") {
-  // Measured on the shipping Windows workstation with Release MSVC:
-  // before: 282.590/563.174/1174.000 ms at 1500/3100/6000 particles;
-  // after:   32.117/49.173/77.099 ms (11.45x at the 3100-particle charge).
-  fluid::SolverConfig config;
-  config.resolution.spacing = 4.0e-3;
-  config.maxPressureIterations = 8;
-  config.maxSubstepS = 1.0 / 480.0;
-  fluid::VesselBoundary boundary = cylinder(config, 3.0);
+TEST_CASE("default-charge substep timing reports the interactive budget") {
+  // Release timing is printed below and copied into solver.cpp only after a
+  // measurement on this workstation; wall time is deliberately not asserted.
   const std::vector<fluid::PhaseMaterial> phases{
-      phase("aqueous", 998.0, 1.0e-3, 100.0),
-      phase("organic", 1326.0, 1.5e-3, 100.0)};
+      phase("water", 998.0, 0.89e-3, 100.0),
+      phase("dichloromethane", 1326.0, 0.43e-3, 100.0)};
+  double shippingDeficit = 0.0;
+  double coarseDeficit = 0.0;
 
-  for (std::size_t count : {1500U, 3100U, 6000U}) {
+  for (double spacing : {4.0e-3, 8.0e-3, 12.0e-3}) {
+    fluid::SolverConfig config;
+    config.resolution.spacing = spacing;
     fluid::Solver solver;
     solver.configure(config);
-    solver.setPhases(phases, {0.030});
-    fluid::Particles particles = benchmarkParticles(count, config.resolution.spacing);
+    solver.setPhases(phases, {0.028});
+    fluid::VesselBoundary boundary = separatoryFunnel(config);
+    solver.calibrateInterface(boundary);
+    INFO("calibration=", solver.interfaceCalibrationError());
+    REQUIRE(solver.interfaceModel().calibrated);
+    fluid::Particles particles;
+    boundary.chargeLattice(phases, spacing, particles);
+    if (spacing == 4.0e-3) REQUIRE(particles.size() == 3124);
+
+    // Warm retained scratch capacities and the fixed worker pool, then measure
+    // a peak-acceleration shake substep rather than an idle synthetic cube.
+    REQUIRE(solver.advance(particles, boundary, noGravity(), 0.0,
+                           config.maxSubstepS) == 1);
+    fluid::VesselMotion shake;
+    shake.shaking = true;
+    shake.shakeRemainingS = 1.0;
+    shake.shakeFrequencyHz = 3.0;
+    shake.shakeAmplitudeM = 0.05;
+    shake.shakeAxis = {1.0, 0.0, 0.25};
+    const double peakAccelerationTime =
+        0.25 / shake.shakeFrequencyHz - 0.5 * config.maxSubstepS;
     const auto started = std::chrono::steady_clock::now();
-    const int substeps = solver.advance(particles, boundary, noGravity(), 0.0,
-                                        config.maxSubstepS);
+    const int substeps = solver.advance(particles, boundary, shake,
+                                        peakAccelerationTime, config.maxSubstepS);
     const auto stopped = std::chrono::steady_clock::now();
     REQUIRE(substeps == 1);
     const double elapsedMs =
         std::chrono::duration<double, std::milli>(stopped - started).count();
-    std::cout << "[fluid timing] particles=" << count
+    const fluid::Solver::Stats& stats = solver.stats();
+    std::cout << "[fluid timing] dx=" << spacing * 1000.0 << "mm"
+              << " particles=" << particles.size()
               << " ms/substep=" << elapsedMs
-              << " ms/simulated-second=" << elapsedMs / config.maxSubstepS << '\n';
+              << " real-time=" << (1000.0 * config.maxSubstepS / elapsedMs) << "x"
+              << " iterations=" << stats.pressureIterations
+              << " neighbour=" << stats.neighbourMilliseconds << "ms"
+              << " force=" << stats.forceMilliseconds << "ms"
+              << " pressure=" << stats.pressureMilliseconds << "ms"
+              << " integrate=" << stats.integrationMilliseconds << "ms"
+              << " compression=" << stats.maxDensityCompression * 100.0 << "%"
+              << " deficit=" << stats.maxDensityDeficit * 100.0 << "%\n";
+    CHECK(stats.maxDensityCompression <= config.densityTolerance);
+    if (spacing == 4.0e-3) shippingDeficit = stats.maxDensityDeficit;
+    if (spacing == 8.0e-3) coarseDeficit = stats.maxDensityDeficit;
   }
+  // Deficit is expected at the free surface and is never a convergence error;
+  // the finer lattice nevertheless resolves that surface diagnostic better.
+  CHECK(shippingDeficit < coarseDeficit);
 }
 
 TEST_CASE("the solver remains finite under an abusive shake") {

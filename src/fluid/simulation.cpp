@@ -264,8 +264,7 @@ struct Simulation::Impl {
       const double wallSeconds =
           std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
               .count();
-      const double factor =
-          wallSeconds > 0.0 ? std::min(1.0, stepS / wallSeconds) : 1.0;
+      const double factor = wallSeconds > 0.0 ? stepS / wallSeconds : 1.0;
       measuredRealTimeFactor.store(factor, std::memory_order_release);
       publish();
       return true;
@@ -288,7 +287,7 @@ struct Simulation::Impl {
     publish();
   }
 
-  void enqueueAdvance(double simulatedSeconds, bool applyRealtimeBudget) {
+  void enqueueAdvance(double simulatedSeconds, bool realtimeRequest) {
     {
       std::lock_guard<std::mutex> lock(workMutex);
       if (!(simulatedSeconds > 0.0) || !std::isfinite(simulatedSeconds)) {
@@ -302,7 +301,7 @@ struct Simulation::Impl {
         const double room =
             std::max(0.0, kMaximumAdvanceS - activeSeconds - queued);
         double& destination =
-            applyRealtimeBudget ? queuedRealtimeSeconds : queuedExactSeconds;
+            realtimeRequest ? queuedRealtimeSeconds : queuedExactSeconds;
         destination += std::min(simulatedSeconds, room);
       }
     }
@@ -322,12 +321,10 @@ struct Simulation::Impl {
         if (stopping) break;
         rejectRequest = invalidRequest;
         invalidRequest = false;
-        const double measured =
-            measuredRealTimeFactor.load(std::memory_order_acquire);
-        const double budgetFactor =
-            std::isfinite(measured) ? std::clamp(measured, 0.01, 1.0) : 1.0;
-        stepS = queuedExactSeconds +
-                queuedRealtimeSeconds * budgetFactor;
+        // Integrate every accepted queued second. The measured factor is an
+        // honest diagnostic and a caller-side budget input, never a multiplier
+        // that silently shortens requested simulated time.
+        stepS = queuedExactSeconds + queuedRealtimeSeconds;
         queuedRealtimeSeconds = 0.0;
         queuedExactSeconds = 0.0;
         active = true;
@@ -643,8 +640,10 @@ std::string Simulation::statusLine() const {
        << "dx " << state->particleRadiusM * 2000.0 << " mm | "
        << state->px.size() << " particles | ";
   if (state->elapsedS > 0.0) {
-    text << stats->substeps << " substeps | worst density error "
-         << stats->maxDensityError * 100.0 << "% | ";
+    text << stats->substeps << " substeps | worst compression "
+         << stats->maxDensityCompression * 100.0 << "%, deficit "
+         << stats->maxDensityDeficit * 100.0 << "% | "
+         << std::setprecision(2) << stats->millisecondsPerSubstep << " ms/substep | ";
   } else {
     text << "solver step pending | ";
   }
