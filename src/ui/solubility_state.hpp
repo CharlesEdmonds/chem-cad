@@ -6,9 +6,11 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "fluid/simulation.hpp"
 #include "sol/funnel.hpp"
 #include "sol/solubility.hpp"
 
@@ -26,13 +28,54 @@ struct ExtractionImport {
   double soluteMassMg = 100.0;
 };
 
-// One fixed-C slice of the ternary composition cube. Points are ordered along
-// the A:B sweep; keeping the slices here makes the expensive predictions a
-// signature-keyed cache rather than per-frame drawing work.
-struct TernaryLayerSweep {
-  float fractionC = 0.0f;
-  std::vector<sol::SweepPoint> points;
-  int peakIndex = -1;
+// Cached geometry for the three-solvent composition surface. Both linear and
+// logarithmic heights, colours and Lambert shades are retained so changing the
+// display scale never resweeps or re-tessellates the model.
+struct TernarySurfaceNode {
+  sol::SweepPoint point;
+  std::array<float, 3> cubeLinear{};  // ratio B, normalised solubility, fraction C
+  std::array<float, 3> cubeLog{};
+};
+
+struct TernarySurfaceQuad {
+  std::array<uint32_t, 4> nodes{};  // front-left, front-right, back-right, back-left
+  std::array<float, 4> colourLinear{};
+  std::array<float, 4> colourLog{};
+  float shadeLinear = 1.0f;
+  float shadeLog = 1.0f;
+  float depth = 0.0f;
+  int ratioIndex = 0;
+  int cIndex = 0;
+};
+
+struct TernarySurfaceMesh {
+  int ratioQuads = 0;
+  int cQuads = 0;
+  std::vector<TernarySurfaceNode> nodes;
+  std::vector<TernarySurfaceQuad> quads;  // cached in back-to-front order
+  int peakNode = -1;
+  double minimum = 0.0;
+  double maximum = 0.0;
+  double logFloor = 1e-12;
+  double logMinimum = 0.0;
+  double logMaximum = 1.0;
+};
+
+enum class ExtractionRenderMode : uint8_t {
+  Fluid3D,
+  Schematic2D,
+};
+
+enum class FluidShakeAxis : uint8_t {
+  Vertical,
+  Horizontal,
+  Diagonal,
+};
+
+enum class FluidResolution : uint8_t {
+  Coarse,
+  Normal,
+  Fine,
 };
 
 struct SolubilityState {
@@ -73,14 +116,14 @@ struct SolubilityState {
 
   // ------------------------------------------------------------- display
   int units = 0;        // 0 g/mL, 1 mg/mL, 2 g/100 mL, 3 mol/L
-  bool logScale = false;  // ratio-plot y axis: linear or log10
+  bool logScale = false;  // composition graph height: linear or log10
 
   // -------------------------------------------------------- ratio sweep
   std::vector<sol::SweepPoint> sweep;
   int sweepSteps = 20;
   std::string sweepSignature;  // cache key: solvent ids + steps + temperature + soluteVersion
   int sweepPeakIndex = -1;  // index into `sweep` of the max-solubility sample, or -1
-  std::vector<TernaryLayerSweep> ternaryLayers;  // fixed-C curves, cached with `sweep`
+  TernarySurfaceMesh ternarySurface;  // full cached composition surface
 
   // ------------------------------------------------------- solvent screen
   std::vector<sol::ScreenRow> screening;  // pure-solvent table, best first
@@ -92,23 +135,38 @@ struct SolubilityState {
   int backgroundElectrolyte = 0;    // index into sol::electrolytes()
   float backgroundMolarity = 0.5f;  // mol/L
 
-  // ---------------------------------------------------------- funnel sim
+  // ---------------------------------------------------------- extraction
+  // The legacy analytic funnel remains the editable charge model used by the
+  // partition and wash calculators. The non-copyable particle simulation is
+  // created only when the Extraction Lab is first drawn.
   sol::Simulation funnel;
+  std::unique_ptr<fluid::Simulation> fluid;
   bool funnelRunning = false;
   float funnelSpeed = 1.0f;
-  // Physical shake inputs (sol::ShakeParams): what a chemist actually sets.
-  float shakeDurationS = 5.0f;    // s
-  float shakeFrequencyHz = 3.0f;  // Hz, 2-4 is a firm hand shake
-  float shakeAmplitudeCm = 5.0f;  // cm stroke half-amplitude
-  bool funnelRender3D = false;  // false: flat 2D cross-section (default); true: shaded
   int funnelVessel = 0;  // mirrors sol::Vessel, kept as int for a plain ImGui combo
 
-  // Grab-and-shake: the user drags the vessel itself; the drag velocity is
-  // the slosh velocity. Offset is render-side, velocity feeds the physics.
-  bool funnelGrabbed = false;
-  float funnelGrabAnchorX = 0.0f;  // mouse x at grab, px
-  float funnelDragOffsetPx = 0.0f; // vessel render offset, px
-  float funnelMouseVel = 0.0f;     // smoothed |dx/dt| in vessel m/s
+  // Physical driven-shake inputs. The axis is explicit because vertical
+  // shaking must be as discoverable as horizontal shaking.
+  float shakeDurationS = 5.0f;
+  float shakeFrequencyHz = 3.0f;
+  float shakeAmplitudeCm = 5.0f;
+  FluidShakeAxis shakeAxis = FluidShakeAxis::Vertical;
+  ExtractionRenderMode extractionRenderMode = ExtractionRenderMode::Fluid3D;
+  FluidResolution fluidResolution = FluidResolution::Normal;
+
+  // A dedicated stage toggle distinguishes grab-and-shake from camera orbit.
+  // Pointer deltas are converted into world acceleration and filtered before
+  // they cross the Simulation API.
+  bool fluidGrabMode = false;
+  bool fluidGrabActive = false;
+  std::array<float, 2> fluidGrabAnchorPx{};
+  std::array<double, 3> fluidManualAcceleration{};
+
+  // Pose animation state. The angular rate is retained so setPose receives an
+  // angular acceleration consistent with the visible tilt animation.
+  float fluidTiltTargetDeg = 0.0f;
+  float fluidTiltCurrentDeg = 0.0f;
+  float fluidTiltAngularVelocityRadS = 0.0f;
 
   ExtractionImport extractionImport;  // suite -> extraction lab hand-off
 

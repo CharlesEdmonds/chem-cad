@@ -1,17 +1,23 @@
-// 2D cross-section renderer and controls for the liquid-liquid separation
-// simulation (sol::Simulation): the Extraction Lab. Renders inside an
-// already-open panel; never owns a top-level ImGui window.
+// Extraction Calculator controls and fluid stage. The default view composites
+// the real 3D particle simulation; the schematic is an x-z cut through that
+// same immutable snapshot, never a second liquid model.
 
 #include "imgui.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/model.hpp"
+#include "fluid/frame.hpp"
+#include "fluid/simulation.hpp"
+#include "gfx/fluid_stage.hpp"
 #include "sol/funnel.hpp"
 #include "sol/solubility.hpp"
 #include "ui/app_state.hpp"
@@ -77,8 +83,7 @@ VesselGeometry buildGeometry(const sol::Simulation& sim) {
 }
 
 // Rebuilds only when the vessel type or charged capacity actually changes;
-// everything else (layers, droplets) reuses this per-frame without
-// re-sampling the width profile.
+// the particle cut and measured bulk bands reuse this profile every frame.
 const VesselGeometry& cachedGeometry(const sol::Simulation& sim) {
   static thread_local sol::Vessel lastVessel = sol::Vessel::SeparatoryFunnel;
   static thread_local double lastVolumeMl = -1.0;
@@ -112,14 +117,6 @@ double heightFractionForVolume(const VesselGeometry& geo, double volumeMl) {
   return 1.0;
 }
 
-double volumeForHeightFraction(const VesselGeometry& geo, double heightFraction) {
-  const double scaled =
-      std::clamp(heightFraction, 0.0, 1.0) * static_cast<double>(kWidthSamples - 1);
-  const int lo = std::clamp(static_cast<int>(std::floor(scaled)), 0, kWidthSamples - 1);
-  const int hi = std::min(lo + 1, kWidthSamples - 1);
-  const double t = scaled - static_cast<double>(lo);
-  return geo.cumVolumeMl[lo] + (geo.cumVolumeMl[hi] - geo.cumVolumeMl[lo]) * t;
-}
 
 // ---------------------------------------------------------- screen mapping
 struct Transform {
@@ -226,109 +223,11 @@ void drawGraduation(ImDrawList* draw, const VesselGeometry& geo, const Transform
   }
 }
 
-// ------------------------------------------------------------ status text
-const char* emulsionStateLabel(double fraction) {
-  if (fraction > 0.35) return "EMULSIFIED";
-  if (fraction < 0.02) return "SEPARATED";
-  return "SETTLING";
-}
-
-ImU32 emulsionStateColor(double fraction) {
-  if (fraction > 0.35) return style::u32(style::col::Danger);
-  if (fraction < 0.02) return style::u32(style::col::Success);
-  return style::u32(style::col::Accent);
-}
-
-void drawReadout(ImDrawList* draw, const sol::Simulation& sim, ImVec2 regionMin,
-                 ImVec2 regionSize) {
-  const style::Metrics& m = style::metrics();
-  const float safeLeft = regionMin.x + kMarginLeft + m.gap;
-  const float safeRight = regionMin.x + regionSize.x - m.gap;
-  const float availableWidth = safeRight - safeLeft;
-  const float minimumBoxWidth =
-      std::max(ImGui::CalcTextSize("emulsified: 100.0%").x,
-               ImGui::CalcTextSize("EMULSIFIED").x) +
-      m.gap * 2.0f;
-  if (availableWidth < minimumBoxWidth || regionSize.y < m.gap * 4.0f) return;
-
-  const double fraction = sol::emulsifiedFraction(sim);
-  const float lineHeight = ImGui::GetTextLineHeightWithSpacing();
-  const float padding = m.gap;
-  const float boxWidth =
-      std::min(std::max(ImGui::GetFontSize() * 11.0f, minimumBoxWidth), availableWidth);
-  const size_t layerCount = std::min(sim.phases.size(), sim.settledMl.size());
-  const int fixedLines = sim.shake.active ? 4 : 3;
-  const float availableHeight = std::max(regionSize.y - m.gap * 2.0f, 0.0f);
-  if (availableHeight < padding * 2.0f + lineHeight * fixedLines) return;
-  const int maxLayerLines =
-      std::max(0, static_cast<int>((availableHeight - padding * 2.0f) / lineHeight) - fixedLines);
-  const size_t visibleLayers =
-      std::min(layerCount, static_cast<size_t>(std::max(maxLayerLines, 0)));
-  const bool hasHiddenLayers = visibleLayers < layerCount;
-  const int contentLines = fixedLines + static_cast<int>(visibleLayers);
-  const float boxHeight =
-      std::min(availableHeight, padding * 2.0f + lineHeight * static_cast<float>(contentLines));
-
-  const ImVec2 boxMin(safeRight - boxWidth, regionMin.y + m.gap);
-  const ImVec2 boxMax(safeRight, boxMin.y + boxHeight);
-  draw->AddRectFilled(boxMin, boxMax, style::u32(style::col::BgSurface, 0.92f), m.radiusMd);
-  draw->AddRect(boxMin, boxMax, style::u32(style::col::BorderStrong, 0.85f), m.radiusMd, 0,
-                m.hairline);
-  draw->PushClipRect(ImVec2(boxMin.x + m.hairline, boxMin.y + m.hairline),
-                     ImVec2(boxMax.x - m.hairline, boxMax.y - m.hairline), true);
-
-  ImVec2 cursor(boxMin.x + padding, boxMin.y + padding);
-  const float wrapWidth = std::max(boxWidth - padding * 2.0f, 1.0f);
-  char buf[160];
-
-  std::snprintf(buf, sizeof(buf), "t = %.1f s", sim.elapsed);
-  draw->AddText(cursor, style::u32(style::col::TextDim), buf);
-  cursor.y += lineHeight;
-
-  if (sim.shake.active) {
-    std::snprintf(buf, sizeof(buf), "shaking: %.1f s left", sim.shake.remainingS);
-    const float pulse =
-        0.68f + 0.32f * (0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * 5.0f));
-    draw->AddText(cursor, style::u32(style::col::Accent, pulse), buf);
-    cursor.y += lineHeight;
-  }
-
-  std::snprintf(buf, sizeof(buf), "emulsified: %.1f%%", fraction * 100.0);
-  draw->AddText(cursor, style::u32(style::col::TextDim), buf);
-  cursor.y += lineHeight;
-
-  ImFont* bigFont = style::fonts::semibold();
-  const float bigSize = ImGui::GetFontSize() * 1.10f;
-  if (bigFont) {
-    draw->AddText(bigFont, bigSize, cursor, emulsionStateColor(fraction),
-                  emulsionStateLabel(fraction));
-  } else {
-    draw->AddText(cursor, emulsionStateColor(fraction), emulsionStateLabel(fraction));
-  }
-  cursor.y += lineHeight;
-
-  for (size_t i = 0; i < visibleLayers; ++i) {
-    if (hasHiddenLayers && i + 1 == visibleLayers) {
-      std::snprintf(buf, sizeof(buf), "+ %d more phase%s",
-                    static_cast<int>(layerCount - i), layerCount - i == 1 ? "" : "s");
-      draw->AddText(cursor, style::u32(style::col::TextDim), buf);
-    } else {
-      char suffix[40];
-      std::snprintf(suffix, sizeof(suffix), ": %.0f mL", sim.settledMl[i]);
-      const float labelWidth = std::max(wrapWidth - ImGui::CalcTextSize(suffix).x, 0.0f);
-      const std::string line = ellipsizeText(sim.phases[i].label, labelWidth) + suffix;
-      draw->AddText(cursor, style::u32(style::col::Text), line.c_str());
-    }
-    cursor.y += lineHeight;
-  }
-
-  draw->PopClipRect();
-}
 
 // --------------------------------------------------------------- painting
-// The vessel uses the same local-metre geometry as physics. Flat mode keeps
-// textbook phase colours; shaded mode adds cylindrical light rolloff. Both
-// share the sloshing boundaries, parcel haze, glass, furniture and highlights.
+// The schematic uses the same vessel geometry as the solver. Its phase bands
+// and particle cut are measurements of the immutable fluid snapshot; glass and
+// graduation furniture remain explanatory drawing aids.
 
 // Cylindrical brightness across the vessel width: brightest left of centre
 // (key light), rolling off to dark rims. xFrac in [-1, 1].
@@ -337,9 +236,11 @@ float glassShade(float xFrac) {
   return 0.62f + 0.55f * g;
 }
 
-ImU32 phaseShade(const sol::Phase& phase, float xFrac, float alphaScale = 1.0f) {
+ImU32 phaseShade(const fluid::PhaseMaterial& phase, float xFrac,
+                 float alphaScale = 1.0f) {
   const float s = glassShade(xFrac);
-  const ImVec4 c(std::min(phase.colour[0] * s, 1.0f), std::min(phase.colour[1] * s, 1.0f),
+  const ImVec4 c(std::min(phase.colour[0] * s, 1.0f),
+                 std::min(phase.colour[1] * s, 1.0f),
                  std::min(phase.colour[2] * s, 1.0f),
                  std::min(phase.colour[3] * alphaScale, 1.0f));
   return ImGui::ColorConvertFloat4ToU32(c);
@@ -382,7 +283,7 @@ void drawVesselGlass(ImDrawList* draw, const VesselGeometry& geo, const Transfor
   buildScreenOutline(geo, tf, screenOutline);
   if (screenOutline.size() < 3) return;
   draw->AddConcavePolyFilled(screenOutline.data(), static_cast<int>(screenOutline.size()),
-                             style::u32(ImVec4(0.60f, 0.76f, 0.88f, 1.0f), 0.10f));
+                             style::u32(style::col::Text, 0.10f));
 }
 
 void drawVesselWall(ImDrawList* draw, const VesselGeometry& geo, const Transform& tf) {
@@ -392,8 +293,7 @@ void drawVesselWall(ImDrawList* draw, const VesselGeometry& geo, const Transform
   // A soft outer stroke under a crisp closed silhouette reads as glass
   // thickness without exposing the dense analytic sampling.
   draw->AddPolyline(screenOutline.data(), static_cast<int>(screenOutline.size()),
-                    style::u32(ImVec4(0.70f, 0.82f, 0.92f, 1.0f), 0.28f),
-                    ImDrawFlags_Closed, 4.0f);
+                    style::u32(style::col::Text, 0.28f), ImDrawFlags_Closed, 4.0f);
   draw->AddPolyline(screenOutline.data(), static_cast<int>(screenOutline.size()),
                     style::u32(style::col::BorderStrong, 0.9f), ImDrawFlags_Closed, 1.6f);
 }
@@ -412,10 +312,10 @@ void drawGlassHighlights(ImDrawList* draw, const sol::Simulation& sim,
   }
   if (streak.size() >= 2) {
     draw->AddPolyline(streak.data(), static_cast<int>(streak.size()),
-                      style::u32(ImVec4(0.92f, 0.97f, 1.0f, 1.0f), 0.10f), ImDrawFlags_None,
+                      style::u32(style::col::Text, 0.10f), ImDrawFlags_None,
                       std::max(3.0f, tf.scale * 0.010f));
     draw->AddPolyline(streak.data(), static_cast<int>(streak.size()),
-                      style::u32(ImVec4(0.95f, 0.99f, 1.0f, 1.0f), 0.16f), ImDrawFlags_None,
+                      style::u32(style::col::Text, 0.16f), ImDrawFlags_None,
                       std::max(1.2f, tf.scale * 0.0035f));
   }
 
@@ -438,7 +338,7 @@ void drawFurniture(ImDrawList* draw, const sol::Simulation& sim, const VesselGeo
                    const Transform& tf) {
   if (sim.vessel != sol::Vessel::SeparatoryFunnel) return;
 
-  const ImU32 glassFill = style::u32(ImVec4(0.72f, 0.84f, 0.93f, 1.0f), 0.35f);
+  const ImU32 glassFill = style::u32(style::col::TextDim, 0.35f);
   const ImU32 glassEdge = style::u32(style::col::BorderStrong, 0.9f);
 
   // The analytic neck is 0.20 of the maximum half-width at t = 1.
@@ -482,329 +382,111 @@ double halfWidthAtHeight(const sol::Simulation& sim, const VesselGeometry& geo,
   return widthFractionAt(sim.vessel, hf) * geo.halfWidthMetres;
 }
 
-double surfaceHeightAt(const sol::Simulation& sim, const VesselGeometry& geo,
-                       double baseHeightM, double clearanceM, double xM) {
-  const double energy = std::clamp(sim.shakeEnergy, 0.0, 1.0);
-  if (energy <= 1e-5 || clearanceM <= 1e-9) return baseHeightM;
+void drawBulkBands(ImDrawList* draw, const fluid::Snapshot& snapshot,
+                   const sol::Simulation& charge, const VesselGeometry& geo,
+                   const Transform& tf) {
+  const fluid::Diagnostics& diagnostics = snapshot.diagnostics;
+  const size_t count = std::min(snapshot.phases.size(), diagnostics.phases.size());
+  if (!diagnostics.valid || count == 0) return;
 
-  const double frequency = std::max(sim.shake.frequencyHz, 0.0);
-  const double omega = 2.0 * kPi * frequency;
-  const double halfW = std::max(halfWidthAtHeight(sim, geo, baseHeightM), 1e-5);
-  const double tilt = 0.28 * energy * std::sin(omega * sim.elapsed);
-  const double amplitude = 0.16 * energy * std::max(sim.shake.amplitudeM, 0.0);
-  const double maxOffset = std::max(clearanceM, 0.0);
-  const double rawExtent = std::fabs(tilt) * halfW + amplitude;
-  const double scale = rawExtent > maxOffset ? maxOffset / rawExtent : 1.0;
-  const double waveNumber = kPi / halfW;  // one wavelength across the local width
-  return baseHeightM +
-         scale * (tilt * xM + amplitude * std::sin(waveNumber * xM - omega * sim.elapsed));
-}
-
-double boundaryClearance(const std::vector<double>& boundaries, size_t boundary,
-                         double vesselHeightM) {
-  if (boundary == 0 || boundary >= boundaries.size()) return 0.0;
-  double nearestBand = 1e9;
-  if (boundary > 0 && boundaries[boundary] > boundaries[boundary - 1])
-    nearestBand = std::min(nearestBand, boundaries[boundary] - boundaries[boundary - 1]);
-  if (boundary + 1 < boundaries.size() && boundaries[boundary + 1] > boundaries[boundary])
-    nearestBand = std::min(nearestBand, boundaries[boundary + 1] - boundaries[boundary]);
-  if (nearestBand == 1e9) return 0.0;
-  const double edgeRoom =
-      std::min(boundaries[boundary], vesselHeightM - boundaries[boundary]);
-  return std::max(0.0, std::min(nearestBand * 0.24, edgeRoom * 0.80));
-}
-
-ImVec2 surfacePoint(const sol::Simulation& sim, const VesselGeometry& geo, const Transform& tf,
-                    double baseHeightM, double clearanceM, double xFraction) {
-  const double baseHalfW = halfWidthAtHeight(sim, geo, baseHeightM);
-  const double xForWave = xFraction * baseHalfW;
-  const double y = std::clamp(surfaceHeightAt(sim, geo, baseHeightM, clearanceM, xForWave),
-                              0.0, static_cast<double>(geo.heightMetres));
-  const double x = xFraction * halfWidthAtHeight(sim, geo, y);
-  return toScreen(tf, x, y);
-}
-
-void appendSurface(std::vector<ImVec2>& points, const sol::Simulation& sim,
-                   const VesselGeometry& geo, const Transform& tf, double baseHeightM,
-                   double clearanceM, int samples, bool reverse) {
-  for (int i = 0; i <= samples; ++i) {
-    const int sample = reverse ? samples - i : i;
-    const double f = -1.0 + 2.0 * static_cast<double>(sample) / samples;
-    points.push_back(surfacePoint(sim, geo, tf, baseHeightM, clearanceM, f));
-  }
-}
-
-// Volume-weighted colour of everything currently dispersed: the milky mixture
-// an emulsion actually looks like, rather than whichever phase happened to be
-// the top carrier.
-ImVec4 emulsionColour(const sol::Simulation& sim, float alpha) {
-  double weight = 0.0;
-  double r = 0.0, g = 0.0, b = 0.0;
-  for (const sol::Droplet& droplet : sim.droplets) {
-    if (droplet.phase < 0 || static_cast<size_t>(droplet.phase) >= sim.phases.size()) continue;
-    const double volume = std::max(static_cast<double>(droplet.parcelMl), 0.0);
-    const sol::Phase& phase = sim.phases[static_cast<size_t>(droplet.phase)];
-    weight += volume;
-    r += volume * phase.colour[0];
-    g += volume * phase.colour[1];
-    b += volume * phase.colour[2];
-  }
-  if (weight <= 1e-12) {
-    for (const sol::Phase& phase : sim.phases) {
-      weight += 1.0;
-      r += phase.colour[0];
-      g += phase.colour[1];
-      b += phase.colour[2];
-    }
-  }
-  if (weight <= 0.0) return ImVec4(0.6f, 0.6f, 0.6f, alpha);
-  return ImVec4(static_cast<float>(r / weight), static_cast<float>(g / weight),
-                static_cast<float>(b / weight), alpha);
-}
-
-ImU32 shadeColour(const ImVec4& colour, float xFrac) {
-  const float s = glassShade(xFrac);
-  return ImGui::ColorConvertFloat4ToU32(ImVec4(std::min(colour.x * s, 1.0f),
-                                               std::min(colour.y * s, 1.0f),
-                                               std::min(colour.z * s, 1.0f), colour.w));
-}
-
-void drawLayers(ImDrawList* draw, const sol::Simulation& sim, const VesselGeometry& geo,
-                const Transform& tf, bool shaded) {
+  // Diagnostics reports each phase's measured bulk top. Sorting these measured
+  // heights reconstructs the vertical stack without assuming that edit-table
+  // order is density order.
+  static thread_local std::vector<size_t> order;
   static thread_local std::vector<ImVec2> polygon;
-  static thread_local std::vector<ImVec2> surface;
-  static thread_local std::vector<double> boundaries;
-  const size_t n = std::min(sim.phases.size(), sim.settledMl.size());
-  boundaries.assign(n + 1, 0.0);
+  order.resize(count);
+  for (size_t i = 0; i < count; ++i) order[i] = i;
+  std::sort(order.begin(), order.end(), [&diagnostics](size_t a, size_t b) {
+    return diagnostics.phases[a].layerTopM < diagnostics.phases[b].layerTopM;
+  });
+  polygon.reserve(66);
 
-  double cursorMl = 0.0;
-  for (size_t i = 0; i < n; ++i) {
-    cursorMl += std::max(sim.settledMl[i], 0.0);
-    boundaries[i + 1] =
-        heightFractionForVolume(geo, cursorMl) * static_cast<double>(geo.heightMetres);
-  }
+  constexpr int kWallSamples = 32;
+  double lowerM = 0.0;
+  for (size_t phaseIndex : order) {
+    const fluid::PhaseDiagnostics& phaseDiagnostics = diagnostics.phases[phaseIndex];
+    if (!phaseDiagnostics.bulkResolved) continue;
+    const double upperM =
+        std::clamp(phaseDiagnostics.layerTopM, lowerM, static_cast<double>(geo.heightMetres));
+    if (upperM <= lowerM + 1e-9) continue;
 
-  constexpr int kSurfaceSamples = 48;
-  constexpr int kShadeSlices = 36;
-
-  // Every band a settled bulk phase actually occupies.
-  for (size_t i = 0; i < n; ++i) {
-    if (boundaries[i + 1] <= boundaries[i] + 1e-9) continue;
-    const sol::Phase& phase = sim.phases[i];
-    const ImVec4 colour(phase.colour[0], phase.colour[1], phase.colour[2], phase.colour[3]);
-    const double loClear = boundaryClearance(boundaries, i, geo.heightMetres);
-    const double hiClear = boundaryClearance(boundaries, i + 1, geo.heightMetres);
-
-    if (!shaded) {
-      polygon.clear();
-      appendSurface(polygon, sim, geo, tf, boundaries[i + 1], hiClear, kSurfaceSamples, false);
-      appendSurface(polygon, sim, geo, tf, boundaries[i], loClear, kSurfaceSamples, true);
-      draw->AddConcavePolyFilled(polygon.data(), static_cast<int>(polygon.size()),
-                                 ImGui::ColorConvertFloat4ToU32(colour));
-    } else {
-      for (int slice = 0; slice < kShadeSlices; ++slice) {
-        const double f0 = -1.0 + 2.0 * static_cast<double>(slice) / kShadeSlices;
-        const double f1 = -1.0 + 2.0 * static_cast<double>(slice + 1) / kShadeSlices;
-        ImVec2 quad[4] = {
-            surfacePoint(sim, geo, tf, boundaries[i], loClear, f0),
-            surfacePoint(sim, geo, tf, boundaries[i], loClear, f1),
-            surfacePoint(sim, geo, tf, boundaries[i + 1], hiClear, f1),
-            surfacePoint(sim, geo, tf, boundaries[i + 1], hiClear, f0),
-        };
-        draw->AddConvexPolyFilled(quad, 4, shadeColour(colour, static_cast<float>((f0 + f1) * 0.5)));
-      }
+    polygon.clear();
+    for (int sample = 0; sample <= kWallSamples; ++sample) {
+      const double t = static_cast<double>(sample) / kWallSamples;
+      const double z = lowerM + (upperM - lowerM) * t;
+      polygon.push_back(toScreen(tf, -halfWidthAtHeight(charge, geo, z), z));
     }
-
-    surface.clear();
-    appendSurface(surface, sim, geo, tf, boundaries[i + 1], hiClear, kSurfaceSamples, false);
-    draw->AddPolyline(surface.data(), static_cast<int>(surface.size()),
-                      style::u32(style::col::Text, shaded ? 0.36f : 0.62f),
-                      ImDrawFlags_None, shaded ? 1.1f : 1.5f);
-  }
-
-  // The emulsion zone: everything between the settled stack and the free
-  // surface. Dispersion moves volume out of the bands, not out of the vessel,
-  // so this zone is exactly the dispersed volume -- and it is drawn as the
-  // volume-weighted mixture, translucent, so the parcels and the composition
-  // haze read through it. Painting it in the top phase's own colour (the old
-  // behaviour) made a fully shaken funnel look like a flat wash of one phase.
-  const double settledTop = boundaries[n];
-  const double liquidTop =
-      heightFractionForVolume(geo, sol::totalVolumeMl(sim)) * geo.heightMetres;
-  if (liquidTop > settledTop + 1e-9) {
-    const ImVec4 mixed = emulsionColour(sim, 0.40f);
-    const double loClear = boundaryClearance(boundaries, n, geo.heightMetres);
-    const double topClear = std::max(0.0, std::min((liquidTop - settledTop) * 0.24,
-                                                   (geo.heightMetres - liquidTop) * 0.80));
-    if (!shaded) {
-      polygon.clear();
-      appendSurface(polygon, sim, geo, tf, liquidTop, topClear, kSurfaceSamples, false);
-      appendSurface(polygon, sim, geo, tf, settledTop, loClear, kSurfaceSamples, true);
-      draw->AddConcavePolyFilled(polygon.data(), static_cast<int>(polygon.size()),
-                                 ImGui::ColorConvertFloat4ToU32(mixed));
-    } else {
-      for (int slice = 0; slice < kShadeSlices; ++slice) {
-        const double f0 = -1.0 + 2.0 * static_cast<double>(slice) / kShadeSlices;
-        const double f1 = -1.0 + 2.0 * static_cast<double>(slice + 1) / kShadeSlices;
-        ImVec2 quad[4] = {
-            surfacePoint(sim, geo, tf, settledTop, loClear, f0),
-            surfacePoint(sim, geo, tf, settledTop, loClear, f1),
-            surfacePoint(sim, geo, tf, liquidTop, topClear, f1),
-            surfacePoint(sim, geo, tf, liquidTop, topClear, f0),
-        };
-        draw->AddConvexPolyFilled(quad, 4, shadeColour(mixed, static_cast<float>((f0 + f1) * 0.5)));
-      }
+    for (int sample = kWallSamples; sample >= 0; --sample) {
+      const double t = static_cast<double>(sample) / kWallSamples;
+      const double z = lowerM + (upperM - lowerM) * t;
+      polygon.push_back(toScreen(tf, halfWidthAtHeight(charge, geo, z), z));
     }
-    surface.clear();
-    appendSurface(surface, sim, geo, tf, liquidTop, topClear, kSurfaceSamples, false);
-    draw->AddPolyline(surface.data(), static_cast<int>(surface.size()),
-                      style::u32(style::col::Text, shaded ? 0.40f : 0.66f), ImDrawFlags_None,
-                      shaded ? 1.1f : 1.5f);
+    draw->AddConcavePolyFilled(polygon.data(), static_cast<int>(polygon.size()),
+                               phaseShade(snapshot.phases[phaseIndex], -0.15f, 0.30f));
+
+    const double halfWidth = halfWidthAtHeight(charge, geo, upperM);
+    draw->AddLine(toScreen(tf, -halfWidth, upperM), toScreen(tf, halfWidth, upperM),
+                  phaseShade(snapshot.phases[phaseIndex], -0.15f, 0.72f), 1.2f);
+    lowerM = upperM;
   }
 }
 
-void drawEmulsionHaze(ImDrawList* draw, const sol::Simulation& sim,
-                      const VesselGeometry& geo, const Transform& tf) {
-  constexpr int kBins = 48;
-  static thread_local std::array<double, kBins> parcelMl;
-  static thread_local std::array<double, kBins> red;
-  static thread_local std::array<double, kBins> green;
-  static thread_local std::array<double, kBins> blue;
-  parcelMl.fill(0.0);
-  red.fill(0.0);
-  green.fill(0.0);
-  blue.fill(0.0);
+void drawParticleCut(ImDrawList* draw, const fluid::Snapshot& snapshot,
+                     const sol::Simulation& charge, const VesselGeometry& geo,
+                     const Transform& tf) {
+  const size_t count =
+      std::min({snapshot.px.size(), snapshot.py.size(), snapshot.pz.size(),
+                snapshot.phase.size()});
+  const double slabHalfWidthM = snapshot.particleRadiusM * 1.5;
+  const float radiusPx =
+      std::max(static_cast<float>(snapshot.particleRadiusM) * tf.scale, 1.0f);
+  const int segments = radiusPx < 3.0f ? 8 : 0;
 
-  const double liquidHeight =
-      heightFractionForVolume(geo, sol::totalVolumeMl(sim)) * geo.heightMetres;
-  if (liquidHeight <= 1e-9) return;
-  for (const sol::Droplet& droplet : sim.droplets) {
-    if (droplet.phase < 0 || static_cast<size_t>(droplet.phase) >= sim.phases.size() ||
-        droplet.parcelMl <= 0.0f) {
-      continue;
-    }
-    const int bin = std::clamp(
-        static_cast<int>(droplet.position.y / liquidHeight * kBins), 0, kBins - 1);
-    const double volume = droplet.parcelMl;
-    const sol::Phase& phase = sim.phases[static_cast<size_t>(droplet.phase)];
-    parcelMl[bin] += volume;
-    red[bin] += volume * phase.colour[0];
-    green[bin] += volume * phase.colour[1];
-    blue[bin] += volume * phase.colour[2];
-  }
+  // This is a true x-z section, not a silhouette: only particles whose centres
+  // lie in the near-axis slab are painted.
+  for (size_t i = 0; i < count; ++i) {
+    if (std::fabs(static_cast<double>(snapshot.py[i])) >= slabHalfWidthM) continue;
+    const size_t phaseIndex = snapshot.phase[i];
+    if (phaseIndex >= snapshot.phases.size()) continue;
 
-  for (int bin = 0; bin < kBins; ++bin) {
-    if (parcelMl[bin] <= 1e-9) continue;
-    const double yLo = liquidHeight * static_cast<double>(bin) / kBins;
-    const double yHi = liquidHeight * static_cast<double>(bin + 1) / kBins;
-    const double hfLo = yLo / geo.heightMetres;
-    const double hfHi = yHi / geo.heightMetres;
-    const double capacity =
-        std::max(volumeForHeightFraction(geo, hfHi) - volumeForHeightFraction(geo, hfLo), 1e-6);
-    const float fraction = static_cast<float>(std::clamp(parcelMl[bin] / capacity, 0.0, 1.0));
-    const float alpha = 0.035f + 0.16f * fraction;
-    const double invVolume = 1.0 / parcelMl[bin];
-    const ImU32 colour = ImGui::ColorConvertFloat4ToU32(
-        ImVec4(static_cast<float>(red[bin] * invVolume),
-               static_cast<float>(green[bin] * invVolume),
-               static_cast<float>(blue[bin] * invVolume), alpha));
-    const double wLo = halfWidthAtHeight(sim, geo, yLo);
-    const double wHi = halfWidthAtHeight(sim, geo, yHi);
-    ImVec2 band[4] = {toScreen(tf, -wLo, yLo), toScreen(tf, wLo, yLo),
-                      toScreen(tf, wHi, yHi), toScreen(tf, -wHi, yHi)};
-    draw->AddConvexPolyFilled(band, 4, colour);
-  }
-}
-
-// Each parcel is drawn as ONE droplet-sized dot rather than a stack of
-// translucent shells. 900 shells at 0.1-0.3 alpha composite into a flat wash
-// -- the emulsion loses all texture and looks like tinted glass. A dot at
-// roughly 40% of the parcel's sphere-equivalent radius covers about half the
-// column area, so the dispersion reads as a turbid, grainy fluid with visible
-// churn, and the composition haze underneath fills the gaps.
-void drawParcelClouds(ImDrawList* draw, const sol::Simulation& sim,
-                      const VesselGeometry& geo, const Transform& tf, bool shaded) {
-  const int phaseCount = static_cast<int>(sim.phases.size());
-  uint32_t index = 0;
-  for (const sol::Droplet& droplet : sim.droplets) {
-    ++index;
-    if (droplet.phase < 0 || droplet.phase >= phaseCount || droplet.parcelMl <= 0.0f) continue;
-    const double x = droplet.position.x;
-    const double y = droplet.position.y;
-    if (y <= 0.0 || y >= geo.heightMetres ||
-        std::fabs(x) >= halfWidthAtHeight(sim, geo, y)) {
-      continue;
-    }
-
-    double radiusM = std::cbrt(3.0 * static_cast<double>(droplet.parcelMl) * 1e-6 /
-                               (4.0 * kPi));
-    // Size jitter from a cheap integer hash of the parcel index: a real
-    // dispersion is polydisperse, and a field of identical circles looks like
-    // a pattern, not a fluid.
-    const uint32_t hash = index * 2654435761u;
-    const float jitter = 0.78f + 0.52f * static_cast<float>(hash >> 24) / 255.0f;
-    radiusM *= 0.42 * jitter;
-    radiusM = std::min(radiusM, 0.90 * std::min(y, static_cast<double>(geo.heightMetres) - y));
-    const double sideRoom = halfWidthAtHeight(sim, geo, y) - std::fabs(x);
-    radiusM = std::min(radiusM, std::max(0.0, sideRoom * 0.9));
-    const float radiusPx = static_cast<float>(radiusM) * tf.scale;
-    if (radiusPx < 0.5f) continue;
-
-    const ImVec2 center = toScreen(tf, x, y);
-    const sol::Phase& phase = sim.phases[static_cast<size_t>(droplet.phase)];
-    const auto dropColour = [&phase](float alpha) {
-      return ImGui::ColorConvertFloat4ToU32(
-          ImVec4(phase.colour[0], phase.colour[1], phase.colour[2], std::clamp(alpha, 0.0f, 1.0f)));
-    };
-    const int segments = radiusPx < 3.0f ? 8 : 0;  // 0 = ImGui picks by radius
-    draw->AddCircleFilled(center, radiusPx, dropColour(0.55f), segments);
-    if (radiusPx >= 2.5f) {
-      // Bright meniscus edge and a small specular: what a droplet under
-      // side-light actually shows, and what separates one droplet from the
-      // next when they crowd.
-      draw->AddCircle(center, radiusPx, dropColour(0.85f), segments, radiusPx * 0.22f);
-      draw->AddCircleFilled(ImVec2(center.x - radiusPx * 0.3f, center.y - radiusPx * 0.3f),
-                            std::max(radiusPx * 0.24f, 0.6f),
-                            IM_COL32(255, 255, 255, shaded ? 96 : 64), 6);
+    const double x = snapshot.px[i];
+    const double z = snapshot.pz[i];
+    if (z < 0.0 || z > geo.heightMetres) continue;
+    const double halfWidth = halfWidthAtHeight(charge, geo, z);
+    if (std::fabs(x) > halfWidth) continue;
+    const float xFraction =
+        static_cast<float>(x / std::max(halfWidth, static_cast<double>(1e-9)));
+    const ImVec2 centre = toScreen(tf, x, z);
+    const fluid::PhaseMaterial& phase = snapshot.phases[phaseIndex];
+    draw->AddCircleFilled(centre, radiusPx, phaseShade(phase, xFraction, 0.96f), segments);
+    draw->AddCircle(centre, radiusPx, phaseShade(phase, xFraction, 1.0f), segments,
+                    std::max(style::metrics().hairline, radiusPx * 0.12f));
+    if (radiusPx >= 2.4f) {
+      draw->AddCircleFilled(ImVec2(centre.x - radiusPx * 0.28f,
+                                   centre.y - radiusPx * 0.28f),
+                            std::max(radiusPx * 0.20f, 0.6f),
+                            style::u32(style::col::Text, 0.30f), 6);
     }
   }
 }
 
-void drawCrossSection(const sol::Simulation& sim, ImVec2 regionMin, ImVec2 regionSize,
-                      bool shaded, float dragOffsetPx = 0.0f) {
+void drawCrossSection(const fluid::Snapshot& snapshot, const sol::Simulation& charge,
+                      ImVec2 regionMin, ImVec2 regionSize) {
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 regionMax(regionMin.x + regionSize.x, regionMin.y + regionSize.y);
   draw->PushClipRect(regionMin, regionMax, true);
   draw->AddRectFilled(regionMin, regionMax, style::u32(style::col::BgSurface));
 
-  const VesselGeometry& geo = cachedGeometry(sim);
-  Transform tf = buildTransform(geo, regionMin, regionSize);
-
-  // Vessel motion during a shake is real motion: oscillate horizontally at
-  // the shake frequency with the stroke amplitude (soft-capped in pixels so
-  // an extreme stroke never throws the vessel out of the panel). Layers,
-  // droplets, glass and graduations all share `tf`, so they move as one.
-  if (sim.shake.active) {
-    constexpr float kTwoPi = 6.28318530718f;
-    const float ampPx = std::min(static_cast<float>(sim.shake.amplitudeM) * tf.scale * 0.35f,
-                                 regionSize.x * 0.10f);
-    tf.origin.x += ampPx * std::sin(kTwoPi * static_cast<float>(sim.shake.frequencyHz) *
-                                    static_cast<float>(sim.elapsed));
-  }
-  // Grab-and-shake: while the user drags the vessel it follows the mouse.
-  tf.origin.x += dragOffsetPx;
-
-  if (shaded) drawGroundShadow(draw, geo, tf);
+  const VesselGeometry& geo = cachedGeometry(charge);
+  const Transform tf = buildTransform(geo, regionMin, regionSize);
+  drawGroundShadow(draw, geo, tf);
   drawVesselGlass(draw, geo, tf);
   drawGraduation(draw, geo, tf, regionMin);
-  drawLayers(draw, sim, geo, tf, shaded);
-  drawEmulsionHaze(draw, sim, geo, tf);
-  drawParcelClouds(draw, sim, geo, tf, shaded);
-  if (shaded) drawGlassHighlights(draw, sim, geo, tf);
+  drawBulkBands(draw, snapshot, charge, geo, tf);
+  drawParticleCut(draw, snapshot, charge, geo, tf);
+  drawGlassHighlights(draw, charge, geo, tf);
   drawVesselWall(draw, geo, tf);
-  drawFurniture(draw, sim, geo, tf);
-  drawReadout(draw, sim, regionMin, regionSize);
-
+  drawFurniture(draw, charge, geo, tf);
   draw->PopClipRect();
 }
 
@@ -840,6 +522,63 @@ void seedDefaultPhases(sol::Simulation& sim) {
 
   sim.phases = {aqueous, organic};
   sol::reset(sim);
+}
+
+constexpr std::array<double, 3> kFluidSpacingM{6.0e-3, 4.0e-3, 3.0e-3};
+constexpr std::array<const char*, 3> kFluidResolutionNames{"Coarse", "Normal", "Fine"};
+
+double selectedFluidSpacing(const SolubilityState& s) {
+  const size_t index = static_cast<size_t>(s.fluidResolution);
+  return kFluidSpacingM[std::min(index, kFluidSpacingM.size() - 1)];
+}
+
+std::vector<fluid::PhaseMaterial> fluidMaterials(const sol::Simulation& charge) {
+  std::vector<fluid::PhaseMaterial> materials;
+  materials.reserve(charge.phases.size());
+  for (const sol::Phase& phase : charge.phases) {
+    fluid::PhaseMaterial material;
+    material.label = phase.label;
+    material.restDensity = phase.density * 1000.0;          // g/mL -> kg/m^3
+    material.dynamicViscosity = phase.viscosity * 1.0e-3;  // mPa.s -> Pa.s
+    material.volumeMl = phase.volumeMl;
+    for (size_t channel = 0; channel < 4; ++channel)
+      material.colour[channel] = phase.colour[channel];
+    materials.push_back(std::move(material));
+  }
+  return materials;
+}
+
+std::vector<double> interfaceTensions(const sol::Simulation& charge) {
+  const size_t count = charge.phases.size();
+  std::vector<double> sigma(count * count, 0.0);
+  for (size_t i = 0; i < count; ++i) {
+    for (size_t j = i + 1; j < count; ++j) {
+      // The legacy editor stores one representative IFT per phase. Their
+      // symmetric mean is the only order-independent pair value available.
+      const double pair =
+          0.5 * (charge.phases[i].interfacialTension +
+                 charge.phases[j].interfacialTension) *
+          1.0e-3;  // mN/m -> N/m
+      sigma[i * count + j] = pair;
+      sigma[j * count + i] = pair;
+    }
+  }
+  return sigma;
+}
+
+void rechargeFluid(SolubilityState& s) {
+  if (!s.fluid) s.fluid = std::make_unique<fluid::Simulation>();
+  s.fluid->setPhases(fluidMaterials(s.funnel), interfaceTensions(s.funnel));
+  s.fluid->setVessel(s.funnel.vessel, s.funnel.vesselVolumeMl);
+  s.fluid->setResolution(selectedFluidSpacing(s));
+  s.fluid->charge();
+  s.fluidManualAcceleration = {0.0, 0.0, 0.0};
+  s.fluid->setManualAcceleration(s.fluidManualAcceleration);
+}
+
+fluid::Simulation& ensureFluid(SolubilityState& s) {
+  if (!s.fluid) rechargeFluid(s);
+  return *s.fluid;
 }
 
 int resizeStringInput(ImGuiInputTextCallbackData* data) {
@@ -881,69 +620,162 @@ bool animatedShakeButton(bool shaking, ImVec2 size) {
 }
 
 
+constexpr std::array<const char*, 3> kShakeAxisNames{"Vertical", "Horizontal",
+                                                     "Diagonal"};
+
+std::array<double, 3> selectedShakeAxis(FluidShakeAxis axis) {
+  constexpr double kInvSqrtTwo = 0.70710678118654752440;
+  switch (axis) {
+    case FluidShakeAxis::Vertical:
+      return {0.0, 0.0, 1.0};
+    case FluidShakeAxis::Horizontal:
+      return {1.0, 0.0, 0.0};
+    case FluidShakeAxis::Diagonal:
+      return {kInvSqrtTwo, 0.0, kInvSqrtTwo};
+  }
+  return {0.0, 0.0, 1.0};
+}
+
+fluid::VesselMotion shakeReportMotion(const SolubilityState& s) {
+  fluid::VesselMotion motion;
+  motion.shaking = true;
+  motion.shakeAxis = selectedShakeAxis(s.shakeAxis);
+  motion.shakeFrequencyHz = s.shakeFrequencyHz;
+  motion.shakeAmplitudeM = static_cast<double>(s.shakeAmplitudeCm) * 0.01;
+  return motion;
+}
+
+void drawFluidDiagnostics(SolubilityState& s) {
+  fluid::Simulation& simulation = ensureFluid(s);
+  const fluid::Diagnostics& diagnostics = simulation.diagnostics();
+  const std::string status = simulation.statusLine();
+  const size_t resolutionIndex =
+      std::min(static_cast<size_t>(s.fluidResolution), kFluidResolutionNames.size() - 1);
+
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::TextDisabled("REAL FLUID READOUT");
+  ImGui::TextWrapped("%s", status.c_str());
+  if (!diagnostics.valid) {
+    ImGui::TextWrapped(
+        "Particle-resolved estimates are waiting for the first solver step.");
+    return;
+  }
+
+  ImGui::TextWrapped("Particle-resolved %s-resolution estimates (dx %.0f mm)",
+                     kFluidResolutionNames[resolutionIndex],
+                     selectedFluidSpacing(s) * 1000.0);
+  const int columns = ImGui::GetContentRegionAvail().x >= 500.0f ? 3 : 1;
+  constexpr ImGuiTableFlags flags =
+      ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
+  if (ImGui::BeginTable("##fluid_diagnostics", columns, flags)) {
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("DISPERSED");
+    ImGui::Text("%.1f%%", diagnostics.dispersedFraction * 100.0);
+
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("SAUTER d32");
+    if (diagnostics.sauterDiameterM > 0.0)
+      ImGui::Text("%.0f um", diagnostics.sauterDiameterM * 1.0e6);
+    else
+      ImGui::TextUnformatted("No dispersed drops");
+
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("INTERFACIAL AREA");
+    ImGui::Text("%.2f cm^2", diagnostics.interfacialAreaM2 * 1.0e4);
+
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("FREE SURFACE");
+    ImGui::Text("%.1f mm", diagnostics.freeSurfaceM * 1000.0);
+
+    const size_t phaseCount = std::min(diagnostics.phases.size(), s.funnel.phases.size());
+    for (size_t i = 0; i < phaseCount; ++i) {
+      ImGui::TableNextColumn();
+      ImGui::TextDisabled("%s BULK", s.funnel.phases[i].label.c_str());
+      if (diagnostics.phases[i].bulkResolved)
+        ImGui::Text("%.1f mL", diagnostics.phases[i].bulkMl);
+      else
+        ImGui::TextUnformatted("Bulk unresolved");
+    }
+    ImGui::EndTable();
+  }
+}
+
 void drawTransportControls(SolubilityState& s) {
-  sol::Simulation& sim = s.funnel;
+  sol::Simulation& charge = s.funnel;
   static const char* kVesselNames[] = {"Separatory funnel", "Decanting flask",
                                        "Graduated cylinder"};
   const float width = ImGui::GetContentRegionAvail().x;
-  const int columns = width >= 620.0f ? 3 : 1;
+  const int columns = width >= 720.0f ? 4 : (width >= 420.0f ? 2 : 1);
   constexpr ImGuiTableFlags flags =
       ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings;
   if (!ImGui::BeginTable("##transport_grid", columns, flags)) return;
-  if (columns == 3) {
-    ImGui::TableSetupColumn("##vessel_col", ImGuiTableColumnFlags_WidthStretch, 1.55f);
-    ImGui::TableSetupColumn("##transport_col", ImGuiTableColumnFlags_WidthStretch, 1.05f);
-    ImGui::TableSetupColumn("##speed_col", ImGuiTableColumnFlags_WidthStretch, 1.10f);
-  }
 
   ImGui::TableNextColumn();
   ImGui::TextDisabled("VESSEL");
   ImGui::SetNextItemWidth(-1.0f);
   if (ImGui::Combo("##vessel", &s.funnelVessel, kVesselNames, IM_ARRAYSIZE(kVesselNames))) {
     s.funnelVessel = std::clamp(s.funnelVessel, 0, 2);
-    sim.vessel = static_cast<sol::Vessel>(s.funnelVessel);
-    sol::reset(sim);
+    charge.vessel = static_cast<sol::Vessel>(s.funnelVessel);
+    sol::reset(charge);
+    rechargeFluid(s);
     s.statusMessage = std::string("Recharged into ") + kVesselNames[s.funnelVessel];
   }
 
   ImGui::TableNextColumn();
   ImGui::TextDisabled("TRANSPORT");
   const char* runLabel = s.funnelRunning ? "Pause" : "Run";
-  if (widgets::ghostButton(runLabel, textButtonSize(runLabel)))
+  const ImVec2 runSize = textButtonSize(runLabel);
+  const ImVec2 resetSize = textButtonSize("Reset");
+  const float actionSpacing = ImGui::GetStyle().ItemSpacing.x;
+  const bool actionsFit =
+      runSize.x + actionSpacing + resetSize.x <= ImGui::GetContentRegionAvail().x;
+  if (widgets::ghostButton(runLabel, runSize))
     s.funnelRunning = !s.funnelRunning;
-  ImGui::SameLine(0.0f, ImGui::GetStyle().ItemSpacing.x);
-  if (widgets::ghostButton("Reset", textButtonSize("Reset"))) {
-    sol::reset(sim);
+  if (actionsFit) ImGui::SameLine(0.0f, actionSpacing);
+  if (widgets::ghostButton("Reset", resetSize)) {
+    sol::reset(charge);
+    rechargeFluid(s);
     s.funnelRunning = false;
-    s.statusMessage = "Vessel reset";
+    s.fluidTiltTargetDeg = 0.0f;
+    s.fluidTiltCurrentDeg = 0.0f;
+    s.fluidTiltAngularVelocityRadS = 0.0f;
+    s.statusMessage = "Particle vessel recharged";
   }
 
   ImGui::TableNextColumn();
   ImGui::TextDisabled("SIMULATION SPEED");
   ImGui::SetNextItemWidth(-1.0f);
   ImGui::SliderFloat("##speed", &s.funnelSpeed, 0.1f, 10.0f, "%.1fx");
+
+  ImGui::TableNextColumn();
+  ImGui::TextDisabled("RESOLUTION");
+  int resolution = static_cast<int>(s.fluidResolution);
+  ImGui::SetNextItemWidth(-1.0f);
+  if (ImGui::Combo("##resolution", &resolution, kFluidResolutionNames.data(),
+                   static_cast<int>(kFluidResolutionNames.size()))) {
+    resolution = std::clamp(resolution, 0,
+                            static_cast<int>(kFluidResolutionNames.size()) - 1);
+    s.fluidResolution = static_cast<FluidResolution>(resolution);
+    rechargeFluid(s);
+    s.statusMessage = std::string("Recharged at ") + kFluidResolutionNames[resolution] +
+                      " particle resolution";
+  }
   ImGui::EndTable();
 }
 
-void drawDerivedReadout(const sol::Simulation& sim) {
-  if (sim.shake.durationS <= 0.0) return;
-
-  const double dUm = sim.shake.sauterRadiusM * 2.0e6;  // m -> um diameter
-  const double weber = 1000.0 * sim.shake.peakVelocity * sim.shake.peakVelocity *
-                       sim.shake.sauterRadiusM * 2.0 /
-                       std::max(1e-6, sim.phases.empty() ? 0.03
-                                                         : sim.phases[0].interfacialTension * 1e-3);
-  char line1[112];
-  char line2[96];
-  std::snprintf(line1, sizeof(line1), "DERIVED   u %.2f m/s   eps %.1f W/kg",
-                sim.shake.peakVelocity, sim.shake.specificPower);
-  std::snprintf(line2, sizeof(line2), "d32 %.0f um   We %.1f", dUm, weber);
+void drawDerivedReadout(const SolubilityState& s) {
+  const fluid::VesselMotion motion = shakeReportMotion(s);
+  const double peakVelocity = fluid::shakePeakVelocity(motion);
+  const double specificPower = fluid::shakeSpecificPower(motion);
+  char line[144];
+  std::snprintf(line, sizeof(line), "PHYSICS USED   peak velocity %.2f m/s   specific power %.1f W/kg",
+                peakVelocity, specificPower);
 
   const float width = ImGui::GetContentRegionAvail().x;
   if (width <= 0.0f) return;
-  const style::Metrics& m = style::metrics();
-  const float lineHeight = ImGui::GetTextLineHeight();
-  const ImVec2 size(width, lineHeight * 2.0f + m.gap * 1.5f);
+  const style::Metrics& metrics = style::metrics();
+  const ImVec2 size(width, ImGui::GetTextLineHeight() + metrics.gap * 1.5f);
   const ImVec2 min = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("##derived_readout", size);
   const float hover = widgets::hoverT(ImGui::GetItemID(), ImGui::IsItemHovered());
@@ -951,58 +783,57 @@ void drawDerivedReadout(const sol::Simulation& sim) {
   ImDrawList* draw = ImGui::GetWindowDrawList();
   draw->AddRectFilled(min, max,
                       style::mix(style::col::BgDeep, style::col::BgRaised, hover, 0.72f),
-                      m.radiusSm);
-  draw->AddRect(min, max, style::mix(style::col::Border, style::col::Teal, hover), m.radiusSm, 0,
-                m.hairline);
+                      metrics.radiusSm);
+  draw->AddRect(min, max, style::mix(style::col::Border, style::col::Teal, hover),
+                metrics.radiusSm, 0, metrics.hairline);
 
   const bool mono = style::pushFont(style::fonts::mono());
-  const float textX = min.x + m.gap;
-  const float textY = min.y + m.gap * 0.70f;
-  const float textWidth = std::max(max.x - m.gap - textX, 0.0f);
-  const std::string fittedLine1 = ellipsizeText(line1, textWidth);
-  const std::string fittedLine2 = ellipsizeText(line2, textWidth);
-  draw->PushClipRect(ImVec2(textX, min.y), ImVec2(max.x - m.gap, max.y), true);
-  draw->AddText(ImVec2(textX, textY), style::u32(style::col::TextDim), fittedLine1.c_str());
-  draw->AddText(ImVec2(textX, textY + lineHeight), style::u32(style::col::Teal),
-                fittedLine2.c_str());
-  draw->PopClipRect();
+  const std::string fitted =
+      ellipsizeText(line, std::max(width - metrics.gap * 2.0f, 0.0f));
+  draw->AddText(ImVec2(min.x + metrics.gap, min.y + metrics.gap * 0.70f),
+                style::u32(style::col::Teal), fitted.c_str());
   style::popFont(mono);
-
   if (ImGui::IsItemHovered()) {
     ImGui::BeginTooltip();
-    const bool tooltipMono = style::pushFont(style::fonts::mono());
-    ImGui::TextUnformatted("u = 2*pi*f*A");
-    ImGui::TextUnformatted("epsilon = u^2*f/2");
-    ImGui::TextUnformatted("d32 = 0.725*(sigma/rho_c)^0.6*epsilon^-0.4");
-    ImGui::TextUnformatted("d32 capped by We_crit = 12 (Hinze 1955)");
-    ImGui::TextUnformatted("turnovers/s = u/H");
-    style::popFont(tooltipMono);
+    ImGui::TextUnformatted("u_peak = 2*pi*f*A");
+    ImGui::TextUnformatted("specific power = u_peak^2*f/2");
+    ImGui::TextUnformatted("Computed by fluid::shakePeakVelocity and fluid::shakeSpecificPower.");
     ImGui::EndTooltip();
   }
 }
 
 void drawShakeControls(SolubilityState& s) {
-  sol::Simulation& sim = s.funnel;
+  fluid::Simulation& simulation = ensureFluid(s);
   const float width = ImGui::GetContentRegionAvail().x;
-  const int columns = width >= 700.0f ? 4 : (width >= 400.0f ? 2 : 1);
+  const int columns = width >= 800.0f ? 5 : (width >= 420.0f ? 2 : 1);
   constexpr ImGuiTableFlags flags =
       ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
   if (ImGui::BeginTable("##shake_grid", columns, flags)) {
     ImGui::TableNextColumn();
     ImGui::TextDisabled("ACTION");
-    if (animatedShakeButton(sim.shake.active, textButtonSize("Shake"))) {
-      sol::ShakeParams params;
-      params.durationS = static_cast<double>(s.shakeDurationS);
-      params.frequencyHz = static_cast<double>(s.shakeFrequencyHz);
-      params.amplitudeM = static_cast<double>(s.shakeAmplitudeCm) * 0.01;
-      sol::shake(sim, params);
-      s.funnelRunning = true;  // a shake is motion: the clock must run
-      char buf[160];
-      std::snprintf(buf, sizeof(buf),
-                    "Shaking %.0f s at %.1f Hz, %.0f cm: u = %.2f m/s, epsilon = %.1f W/kg",
-                    params.durationS, params.frequencyHz, params.amplitudeM * 100.0,
-                    sim.shake.peakVelocity, sim.shake.specificPower);
-      s.statusMessage = buf;
+    if (animatedShakeButton(simulation.shaking(), textButtonSize("Shake"))) {
+      const std::array<double, 3> axis = selectedShakeAxis(s.shakeAxis);
+      const double amplitudeM = static_cast<double>(s.shakeAmplitudeCm) * 0.01;
+      simulation.shake(axis, s.shakeDurationS, s.shakeFrequencyHz, amplitudeM);
+      s.funnelRunning = true;
+      const fluid::VesselMotion report = shakeReportMotion(s);
+      char message[176];
+      std::snprintf(message, sizeof(message),
+                    "%s shake: %.0f s at %.1f Hz, %.0f cm; u %.2f m/s, power %.1f W/kg",
+                    kShakeAxisNames[static_cast<size_t>(s.shakeAxis)], s.shakeDurationS,
+                    s.shakeFrequencyHz, s.shakeAmplitudeCm,
+                    fluid::shakePeakVelocity(report), fluid::shakeSpecificPower(report));
+      s.statusMessage = message;
+    }
+
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("AXIS");
+    int axis = static_cast<int>(s.shakeAxis);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::Combo("##shake_axis", &axis, kShakeAxisNames.data(),
+                     static_cast<int>(kShakeAxisNames.size()))) {
+      s.shakeAxis = static_cast<FluidShakeAxis>(
+          std::clamp(axis, 0, static_cast<int>(kShakeAxisNames.size()) - 1));
     }
 
     ImGui::TableNextColumn();
@@ -1013,32 +844,70 @@ void drawShakeControls(SolubilityState& s) {
     ImGui::TableNextColumn();
     ImGui::TextDisabled("FREQUENCY");
     ImGui::SetNextItemWidth(-1.0f);
-    ImGui::DragFloat("##frequency", &s.shakeFrequencyHz, 0.05f, 0.5f, 6.0f, "%.1f Hz");
+    ImGui::DragFloat("##frequency", &s.shakeFrequencyHz, 0.05f, 0.5f, 6.0f,
+                     "%.1f Hz");
 
     ImGui::TableNextColumn();
     ImGui::TextDisabled("AMPLITUDE");
     ImGui::SetNextItemWidth(-1.0f);
-    ImGui::DragFloat("##amplitude", &s.shakeAmplitudeCm, 0.1f, 1.0f, 15.0f, "%.0f cm");
+    ImGui::DragFloat("##amplitude", &s.shakeAmplitudeCm, 0.1f, 1.0f, 15.0f,
+                     "%.0f cm");
     ImGui::EndTable();
   }
 
-  if (sim.shake.durationS > 0.0) {
-    ImGui::Spacing();
-    drawDerivedReadout(sim);
-  }
+  ImGui::Spacing();
+  drawDerivedReadout(s);
+}
+
+void setTiltTarget(SolubilityState& s, float degrees) {
+  s.fluidTiltTargetDeg = std::clamp(degrees, 0.0f, 180.0f);
+  s.funnelRunning = true;
+}
+
+void drawTiltControls(SolubilityState& s) {
+  ImGui::Separator();
+  ImGui::TextDisabled("TILT / INVERT");
+  const int columns = ImGui::GetContentRegionAvail().x >= 460.0f ? 2 : 1;
+  constexpr ImGuiTableFlags flags =
+      ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
+  if (!ImGui::BeginTable("##tilt_grid", columns, flags)) return;
+  ImGui::TableNextColumn();
+  ImGui::SetNextItemWidth(-1.0f);
+  if (ImGui::SliderFloat("##tilt", &s.fluidTiltTargetDeg, 0.0f, 180.0f, "%.0f deg"))
+    s.funnelRunning = true;
+
+  ImGui::TableNextColumn();
+  const float actionWidth = ImGui::GetContentRegionAvail().x;
+  const ImVec2 uprightSize = textButtonSize("Upright");
+  const ImVec2 ventSize = textButtonSize("Vent");
+  const ImVec2 invertSize = textButtonSize("Invert");
+  const float spacing = ImGui::GetStyle().ItemSpacing.x;
+  const bool oneLine =
+      uprightSize.x + ventSize.x + invertSize.x + spacing * 2.0f <= actionWidth;
+  if (widgets::ghostButton("Upright", uprightSize)) setTiltTarget(s, 0.0f);
+  if (oneLine) ImGui::SameLine(0.0f, spacing);
+  if (widgets::ghostButton("Vent", ventSize)) setTiltTarget(s, 135.0f);
+  if (oneLine) ImGui::SameLine(0.0f, spacing);
+  if (widgets::ghostButton("Invert", invertSize)) setTiltTarget(s, 180.0f);
+  ImGui::EndTable();
 }
 
 void drawControls(SolubilityState& s) {
-  if (widgets::beginCard("##transport_card", ImVec2(0.0f, 0.0f), style::col::BgSurface)) {
+  if (widgets::beginCard("##transport_card", ImVec2(0.0f, 0.0f),
+                         style::col::BgSurface)) {
     widgets::sectionHeader("VESSEL & TRANSPORT", style::col::Teal);
     drawTransportControls(s);
+    drawFluidDiagnostics(s);
     widgets::endCard();
   }
 
   ImGui::Spacing();
-  if (widgets::beginCard("##shake_card", ImVec2(0.0f, 0.0f), style::col::BgSurface)) {
+  if (widgets::beginCard("##shake_card", ImVec2(0.0f, 0.0f),
+                         style::col::BgSurface)) {
     widgets::sectionHeader("SHAKE", style::col::Accent);
     drawShakeControls(s);
+    ImGui::Spacing();
+    drawTiltControls(s);
     widgets::endCard();
   }
 }
@@ -1175,6 +1044,7 @@ void drawPhaseEditor(SolubilityState& s) {
 
   if (changed) {
     sol::reset(s.funnel);
+    rechargeFluid(s);
     const double total = sol::totalVolumeMl(s.funnel);
     char buf[128];
     std::snprintf(buf, sizeof(buf), "Recharged vessel: %d phase(s), %.0f mL total",
@@ -1183,12 +1053,50 @@ void drawPhaseEditor(SolubilityState& s) {
   }
 }
 
+void updateFluidPose(SolubilityState& s, fluid::Simulation& simulation, double dt) {
+  if (dt <= 0.0) return;
+  double angleRad = s.fluidTiltCurrentDeg * kPi / 180.0;
+  const double targetRad = s.fluidTiltTargetDeg * kPi / 180.0;
+  const double previousRate = s.fluidTiltAngularVelocityRadS;
+
+  // A rate-limited, exponentially driven hand motion avoids an impulsive Euler
+  // term when the target changes. The rate and its derivative come from the
+  // exact trajectory drawn, so frameAcceleration receives consistent
+  // Coriolis/Euler terms (frame.hpp).
+  constexpr double kMaximumRate = 2.0 * kPi / 3.0;  // 120 degrees/s
+  const double desiredRate =
+      std::clamp((targetRad - angleRad) * 4.5, -kMaximumRate, kMaximumRate);
+  const double rateBlend = 1.0 - std::exp(-dt * 10.0);
+  double angularRate = previousRate + (desiredRate - previousRate) * rateBlend;
+  const double previousError = targetRad - angleRad;
+  angleRad += angularRate * dt;
+  const bool crossedTarget = previousError != 0.0 &&
+                             previousError * (targetRad - angleRad) <= 0.0;
+  if (crossedTarget ||
+      (std::fabs(targetRad - angleRad) < 1.0e-4 &&
+       std::fabs(angularRate) < 1.0e-3)) {
+    angleRad = targetRad;
+    angularRate = 0.0;
+  }
+  const double angularAcceleration = (angularRate - previousRate) / dt;
+  s.fluidTiltCurrentDeg = static_cast<float>(angleRad * 180.0 / kPi);
+  s.fluidTiltAngularVelocityRadS = static_cast<float>(angularRate);
+
+  fluid::Pose pose;
+  pose.orientation = {std::cos(angleRad * 0.5), 0.0, std::sin(angleRad * 0.5), 0.0};
+  simulation.setPose(pose, {0.0, angularRate, 0.0},
+                     {0.0, angularAcceleration, 0.0});
+}
+
 void stepSimulation(SolubilityState& s) {
-  if (!s.funnelRunning) return;
-  // Clamp so a stalled/hitched frame cannot hand the physics a huge dt.
-  const float dt = std::clamp(ImGui::GetIO().DeltaTime * s.funnelSpeed, 0.0f, 0.1f);
-  if (dt <= 0.0f) return;
-  sol::step(s.funnel, static_cast<double>(dt));
+  fluid::Simulation& simulation = ensureFluid(s);
+  // Clamp a hitched frame before scaling so neither a high speed setting nor a
+  // debugger pause can hand the CFL-controlled solver an unbounded interval.
+  const double dt = std::clamp(
+      static_cast<double>(ImGui::GetIO().DeltaTime) * s.funnelSpeed, 0.0, 0.1);
+  if (dt <= 0.0) return;
+  updateFluidPose(s, simulation, dt);
+  if (s.funnelRunning) simulation.advance(dt);
 }
 
 // -------------------------------------------------------- suite hand-off
@@ -1284,6 +1192,7 @@ void consumeExtractionImport(SolubilityState& s) {
 
   s.funnel.phases = {makeImportedPhase(a, imp.volumeMlA), makeImportedPhase(b, imp.volumeMlB)};
   sol::reset(s.funnel);
+  rechargeFluid(s);
   s.funnelRunning = false;
   soluteMassMgUi = static_cast<float>(imp.soluteMassMg);
   s.statusMessage = "Imported " + a->name + " + " + b->name + " from the Solubility Suite";
@@ -1302,7 +1211,7 @@ void drawSoluteDistribution(const SolubilityState& s) {
   const sol::Simulation& sim = s.funnel;
   const size_t count = sim.phases.size();
 
-  ImGui::TextWrapped("%s  ·  logP %.2f", s.solute.name.c_str(), s.solute.logP);
+  ImGui::TextWrapped("%s  |  logP %.2f", s.solute.name.c_str(), s.solute.logP);
 
   const int controlColumns = ImGui::GetContentRegionAvail().x >= 520.0f ? 2 : 1;
   constexpr ImGuiTableFlags controlFlags =
@@ -1372,7 +1281,7 @@ void drawSoluteDistribution(const SolubilityState& s) {
                 buf);
   }
 
-  ImGui::TextWrapped("%.1f%% extracted into %s · Neutral-species logP approximation (no pH "
+  ImGui::TextWrapped("%.1f%% extracted into %s | Neutral-species logP approximation (no pH "
                      "correction)",
                      p.fractionOrganic * 100.0, ctx.organicLabel.c_str());
 }
@@ -1433,7 +1342,7 @@ void drawMultiStageExtraction(const SolubilityState& s, bool fillHeight) {
   const double q = ctx.volAq / (ctx.K * ctx.volOrg + ctx.volAq);  // stays in aqueous
   const double perWash = 1.0 - q;
 
-  const char* recoveryLabel = "Per-wash recovery E = K·Vorg / (K·Vorg + Vaq)";
+  const char* recoveryLabel = "Per-wash recovery E = K*Vorg / (K*Vorg + Vaq)";
   const float recoveryValueWidth = ImGui::CalcTextSize("100.0%").x;
   const bool recoveryOnOneLine =
       ImGui::CalcTextSize(recoveryLabel).x + recoveryValueWidth + style::metrics().gap <=
@@ -1518,27 +1427,258 @@ void drawMultiStageExtraction(const SolubilityState& s, bool fillHeight) {
   }
 }
 
+
+bool stageChoiceButton(const char* id, const char* label, bool selected,
+                       ImVec2 requestedSize = ImVec2(0.0f, 0.0f)) {
+  const ImVec2 size =
+      requestedSize.x > 0.0f && requestedSize.y > 0.0f
+          ? requestedSize
+          : ImVec2(std::max(ImGui::GetContentRegionAvail().x, 1.0f),
+                   ImGui::GetFrameHeight());
+  ImGui::InvisibleButton(id, size);
+  const bool clicked = ImGui::IsItemClicked();
+  const bool hovered = ImGui::IsItemHovered();
+  const ImVec2 min = ImGui::GetItemRectMin();
+  const ImVec2 max = ImGui::GetItemRectMax();
+  const style::Metrics& metrics = style::metrics();
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  draw->AddRectFilled(min, max,
+                      selected ? style::u32(style::col::Accent, 0.88f)
+                               : style::u32(style::col::BgRaised,
+                                            hovered ? 1.0f : 0.62f),
+                      metrics.radiusSm);
+  draw->AddRect(min, max,
+                selected ? style::u32(style::col::AccentHover)
+                         : style::u32(style::col::Border),
+                metrics.radiusSm, 0, metrics.hairline);
+  const ImVec2 text = ImGui::CalcTextSize(label);
+  draw->AddText(ImVec2(min.x + (size.x - text.x) * 0.5f,
+                       min.y + (size.y - text.y) * 0.5f),
+                style::u32(selected ? style::col::OnAccent : style::col::TextDim),
+                label);
+  return clicked;
+}
+
+void drawStageToolbar(SolubilityState& s) {
+  const int columns = ImGui::GetContentRegionAvail().x >= 450.0f ? 3 : 1;
+  constexpr ImGuiTableFlags flags =
+      ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
+  if (ImGui::BeginTable("##stage_modes", columns, flags)) {
+    ImGui::TableNextColumn();
+    if (stageChoiceButton("##fluid_3d", "3D fluid",
+                          s.extractionRenderMode == ExtractionRenderMode::Fluid3D)) {
+      s.extractionRenderMode = ExtractionRenderMode::Fluid3D;
+    }
+    ImGui::TableNextColumn();
+    if (stageChoiceButton(
+            "##schematic_2d", "2D schematic",
+            s.extractionRenderMode == ExtractionRenderMode::Schematic2D)) {
+      s.extractionRenderMode = ExtractionRenderMode::Schematic2D;
+      s.fluidGrabMode = false;
+      s.fluidGrabActive = false;
+    }
+    ImGui::TableNextColumn();
+    ImGui::BeginDisabled(s.extractionRenderMode != ExtractionRenderMode::Fluid3D);
+    const float grabButtonHeight = ImGui::GetFrameHeight();
+    if (stageChoiceButton("##grab_shake", "G", s.fluidGrabMode,
+                          ImVec2(grabButtonHeight, grabButtonHeight))) {
+      s.fluidGrabMode = !s.fluidGrabMode;
+      if (!s.fluidGrabMode) s.fluidGrabActive = false;
+    }
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemSpacing.x);
+    ImGui::TextUnformatted(s.fluidGrabMode ? "GRAB active" : "GRAB off");
+    ImGui::EndDisabled();
+    ImGui::EndTable();
+  }
+
+  // A dedicated square toggle makes the gesture discoverable and prevents
+  // left-drag orbit from competing with hand forcing.
+  if (s.extractionRenderMode == ExtractionRenderMode::Schematic2D) {
+    ImGui::TextWrapped("Particle cut: |y| < 1.5 particle radii.");
+  } else if (s.fluidGrabMode) {
+    ImGui::TextWrapped(
+        "Drag in any direction; vertical drag drives world +z / -z.");
+  } else {
+    ImGui::TextWrapped("Left-drag orbit | wheel zoom | double-click re-frame.");
+  }
+}
+
+void updateStageInput(SolubilityState& s, gfx::FluidStage& stage,
+                      const fluid::Snapshot& snapshot, ImVec2 canvasSize) {
+  fluid::Simulation& simulation = ensureFluid(s);
+  const ImGuiIO& io = ImGui::GetIO();
+  const double dt = std::clamp(static_cast<double>(io.DeltaTime), 0.0, 0.1);
+  const bool hovered = ImGui::IsItemHovered();
+  const bool active = ImGui::IsItemActive();
+  const bool reframe =
+      hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+
+  if (reframe) {
+    stage.camera.frame(snapshot.vesselHeightM, snapshot.maxRadiusM,
+                       canvasSize.x / std::max(canvasSize.y, 1.0f));
+    s.fluidGrabActive = false;
+  } else if (hovered && io.MouseWheel != 0.0f) {
+    stage.camera.zoom(io.MouseWheel);
+  }
+
+  if (s.fluidGrabMode && !reframe && ImGui::IsItemActivated()) {
+    s.fluidGrabActive = true;
+    s.fluidGrabAnchorPx = {io.MousePos.x, io.MousePos.y};
+    s.funnelRunning = true;
+  }
+  if (!s.fluidGrabMode || !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+    s.fluidGrabActive = false;
+
+  std::array<double, 3> targetAcceleration{0.0, 0.0, 0.0};
+  if (s.fluidGrabMode && s.fluidGrabActive && active && dt > 0.0) {
+    const std::array<float, 3> eye = stage.camera.eye();
+    const double horizontalLength =
+        std::max(std::hypot(static_cast<double>(eye[0]), static_cast<double>(eye[1])),
+                 1.0e-9);
+    const std::array<double, 3> cameraRight{
+        -static_cast<double>(eye[1]) / horizontalLength,
+        static_cast<double>(eye[0]) / horizontalLength, 0.0};
+
+    // A full-height one-frame gesture maps to 4 g and is magnitude-clamped
+    // there. This makes screen scale irrelevant while bounding a noisy input
+    // device before it reaches the pressure solve.
+    constexpr double kGravity = 9.80665;
+    const double accelerationPerPixel =
+        4.0 * kGravity / std::max(static_cast<double>(canvasSize.y), 1.0);
+    const double pointerDeltaX =
+        static_cast<double>(io.MousePos.x - s.fluidGrabAnchorPx[0]);
+    const double pointerDeltaY =
+        static_cast<double>(io.MousePos.y - s.fluidGrabAnchorPx[1]);
+    s.fluidGrabAnchorPx = {io.MousePos.x, io.MousePos.y};
+    const double horizontal = pointerDeltaX * accelerationPerPixel;
+    const double vertical = -pointerDeltaY * accelerationPerPixel;
+    targetAcceleration = {cameraRight[0] * horizontal,
+                          cameraRight[1] * horizontal, vertical};
+    const double magnitude =
+        std::sqrt(targetAcceleration[0] * targetAcceleration[0] +
+                  targetAcceleration[1] * targetAcceleration[1] +
+                  targetAcceleration[2] * targetAcceleration[2]);
+    if (magnitude > 4.0 * kGravity) {
+      const double scale = 4.0 * kGravity / magnitude;
+      for (double& component : targetAcceleration) component *= scale;
+    }
+  } else if (!s.fluidGrabMode && active && !reframe) {
+    stage.camera.orbit(io.MouseDelta.x, io.MouseDelta.y);
+  }
+
+  if (dt > 0.0) {
+    // Exponential filtering is independent of frame rate. Release targets zero
+    // with a slightly slower decay so the fictitious acceleration does not
+    // acquire a discontinuity at the end of a hand stroke.
+    const double timeConstant = s.fluidGrabActive ? 0.055 : 0.090;
+    const double blend = 1.0 - std::exp(-dt / timeConstant);
+    for (size_t component = 0; component < 3; ++component) {
+      s.fluidManualAcceleration[component] +=
+          (targetAcceleration[component] - s.fluidManualAcceleration[component]) * blend;
+      if (!s.fluidGrabActive &&
+          std::fabs(s.fluidManualAcceleration[component]) < 1.0e-4) {
+        s.fluidManualAcceleration[component] = 0.0;
+      }
+    }
+  }
+  simulation.setManualAcceleration(s.fluidManualAcceleration);
+}
+
+void drawFluidStage(AppState& st, SolubilityState& s) {
+  fluid::Simulation& simulation = ensureFluid(s);
+  gfx::FluidStage& stage = st.fluidStage;
+  drawStageToolbar(s);
+
+  const bool wants3D =
+      s.extractionRenderMode == ExtractionRenderMode::Fluid3D;
+  const bool rendererReady = stage.available && stage.texture != 0;
+  if (wants3D && !rendererReady) {
+    if (!stage.status.empty())
+      ImGui::TextWrapped("3D unavailable (%s); showing the particle schematic.",
+                         stage.status.c_str());
+    else if (!stage.available)
+      ImGui::TextWrapped(
+          "3D unavailable (headless session or no OpenGL); showing the particle schematic.");
+    else
+      ImGui::TextWrapped(
+          "3D renderer has no completed frame yet; showing the particle schematic.");
+  }
+
+  const ImVec2 canvasSize = ImGui::GetContentRegionAvail();
+  if (canvasSize.x <= 0.0f || canvasSize.y <= 0.0f) {
+    stage.requested = false;
+    return;
+  }
+
+  std::shared_ptr<const fluid::Snapshot> snapshot = simulation.snapshot();
+  if (!snapshot) {
+    stage.requested = false;
+    ImGui::TextDisabled("Fluid snapshot unavailable; recharge the vessel.");
+    return;
+  }
+
+  if (wants3D) {
+    const ImVec2 framebufferScale = ImGui::GetIO().DisplayFramebufferScale;
+    stage.requested = true;
+    stage.width = std::max(
+        1, static_cast<int>(std::lround(canvasSize.x * framebufferScale.x)));
+    stage.height = std::max(
+        1, static_cast<int>(std::lround(canvasSize.y * framebufferScale.y)));
+    stage.snapshot = snapshot;
+  } else {
+    stage.requested = false;
+    stage.snapshot.reset();
+  }
+
+  const ImVec2 cursor = ImGui::GetCursorPos();
+  ImGui::InvisibleButton("##fluid_stage_input", canvasSize,
+                         ImGuiButtonFlags_MouseButtonLeft);
+  const ImVec2 rectMin = ImGui::GetItemRectMin();
+  if (wants3D)
+    updateStageInput(s, stage, *snapshot, canvasSize);
+  else {
+    s.fluidGrabActive = false;
+    const double dt =
+        std::clamp(static_cast<double>(ImGui::GetIO().DeltaTime), 0.0, 0.1);
+    const double decay = dt > 0.0 ? std::exp(-dt / 0.090) : 1.0;
+    for (double& component : s.fluidManualAcceleration) component *= decay;
+    simulation.setManualAcceleration(s.fluidManualAcceleration);
+  }
+
+  if (wants3D && rendererReady) {
+    // The behaviour item is submitted first and owns all input; Image is then
+    // placed over exactly the same rectangle using the previous FBO frame.
+    ImGui::SetCursorPos(cursor);
+    ImGui::Image(ImTextureRef(static_cast<ImTextureID>(stage.texture)), canvasSize,
+                 ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+  } else {
+    drawCrossSection(*snapshot, s.funnel, rectMin, canvasSize);
+  }
+}
 }  // namespace
 
 void drawExtractionLab(AppState& st) {
   SolubilityState& s = st.solubility;
   consumeExtractionImport(s);
   seedDefaultPhases(s.funnel);
+  ensureFluid(s);
+  st.fluidStage.requested = false;
 
-  // Two-zone workspace: the cross-section gets a full-height stage on the
-  // right instead of whatever scroll space the control cards left over.
-  // Narrow windows fall back to the classic stacked layout.
-  const float totalW = ImGui::GetContentRegionAvail().x;
-  const bool twoColumns = totalW >= 860.0f;
-
+  // Wide panels reserve a persistent stage column; narrow panels stack a
+  // minimum-height stage into the parent scroll region rather than clipping it
+  // below the calculator cards.
+  const float totalWidth = ImGui::GetContentRegionAvail().x;
+  const bool twoColumns = totalWidth >= 860.0f;
   if (twoColumns) {
-    ImGui::BeginChild("##ext_controls", ImVec2(totalW * 0.58f, 0.0f), ImGuiChildFlags_None);
+    ImGui::BeginChild("##ext_controls", ImVec2(totalWidth * 0.58f, 0.0f),
+                      ImGuiChildFlags_None);
   }
 
   drawControls(s);
   ImGui::Spacing();
 
-  if (widgets::beginCard("##phases_card", ImVec2(0.0f, 0.0f), style::col::BgSurface)) {
+  if (widgets::beginCard("##phases_card", ImVec2(0.0f, 0.0f),
+                         style::col::BgSurface)) {
     widgets::sectionHeader("CHARGED PHASES", style::col::Violet);
     drawPhaseEditor(s);
     widgets::endCard();
@@ -1555,7 +1695,9 @@ void drawExtractionLab(AppState& st) {
 
   const float multiStageHeight =
       twoColumns
-          ? std::max(ImGui::GetContentRegionAvail().y - ImGui::GetStyle().ItemSpacing.y, 1.0f)
+          ? std::max(ImGui::GetContentRegionAvail().y -
+                         ImGui::GetStyle().ItemSpacing.y,
+                     1.0f)
           : 0.0f;
   if (widgets::beginCard("##multi_stage_card", ImVec2(0.0f, multiStageHeight),
                          style::col::BgSurface)) {
@@ -1565,6 +1707,8 @@ void drawExtractionLab(AppState& st) {
   }
   if (!twoColumns) ImGui::Spacing();
 
+  // Exactly one advance is submitted per visible panel frame. Stage input from
+  // the prior frame is already filtered into Simulation::setManualAcceleration.
   stepSimulation(s);
 
   if (twoColumns) {
@@ -1573,118 +1717,17 @@ void drawExtractionLab(AppState& st) {
   }
 
   const ImVec2 remaining = ImGui::GetContentRegionAvail();
-  if (remaining.x <= 0.0f || remaining.y <= 0.0f) return;
-  if (widgets::beginCard("##cross_section_card", remaining, style::col::BgSurface,
-                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
-    widgets::sectionHeader("CROSS-SECTION", style::col::Accent);
-    // Render style: flat textbook cross-section by default, shaded glassware
-    // on request. Small segmented control pinned to the header line.
-    {
-      ImGui::PushID("##render_style");
-      const style::Metrics& m = style::metrics();
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      const char* labels[2] = {"2D", "Shaded"};
-      const ImVec2 buttonSizes[2] = {textButtonSize(labels[0]), textButtonSize(labels[1])};
-      const float spacing = ImGui::GetStyle().ItemSpacing.x;
-      const float totalButtonWidth = buttonSizes[0].x + spacing + buttonSizes[1].x;
-      const float buttonStart =
-          ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - totalButtonWidth;
-      if (buttonStart > ImGui::GetCursorPosX()) ImGui::SameLine(buttonStart);
-      for (int i = 0; i < 2; ++i) {
-        if (i > 0) ImGui::SameLine(0.0f, spacing);
-        ImGui::PushID(i);
-        ImGui::InvisibleButton("##style", buttonSizes[i]);
-        const bool clicked = ImGui::IsItemClicked();
-        const bool active = (i == 1) == s.funnelRender3D;
-        const bool hovered = ImGui::IsItemHovered();
-        const ImVec2 bMin = ImGui::GetItemRectMin();
-        const ImVec2 bMax = ImGui::GetItemRectMax();
-        dl->AddRectFilled(bMin, bMax,
-                          active ? style::u32(style::col::Accent, 0.85f)
-                                 : style::u32(style::col::BgRaised, hovered ? 1.0f : 0.6f),
-                          m.radiusSm);
-        const ImVec2 tSize = ImGui::CalcTextSize(labels[i]);
-        dl->AddText(ImVec2(bMin.x + (buttonSizes[i].x - tSize.x) * 0.5f,
-                           bMin.y + (buttonSizes[i].y - tSize.y) * 0.5f),
-                    style::u32(active ? style::col::OnAccent : style::col::TextDim), labels[i]);
-        if (clicked) s.funnelRender3D = (i == 1);
-        ImGui::PopID();
-      }
-      ImGui::PopID();
-    }
-    const ImVec2 canvasSize = ImGui::GetContentRegionAvail();
-    if (canvasSize.x > 0.0f && canvasSize.y > 0.0f) {
-      ImGui::InvisibleButton("##funnel_canvas", canvasSize, ImGuiButtonFlags_MouseButtonLeft);
-      const ImVec2 rectMin = ImGui::GetItemRectMin();
-      const ImVec2 rectMax = ImGui::GetItemRectMax();
-
-      // ---- grab-and-shake ----------------------------------------------
-      // Dragging the vessel with the mouse IS the shake: the smoothed drag
-      // velocity becomes the slosh velocity the physics disperses with, and
-      // the vessel follows the pointer while held.
-      sol::Simulation& sim = s.funnel;
-      const VesselGeometry& geo = cachedGeometry(sim);
-      const Transform tf0 = buildTransform(geo, rectMin, canvasSize);
-      const float dt = std::clamp(ImGui::GetIO().DeltaTime, 0.0f, 0.1f);
-
-      if (ImGui::IsItemActivated()) {
-        s.funnelGrabbed = true;
-        s.funnelGrabAnchorX = ImGui::GetMousePos().x;
-        s.funnelDragOffsetPx = 0.0f;
-      }
-      if (s.funnelGrabbed && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-        s.funnelGrabbed = false;  // released: the shake state decays naturally
-      }
-      if (s.funnelGrabbed) {
-        const float mouseX = ImGui::GetMousePos().x;
-        const float rawOffset = mouseX - s.funnelGrabAnchorX;
-        const float maxOffset = canvasSize.x * 0.12f;
-        const float offset = std::clamp(rawOffset, -maxOffset, maxOffset);
-
-        if (dt > 0.0f) {
-          const float instantVel = std::fabs(offset - s.funnelDragOffsetPx) / dt / tf0.scale;
-          const float blend = 1.0f - std::exp(-dt * 14.0f);
-          s.funnelMouseVel += (instantVel - s.funnelMouseVel) * blend;
-        }
-        s.funnelDragOffsetPx = offset;
-
-        // Drive the physics with the real mouse motion: peak slosh velocity
-        // = smoothed drag velocity; a nominal 5 cm stroke converts it to an
-        // equivalent frequency for the power readout.
-        const double u = static_cast<double>(s.funnelMouseVel);
-        sim.shake.active = true;
-        sim.shake.remainingS = 0.12;  // refreshed per frame; lapses on release
-        sim.shake.durationS = std::max(sim.shake.durationS, 0.12);
-        sim.shake.peakVelocity = u;
-        sim.shake.frequencyHz = u / (2.0 * kPi * 0.05);
-        sim.shake.amplitudeM = 0.05;
-        sim.shake.specificPower = 0.5 * u * u * sim.shake.frequencyHz;
-        sol::step(sim, static_cast<double>(dt * s.funnelSpeed));
-      } else {
-        // Ease the vessel back to centre after release.
-        s.funnelDragOffsetPx *= std::exp(-dt * 8.0f);
-        if (std::fabs(s.funnelDragOffsetPx) < 0.5f) s.funnelDragOffsetPx = 0.0f;
-        s.funnelMouseVel *= std::exp(-dt * 10.0f);
-      }
-
-      drawCrossSection(sim, rectMin, ImVec2(rectMax.x - rectMin.x, rectMax.y - rectMin.y),
-                       s.funnelRender3D, s.funnelDragOffsetPx);
-
-      // Hint, bottom-centre of the stage, ellipsised inside the canvas.
-      const std::string hint =
-          ellipsizeText("grab the funnel and shake it", std::max(canvasSize.x - 12.0f, 0.0f));
-      if (!hint.empty()) {
-        const ImVec2 hintSize = ImGui::CalcTextSize(hint.c_str());
-        ImGui::GetWindowDrawList()->AddText(
-            ImVec2(rectMin.x + (canvasSize.x - hintSize.x) * 0.5f,
-                   rectMax.y - hintSize.y - 6.0f),
-            style::u32(
-                style::col::TextFaint,
-                s.funnelGrabbed ? 0.9f
-                                : 0.45f + 0.25f * std::sin(ImGui::GetTime() * 2.0f)),
-            hint.c_str());
-      }
-    }
+  if (remaining.x <= 0.0f) return;
+  const float minimumStageHeight = ImGui::GetFrameHeight() * 18.0f;
+  const float stageHeight =
+      twoColumns ? std::max(remaining.y, ImGui::GetFrameHeight() * 6.0f)
+                 : std::max(remaining.y, minimumStageHeight);
+  if (widgets::beginCard(
+          "##fluid_stage_card", ImVec2(remaining.x, stageHeight),
+          style::col::BgSurface,
+          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    widgets::sectionHeader("VESSEL STAGE", style::col::Accent);
+    drawFluidStage(st, s);
     widgets::endCard();
   }
 }
