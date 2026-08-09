@@ -128,6 +128,54 @@ void progressRow(const char* caption, float fraction, const char* value, ImVec4 
 // but should not wear.
 void helpMarker(const char* text);
 
+// ------------------------------------------------------------- organisation
+// Sub-tab strip inside a panel. This is how a workspace that holds more than
+// one screen of content still fits one screen: the structural split becomes
+// visible instead of becoming a scrollbar. Returns true when `index` changed.
+// `glyphs` may be null.
+bool subTabs(const char* id, const char* const* labels, const icons::Icon* glyphs,
+             int count, int& index);
+
+// HUD frame: a hairline rectangle with cut corners and short accent ticks, for
+// instrument surfaces that should read as measurement rather than as chrome.
+// Draws into the current window's draw list; reserves nothing.
+void hudFrame(ImVec2 min, ImVec2 max, ImVec4 accent, float alpha = 1.0f);
+
+// Small filled dot plus label, for live on/off state on a control surface.
+void statusDot(const char* label, bool active, ImVec4 accent = style::col::Data);
+
+// ------------------------------------------------------------------- tables
+// A data table sized to its CONTENT, not stretched to the panel. Numeric
+// columns are right-aligned in the mono font and measured from the widest
+// value actually present, so a column of "1.33" is never as wide as its header
+// plus half the panel. Row height is one text line plus the density gap -- a
+// table of ten short numbers must not occupy a third of the page.
+//
+// `columns` describes each column once; `numeric` picks alignment and font.
+struct Column {
+  const char* label = nullptr;
+  bool numeric = false;
+  bool stretch = false;       // exactly one column may absorb slack (the name)
+  const char* unit = nullptr;  // drawn dim in the header, not in every cell
+  float minEm = 0.0f;          // floor for the measured width
+};
+bool beginDataTable(const char* id, const Column* columns, int count, ImVec2 size);
+void endDataTable();
+// Advances to the next cell. Text cells use the body font, numeric cells the
+// mono font, right-aligned.
+void dataCell(const char* text);
+void dataCellf(const char* format, ...);
+// Starts the next row; `accent` tints the row's left edge when non-zero alpha.
+void dataRow(ImVec4 accent = ImVec4(0, 0, 0, 0));
+
+// ------------------------------------------------------------- conditional
+// Shows `body` only when `when` holds, and otherwise draws nothing at all --
+// not a disabled control. Controls that cannot apply are noise; controls that
+// silently vanish are confusing, so the collapsed form leaves a single dim line
+// naming what would appear and why it does not.
+// Returns whether the body was drawn.
+bool onlyWhen(bool when, const char* absentReason);
+
 // Empty-state / guidance block: centred glyph, headline, dim body.
 void emptyState(icons::Icon icon, const char* headline, const char* body);
 

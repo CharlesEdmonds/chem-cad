@@ -22,6 +22,15 @@ struct Camera3D {
   float nearM = 0.02f;
   float farM = 3.0f;
 
+  // Off-centre projection, in NDC units. Zero puts the orbit target in the
+  // middle of the viewport, which is what a docked stage wants. Rendering the
+  // vessel into a target LARGER than its panel -- so it can be flung across the
+  // whole window and drawn over the other panels -- needs its rest position to
+  // stay where the docked stage had it, and shifting the principal point does
+  // that exactly, without moving the camera or distorting the perspective.
+  float shiftX = 0.0f;
+  float shiftY = 0.0f;
+
   // Applies a drag in pixels to the orbit angles, with pitch clamped so the
   // camera can never flip over the pole.
   void orbit(float dxPixels, float dyPixels);

@@ -12,8 +12,10 @@
 #include "chem/bridge.hpp"
 #include "naming/naming.hpp"
 #include "ui/charts.hpp"
+#include "ui/charts3d.hpp"
 #include "ui/element_data.hpp"
 #include "ui/icons.hpp"
+#include "ui/layout.hpp"
 #include "ui/theme.hpp"
 #include "ui/ui.hpp"
 #include "ui/widgets.hpp"
@@ -245,20 +247,10 @@ const DocumentSummary& cachedDocumentSummary(const AppState& st) {
 }
 
 ImVec4 compositionColour(std::size_t index) {
-  switch (index % 6) {
-    case 0:
-      return style::col::Accent;
-    case 1:
-      return style::col::Teal;
-    case 2:
-      return style::col::Violet;
-    case 3:
-      return style::col::Success;
-    case 4:
-      return style::col::Danger;
-    default:
-      return style::col::AccentHover;
-  }
+  static constexpr ImVec4 colours[] = {
+      style::col::DataBright, style::col::Data, style::col::DataDim,
+      style::col::Teal};
+  return colours[index % (sizeof(colours) / sizeof(colours[0]))];
 }
 
 std::vector<CompositionEntry> makeComposition(const DocumentSummary& summary) {
@@ -294,69 +286,103 @@ std::string signedCharge(int charge) {
   if (charge > 0) return "+" + std::to_string(charge);
   return std::to_string(charge);
 }
+void advanceVerticalGap(float gap) {
+  layout::nextRow(ImGui::GetCursorPosY() + gap -
+                       ImGui::GetStyle().ItemSpacing.y);
+}
 
-void drawHeadline(const AppState& st, const DocumentSummary& summary, bool propertiesReady) {
-  if (!widgets::beginCard("##property_headline", ImVec2(0.0f, 0.0f),
+
+void drawHeadline(const AppState& st, const DocumentSummary& summary,
+                  bool propertiesReady, float height,
+                  const layout::Frame& page) {
+  if (!widgets::beginCard("##property_headline", ImVec2(0.0f, height),
                           style::col::BgRaised)) {
     return;
   }
   widgets::cardHeader(icons::Icon::Molecule, "Molecular overview",
-                      "The current structure at a glance", style::col::Accent);
-
-  const float fs = ImGui::GetFontSize();
-  const float available = std::max(ImGui::GetContentRegionAvail().x, fs);
-  int columns = 2;
-  if (available >= fs * 36.0f) {
-    columns = 5;
-  } else if (available >= fs * 23.0f) {
-    columns = 3;
-  }
+                      "Current structure at a glance", style::col::Data);
 
   char mw[32];
   std::snprintf(mw, sizeof(mw), "%.2f", st.props.mw);
   const std::string atoms = countText(summary.totalAtoms());
   const std::string bonds = countText(summary.bonds);
   const std::string charge = signedCharge(summary.formalCharge);
+  const float gap = page.gap * 0.5f;
+  const float width =
+      std::max((ImGui::GetContentRegionAvail().x - gap * 4.0f) / 5.0f, 0.0f);
+  const float metricHeight = std::max(ImGui::GetContentRegionAvail().y, 0.0f);
+  const std::string formula =
+      propertiesReady ? ellipsize(st.props.formula, width) : "--";
 
-  if (ImGui::BeginTable("##headline_metrics", columns,
-                        ImGuiTableFlags_SizingStretchSame |
-                            ImGuiTableFlags_NoSavedSettings)) {
-    for (int metricIndex = 0; metricIndex < 5; ++metricIndex) {
-      if (metricIndex % columns == 0) ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(metricIndex % columns);
-      switch (metricIndex) {
-        case 0: {
-          const bool mono = style::pushFont(style::fonts::mono());
-          const std::string formula = propertiesReady
-                                          ? ellipsize(st.props.formula,
-                                                      ImGui::GetContentRegionAvail().x)
-                                          : "--";
-          style::popFont(mono);
-          widgets::metric("FORMULA", formula.c_str(), nullptr, nullptr,
-                          style::col::Accent);
-          if (propertiesReady && formula != st.props.formula && ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", st.props.formula.c_str());
-          break;
-        }
-        case 1:
-          widgets::metric("MOLAR MASS", propertiesReady ? mw : "--", "g/mol", nullptr,
-                          style::col::Teal);
-          break;
-        case 2:
-          widgets::metric("ATOMS", atoms.c_str(), nullptr, nullptr, style::col::Violet);
-          break;
-        case 3:
-          widgets::metric("BONDS", bonds.c_str());
-          break;
-        default:
-          widgets::metric("CHARGE", charge.c_str(), "e", nullptr,
-                          summary.formalCharge == 0 ? style::col::Text : style::col::Accent);
-          break;
+  static constexpr const char* captions[] = {
+      "Formula", "Molar mass", "Atoms", "Bonds", "Charge"};
+  const char* values[] = {
+      formula.c_str(), propertiesReady ? mw : "--", atoms.c_str(), bonds.c_str(),
+      charge.c_str()};
+  const char* units[] = {nullptr, "g/mol", nullptr, nullptr, "e"};
+  const ImVec4 accents[] = {
+      style::col::DataBright, style::col::Data, style::col::DataDim,
+      style::col::DataDim,
+      summary.formalCharge == 0 ? style::col::DataDim : style::col::Danger};
+
+  for (int index = 0; index < 5; ++index) {
+    ImGui::PushID(index);
+    if (ImGui::BeginChild("##headline_metric", ImVec2(width, metricHeight),
+                          ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
+      widgets::metric(captions[index], values[index], units[index], nullptr,
+                      accents[index]);
+      if (index == 0 && propertiesReady && formula != st.props.formula &&
+          ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", st.props.formula.c_str());
       }
     }
-    ImGui::EndTable();
+    ImGui::EndChild();
+    ImGui::PopID();
+    if (index != 4) {
+      ImGui::SameLine(0.0f, gap);
+    }
   }
   widgets::endCard();
+}
+
+void drawCompositionTable(const std::vector<CompositionEntry>& composition,
+                          ImVec2 size, const layout::Frame& frame) {
+  static constexpr widgets::Column columns[] = {
+      {"Element", false, true, nullptr, 7.0f},
+      {"Count", true, false, "atoms", 4.0f}};
+  if (!widgets::beginDataTable("##composition_table", columns, 2, size)) return;
+
+  const int availableRows =
+      std::max(static_cast<int>(size.y / std::max(frame.row, frame.em)) - 1, 1);
+  const int compositionRows = static_cast<int>(composition.size());
+  const int visibleRows =
+      compositionRows <= availableRows
+          ? compositionRows
+          : std::max(availableRows - 1, 0);
+  for (int index = 0; index < visibleRows; ++index) {
+    const CompositionEntry& entry = composition[static_cast<std::size_t>(index)];
+    const std::string label = entry.symbol + "  " + entry.name;
+    widgets::dataRow(entry.colour);
+    widgets::dataCell(label.c_str());
+    widgets::dataCellf("%d", entry.count);
+  }
+  if (visibleRows < static_cast<int>(composition.size())) {
+    int omittedAtoms = 0;
+    for (std::size_t index = static_cast<std::size_t>(visibleRows);
+         index < composition.size(); ++index) {
+      omittedAtoms += composition[index].count;
+    }
+    const std::string label =
+        "+" + std::to_string(composition.size() -
+                             static_cast<std::size_t>(visibleRows)) +
+        " more";
+    widgets::dataRow(style::col::DataDim);
+    widgets::dataCell(label.c_str());
+    widgets::dataCellf("%d", omittedAtoms);
+  }
+  widgets::endDataTable();
 }
 
 void drawCompositionGroup(const DocumentSummary& summary,
@@ -364,117 +390,247 @@ void drawCompositionGroup(const DocumentSummary& summary,
   char summaryText[64];
   std::snprintf(summaryText, sizeof(summaryText), "%zu elements / %zu atoms",
                 composition.size(), summary.totalAtoms());
-  if (!widgets::disclosure("##composition_disclosure", "Composition", summaryText, true,
-                           icons::Icon::Atom, style::col::Teal)) {
+  if (!widgets::disclosure("##composition_disclosure", "Element composition",
+                           summaryText, true, icons::Icon::Atom,
+                           style::col::Accent)) {
     return;
   }
 
   ImGui::Indent(style::metrics().gap);
-  widgets::cardHeader(icons::Icon::Atom, "Element composition",
-                      "Includes implicit hydrogens", style::col::Teal);
-
+  const layout::Frame body = layout::measure();
   std::vector<charts::StackSegment> segments;
   segments.reserve(composition.size());
   for (const auto& entry : composition) {
-    segments.push_back(
-        charts::StackSegment{entry.symbol.c_str(), static_cast<double>(entry.count), entry.colour});
+    segments.push_back(charts::StackSegment{
+        entry.symbol.c_str(), static_cast<double>(entry.count), entry.colour});
   }
   const std::string total = countText(summary.totalAtoms());
-  const float chartHeight = std::max(ImGui::GetFontSize() * 11.0f,
-                                     ImGui::GetTextLineHeightWithSpacing() * 8.0f);
-  charts::donut("##element_composition", segments.data(), static_cast<int>(segments.size()),
-                total.c_str(), "ATOMS", ImVec2(ImGui::GetContentRegionAvail().x, chartHeight));
 
-  for (const auto& entry : composition) {
-    const std::string key = entry.symbol + "  " + entry.name;
-    const std::string value = std::to_string(entry.count) +
-                              (entry.count == 1 ? " atom" : " atoms");
-    widgets::keyValue(key.c_str(), value.c_str(), entry.colour);
+  if (body.wide) {
+    const float chartWidth = layout::columnWidth(body, 2);
+    if (ImGui::BeginChild("##composition_chart",
+                          ImVec2(chartWidth, body.size.y), ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
+      charts::donut("##element_composition", segments.data(),
+                    static_cast<int>(segments.size()), total.c_str(), "ATOMS",
+                    ImGui::GetContentRegionAvail());
+    }
+    ImGui::EndChild();
+    ImGui::SameLine(0.0f, body.gap);
+    if (ImGui::BeginChild("##composition_counts",
+                          ImVec2(layout::columnWidth(body, 2), body.size.y),
+                          ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
+      drawCompositionTable(composition, ImGui::GetContentRegionAvail(), body);
+    }
+    ImGui::EndChild();
+  } else {
+    const float weights[] = {1.1f, 0.9f};
+    const float minimums[] = {0.0f, 0.0f};
+    float rows[2]{};
+    layout::distribute(body.size.y, weights, minimums, 2, body.gap, rows);
+    if (ImGui::BeginChild("##composition_chart",
+                          ImVec2(body.size.x, rows[0]), ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
+      charts::donut("##element_composition", segments.data(),
+                    static_cast<int>(segments.size()), total.c_str(), "ATOMS",
+                    ImGui::GetContentRegionAvail());
+    }
+    ImGui::EndChild();
+    advanceVerticalGap(body.gap);
+    if (ImGui::BeginChild("##composition_counts",
+                          ImVec2(body.size.x, rows[1]), ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
+      drawCompositionTable(composition, ImGui::GetContentRegionAvail(), body);
+    }
+    ImGui::EndChild();
   }
   ImGui::Unindent(style::metrics().gap);
 }
 
-void drawPhysicochemicalGroup(const AppState& st) {
+void drawPhysicochemicalGroup(const AppState& st, bool propertiesReady) {
   char summary[96];
-  std::snprintf(summary, sizeof(summary), "%.2f g/mol / cLogP %.2f", st.props.mw,
-                st.props.logP);
-  if (!widgets::disclosure("##physchem_disclosure", "Physicochemical", summary, true,
+  std::snprintf(summary, sizeof(summary), "%.2f g/mol / cLogP %.2f",
+                st.props.mw, st.props.logP);
+  if (!widgets::disclosure("##physchem_disclosure", "Physicochemical",
+                           propertiesReady ? summary : "Updating", true,
                            icons::Icon::Balance, style::col::Accent)) {
     return;
   }
-
   ImGui::Indent(style::metrics().gap);
-  widgets::cardHeader(icons::Icon::Balance, "Mass and partitioning",
-                      "Calculated from the complete structure", style::col::Accent);
-  char mw[32];
-  char logp[32];
-  std::snprintf(mw, sizeof(mw), "%.2f g/mol", st.props.mw);
-  std::snprintf(logp, sizeof(logp), "%.2f", st.props.logP);
-  widgets::keyValue("Molecular weight", mw, style::col::Teal);
-  widgets::keyValue("Calculated logP", logp, style::col::Violet);
+  if (widgets::onlyWhen(propertiesReady,
+                        "Calculated properties are still updating")) {
+    char mw[32];
+    char logp[32];
+    std::snprintf(mw, sizeof(mw), "%.2f g/mol", st.props.mw);
+    std::snprintf(logp, sizeof(logp), "%.2f", st.props.logP);
+    widgets::keyValue("Molecular weight", mw, style::col::DataBright);
+    widgets::keyValue("Calculated logP", logp, style::col::Data);
+  }
   ImGui::Unindent(style::metrics().gap);
+}
+
+void drawConformerCloud(const AppState& st, ImVec2 size,
+                        const layout::Frame& frame) {
+  const auto& atoms = st.viewer3d.model.atoms;
+  std::vector<std::string> labels;
+  labels.reserve(atoms.size());
+  for (const auto& atom : atoms) {
+    if (const ElementData* element = findElement(atom.atomicNumber)) {
+      labels.push_back(element->symbol);
+    } else {
+      const char* symbol = chem::symbolFor(atom.atomicNumber);
+      labels.emplace_back(symbol && *symbol ? symbol : "?");
+    }
+  }
+
+  std::vector<charts3d::CloudPoint> points;
+  points.reserve(atoms.size());
+  for (std::size_t index = 0; index < atoms.size(); ++index) {
+    const auto& atom = atoms[index];
+    points.push_back(charts3d::CloudPoint{
+        atom.x, atom.y, atom.z, labels[index].c_str(), style::col::Data,
+        1.0f, false});
+  }
+  static charts3d::Orbit orbit;
+  charts3d::CloudStyle cloudStyle;
+  cloudStyle.xLabel = "x (A)";
+  cloudStyle.yLabel = "y (A)";
+  cloudStyle.zLabel = "z (A)";
+  cloudStyle.showAxes = true;
+  cloudStyle.showLabels = frame.density != layout::Density::Compact;
+  cloudStyle.hasSphere = false;
+  charts3d::cloud("##conformer_cloud", points.data(),
+                  static_cast<int>(points.size()), size, orbit, cloudStyle);
+}
+
+void drawStructureTable(const AppState& st, const DocumentSummary& summary,
+                        bool propertiesReady, ImVec2 size) {
+  static constexpr widgets::Column columns[] = {
+      {"Measure", false, true, nullptr, 10.0f},
+      {"Count", true, false, nullptr, 4.0f}};
+  if (!widgets::beginDataTable("##structure_counts", columns, 2, size)) return;
+  const std::string explicitAtoms = countText(summary.explicitAtoms);
+  const std::string implicitHydrogens = std::to_string(summary.implicitHydrogens);
+  const std::string bonds = countText(summary.bonds);
+  const std::string rings =
+      propertiesReady ? std::to_string(st.props.rings) : "--";
+  const std::string charge = signedCharge(summary.formalCharge);
+  const char* labels[] = {
+      "Explicit atoms", "Implicit hydrogens", "Bonds", "Rings", "Formal charge"};
+  const char* values[] = {
+      explicitAtoms.c_str(), implicitHydrogens.c_str(), bonds.c_str(),
+      rings.c_str(), charge.c_str()};
+  for (int index = 0; index < 5; ++index) {
+    widgets::dataRow(index == 4 && summary.formalCharge != 0
+                         ? style::col::Danger
+                         : style::col::DataDim);
+    widgets::dataCell(labels[index]);
+    widgets::dataCell(values[index]);
+  }
+  widgets::endDataTable();
 }
 
 void drawStructureGroup(const AppState& st, const DocumentSummary& summary,
                         bool propertiesReady) {
   char summaryText[64];
   if (propertiesReady) {
-    std::snprintf(summaryText, sizeof(summaryText), "%zu bonds / %d rings", summary.bonds,
-                  st.props.rings);
+    std::snprintf(summaryText, sizeof(summaryText), "%zu bonds / %d rings",
+                  summary.bonds, st.props.rings);
   } else {
-    std::snprintf(summaryText, sizeof(summaryText), "%zu bonds / rings updating",
-                  summary.bonds);
+    std::snprintf(summaryText, sizeof(summaryText),
+                  "%zu bonds / rings updating", summary.bonds);
   }
-  if (!widgets::disclosure("##structure_disclosure", "Structure", summaryText, false,
-                           icons::Icon::Ruler, style::col::Violet)) {
+  if (!widgets::disclosure("##structure_disclosure", "Structure", summaryText,
+                           true, icons::Icon::Ruler, style::col::Accent)) {
     return;
   }
 
   ImGui::Indent(style::metrics().gap);
-  widgets::cardHeader(icons::Icon::Ruler, "Topology and geometry",
-                      "Counts from the current sketch", style::col::Violet);
-  const std::string explicitAtoms = countText(summary.explicitAtoms);
-  const std::string implicitHydrogens = std::to_string(summary.implicitHydrogens);
-  const std::string bonds = countText(summary.bonds);
-  const std::string rings = propertiesReady ? std::to_string(st.props.rings) : "--";
-  const std::string charge = signedCharge(summary.formalCharge) + " e";
-  widgets::keyValue("Explicit atoms", explicitAtoms.c_str());
-  widgets::keyValue("Implicit hydrogens", implicitHydrogens.c_str());
-  widgets::keyValue("Bonds", bonds.c_str());
-  widgets::keyValue("Rings", rings.c_str());
-  widgets::keyValue("Formal charge", charge.c_str(),
-                    summary.formalCharge == 0 ? style::col::Text : style::col::Accent);
+  const layout::Frame body = layout::measure();
+  const bool hasConformer =
+      st.viewer3d.hasModel &&
+      st.viewer3d.sourceRevision == st.docRevision &&
+      !st.viewer3d.model.atoms.empty();
+  if (hasConformer) {
+    const float weights[] = {0.42f, 0.58f};
+    const float minimums[] = {body.row * 6.0f, 0.0f};
+    float rows[2]{};
+    layout::distribute(body.size.y, weights, minimums, 2, body.gap, rows);
+    if (ImGui::BeginChild("##structure_table_region",
+                          ImVec2(body.size.x, rows[0]), ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
+      drawStructureTable(st, summary, propertiesReady,
+                         ImGui::GetContentRegionAvail());
+    }
+    ImGui::EndChild();
+    advanceVerticalGap(body.gap);
+    if (ImGui::BeginChild("##conformer_region", ImVec2(body.size.x, rows[1]),
+                          ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
+      const ImVec2 cloudSize = ImGui::GetContentRegionAvail();
+      widgets::hudFrame(ImGui::GetCursorScreenPos(),
+                        ImVec2(ImGui::GetCursorScreenPos().x + cloudSize.x,
+                               ImGui::GetCursorScreenPos().y + cloudSize.y),
+                        style::col::Data);
+      drawConformerCloud(st, cloudSize, body);
+    }
+    ImGui::EndChild();
+  } else {
+    drawStructureTable(st, summary, propertiesReady,
+                       ImGui::GetContentRegionAvail());
+  }
   ImGui::Unindent(style::metrics().gap);
 }
 
-void drawIdentityGroup(AppState& st, Clock::time_point now) {
-  const bool nameDelayPassed = now - st.props.lastEdit >= std::chrono::milliseconds(1500);
+void updateAutomaticName(AppState& st, Clock::time_point now) {
+  const bool nameDelayPassed =
+      now - st.props.lastEdit >= std::chrono::milliseconds(1500);
   if (st.props.autoName && !st.props.smiles.empty() &&
       st.props.computedForRevision == st.docRevision &&
-      st.props.nameRequestedForRevision != st.docRevision && nameDelayPassed) {
+      st.props.nameRequestedForRevision != st.docRevision &&
+      nameDelayPassed) {
     requestAutomaticName(st);
   }
-  const char* identitySummary = st.props.nameStatus == Status::Ok && !st.props.name.empty()
-                                    ? st.props.name.c_str()
-                                    : "Canonical SMILES and naming";
-  if (!widgets::disclosure("##identity_disclosure", "Identity", identitySummary, true,
-                           icons::Icon::Molecule, style::col::Teal)) {
+}
+
+void drawIdentityGroup(AppState& st, bool propertiesReady) {
+  const char* identitySummary =
+      st.props.nameStatus == Status::Ok && !st.props.name.empty()
+          ? st.props.name.c_str()
+          : "Canonical SMILES and naming";
+  if (!widgets::disclosure("##identity_disclosure", "Identity",
+                           propertiesReady ? identitySummary : "Updating",
+                           true, icons::Icon::Molecule,
+                           style::col::Accent)) {
     return;
   }
 
   ImGui::Indent(style::metrics().gap);
-  widgets::cardHeader(icons::Icon::Molecule, "Chemical identity",
-                      "Canonical representation and resolved name", style::col::Teal);
+  if (!widgets::onlyWhen(propertiesReady,
+                         "Canonical identity is still updating")) {
+    ImGui::Unindent(style::metrics().gap);
+    return;
+  }
 
   std::vector<char> smiles(st.props.smiles.begin(), st.props.smiles.end());
   smiles.push_back('\0');
-  const float actionWidth = ImGui::GetFontSize() * 5.5f;
-  ImGui::SetNextItemWidth(std::max(ImGui::GetContentRegionAvail().x - actionWidth -
-                                      ImGui::GetStyle().ItemSpacing.x,
-                                  ImGui::GetFontSize()));
+  const float actionWidth =
+      widgets::actionButtonWidth(icons::Icon::Copy, "Copy");
+  ImGui::SetNextItemWidth(std::max(
+      ImGui::GetContentRegionAvail().x - actionWidth -
+          ImGui::GetStyle().ItemSpacing.x,
+      ImGui::GetFontSize()));
   const bool mono = style::pushFont(style::fonts::mono());
   ImGui::InputText("##canonical_smiles", smiles.data(), smiles.size(),
-                   ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_AutoSelectAll);
+                   ImGuiInputTextFlags_ReadOnly |
+                       ImGuiInputTextFlags_AutoSelectAll);
   style::popFont(mono);
   if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", st.props.smiles.c_str());
   ImGui::SameLine();
@@ -486,51 +642,55 @@ void drawIdentityGroup(AppState& st, Clock::time_point now) {
     st.statusMessage = "Canonical SMILES copied";
   }
 
-  widgets::toggle("##auto_name", "Resolve IUPAC name automatically", st.props.autoName,
+  widgets::toggle("##auto_name", "Resolve IUPAC name automatically",
+                  st.props.autoName,
                   "Looks up the current canonical structure after editing settles");
-
   if (st.props.nameStatus == Status::Loading) {
-    widgets::notice(icons::Icon::Search, "Resolving the systematic name...",
-                    style::col::Violet);
+    widgets::statusDot("Resolving systematic name", true,
+                       style::col::Violet);
   } else if (st.props.nameStatus == Status::Ok) {
-    widgets::keyValue("Resolved name", st.props.name.c_str(), style::col::Accent);
+    widgets::keyValue("Resolved name", st.props.name.c_str(),
+                      style::col::Violet);
   } else if (st.props.nameStatus == Status::Error) {
-    widgets::notice(icons::Icon::Warning, st.props.nameError.c_str(), style::col::Danger);
+    widgets::notice(icons::Icon::Warning, st.props.nameError.c_str(),
+                    style::col::Danger);
   }
   ImGui::Unindent(style::metrics().gap);
 }
 
 void drawBuildGroup(AppState& st, bool defaultOpen) {
   if (!widgets::disclosure("##build_name_disclosure", "Build from name",
-                           "Chemical name to structure", defaultOpen, icons::Icon::Molecule,
-                           style::col::Accent)) {
+                           "Chemical name to structure", defaultOpen,
+                           icons::Icon::Molecule, style::col::Accent)) {
     return;
   }
 
   ImGui::Indent(style::metrics().gap);
-  widgets::cardHeader(icons::Icon::Molecule, "Build from a chemical name",
-                      "Accepts systematic or common names", style::col::Accent);
   BuildNameState& build = buildNameState();
   ImGui::SetNextItemWidth(-1.0f);
   const bool enter = ImGui::InputTextWithHint(
       "##name_to_structure", "e.g. acetylsalicylic acid", build.input.data(),
       build.input.size(), ImGuiInputTextFlags_EnterReturnsTrue);
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("%s", "Press Enter to append the resolved structure to the sketch");
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip(
+        "%s", "Press Enter to append the resolved structure to the sketch");
+  }
 
   if (build.status == Status::Loading) ImGui::BeginDisabled();
+  const float actionWidth =
+      widgets::actionButtonWidth(icons::Icon::Molecule, "Build structure", true);
   const bool buildClicked = widgets::actionButton(
       "##build_structure", icons::Icon::Molecule, "Build structure",
-      ImVec2(ImGui::GetFontSize() * 10.0f, ImGui::GetFrameHeight()), true,
+      ImVec2(actionWidth, ImGui::GetFrameHeight()), true,
       "Resolve this name and append its structure");
   if (build.status == Status::Loading) ImGui::EndDisabled();
   if (enter || buildClicked) submitBuild(st);
 
   if (build.status == Status::Loading) {
-    widgets::notice(icons::Icon::Search, "Resolving the chemical name...",
-                    style::col::Violet);
+    widgets::statusDot("Resolving chemical name", true, style::col::Violet);
   } else if (build.status == Status::Error && !build.error.empty()) {
-    widgets::notice(icons::Icon::Warning, build.error.c_str(), style::col::Danger);
+    widgets::notice(icons::Icon::Warning, build.error.c_str(),
+                    style::col::Danger);
   }
   ImGui::Unindent(style::metrics().gap);
 }
@@ -538,51 +698,127 @@ void drawBuildGroup(AppState& st, bool defaultOpen) {
 }  // namespace
 
 void drawPropertiesPanel(AppState& st) {
+  static int secondaryTab = 0;
   const Clock::time_point now = Clock::now();
   const bool propertyDelayPassed =
       now - st.props.lastEdit >= std::chrono::milliseconds(250);
-  if (st.props.computedForRevision != st.docRevision && propertyDelayPassed) {
+  if (st.props.computedForRevision != st.docRevision &&
+      propertyDelayPassed) {
     recomputeProperties(st);
   }
 
+  const layout::Frame page = layout::measure();
+  const float budget = std::min(page.size.y, layout::pageHeight());
   const DocumentSummary& summary = cachedDocumentSummary(st);
   if (summary.explicitAtoms == 0) {
-    widgets::emptyState(
-        icons::Icon::Molecule, "No structure selected",
-        "Sketch a molecule, or build one from a chemical name, to inspect its properties.");
-    ImGui::Spacing();
-    drawBuildGroup(st, true);
+    const float weights[] = {0.8f, 1.2f};
+    const float minimums[] = {page.row * 4.0f, page.control};
+    float rows[2]{};
+    layout::distribute(budget, weights, minimums, 2, page.gap, rows);
+    if (ImGui::BeginChild("##properties_empty",
+                          ImVec2(page.size.x, rows[0]), ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
+      widgets::emptyState(
+          icons::Icon::Molecule, "No structure selected",
+          "Sketch a molecule, or build one from a chemical name, to inspect its properties.");
+    }
+    ImGui::EndChild();
+    advanceVerticalGap(page.gap);
+    if (ImGui::BeginChild("##properties_empty_build",
+                          ImVec2(page.size.x, rows[1]), ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
+      drawBuildGroup(st, true);
+    }
+    ImGui::EndChild();
     return;
   }
 
-  const bool propertiesReady = st.props.computedForRevision == st.docRevision &&
-                               st.props.chemError.empty() && !st.props.smiles.empty();
-  drawHeadline(st, summary, propertiesReady);
+  const bool propertiesReady =
+      st.props.computedForRevision == st.docRevision &&
+      st.props.chemError.empty() && !st.props.smiles.empty();
+  if (propertiesReady) updateAutomaticName(st, now);
 
-  if (!st.props.chemError.empty()) {
-    ImGui::Spacing();
-    widgets::notice(icons::Icon::Warning, st.props.chemError.c_str(), style::col::Danger);
-  } else if (st.props.computedForRevision != st.docRevision) {
-    ImGui::Spacing();
-    widgets::notice(icons::Icon::Timer, "Updating calculated properties...",
-                    style::col::Violet);
+  const bool hasNotice =
+      !st.props.chemError.empty() ||
+      st.props.computedForRevision != st.docRevision;
+  float rows[4]{};
+  if (hasNotice) {
+    const float weights[] = {0.0f, 0.0f, 0.0f, 1.0f};
+    const float minimums[] = {
+        page.row * 4.4f, page.control, page.control, 0.0f};
+    layout::distribute(budget, weights, minimums, 4, page.gap, rows);
+  } else {
+    const float weights[] = {0.0f, 0.0f, 1.0f};
+    const float minimums[] = {page.row * 4.4f, page.control, 0.0f};
+    float compactRows[3]{};
+    layout::distribute(budget, weights, minimums, 3, page.gap,
+                       compactRows);
+    rows[0] = compactRows[0];
+    rows[2] = compactRows[1];
+    rows[3] = compactRows[2];
   }
 
-  const std::vector<CompositionEntry> composition = makeComposition(summary);
-  ImGui::Spacing();
-  drawCompositionGroup(summary, composition);
-  if (propertiesReady) {
-    ImGui::Spacing();
-    drawPhysicochemicalGroup(st);
+  drawHeadline(st, summary, propertiesReady, rows[0], page);
+  advanceVerticalGap(page.gap);
+
+  if (rows[1] > 0.0f) {
+    if (ImGui::BeginChild("##properties_notice",
+                          ImVec2(page.size.x, rows[1]), ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
+      if (!st.props.chemError.empty()) {
+        widgets::notice(icons::Icon::Warning, st.props.chemError.c_str(),
+                        style::col::Danger);
+      } else {
+        widgets::statusDot("Updating calculated properties", true,
+                           style::col::Data);
+      }
+    }
+    ImGui::EndChild();
+    advanceVerticalGap(page.gap);
   }
-  ImGui::Spacing();
-  drawStructureGroup(st, summary, propertiesReady);
-  if (propertiesReady) {
-    ImGui::Spacing();
-    drawIdentityGroup(st, now);
+
+  if (ImGui::BeginChild("##properties_tabs",
+                        ImVec2(page.size.x, rows[2]), ImGuiChildFlags_None,
+                        ImGuiWindowFlags_NoScrollbar |
+                            ImGuiWindowFlags_NoScrollWithMouse)) {
+    static constexpr const char* labels[] = {
+        "Elements", "Physical", "Structure", "Identity", "Build"};
+    static constexpr icons::Icon glyphs[] = {
+        icons::Icon::Atom, icons::Icon::Balance, icons::Icon::Ruler,
+        icons::Icon::Molecule, icons::Icon::Sparkle};
+    widgets::subTabs("##property_secondary_tabs", labels, glyphs, 5,
+                     secondaryTab);
   }
-  ImGui::Spacing();
-  drawBuildGroup(st, false);
+  ImGui::EndChild();
+  advanceVerticalGap(page.gap);
+
+  if (ImGui::BeginChild("##properties_secondary",
+                        ImVec2(page.size.x, rows[3]), ImGuiChildFlags_None,
+                        ImGuiWindowFlags_NoScrollbar |
+                            ImGuiWindowFlags_NoScrollWithMouse)) {
+    const std::vector<CompositionEntry> composition = makeComposition(summary);
+    switch (secondaryTab) {
+      case 0:
+        drawCompositionGroup(summary, composition);
+        break;
+      case 1:
+        drawPhysicochemicalGroup(st, propertiesReady);
+        break;
+      case 2:
+        drawStructureGroup(st, summary, propertiesReady);
+        break;
+      case 3:
+        drawIdentityGroup(st, propertiesReady);
+        break;
+      default:
+        drawBuildGroup(st, true);
+        break;
+    }
+  }
+  ImGui::EndChild();
 }
 
 }  // namespace chemcad::ui

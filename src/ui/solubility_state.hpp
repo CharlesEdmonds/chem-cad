@@ -207,6 +207,12 @@ struct SolubilityState {
   // Toolbar actions are consumed by the stage after its snapshot is available.
   bool fluidReframeRequested = false;
 
+  // Which console tab the extraction workspace is showing. Panel view state
+  // belongs here beside extractionRenderMode, not in a function-local static:
+  // it is user-visible, it must survive a tab switch, and a headless test has
+  // to be able to select a tab without synthesising a click.
+  int extractionTab = 0;
+
   // Dragging the stage shakes the vessel, in both the 3D and the schematic
   // view; orbiting the 3D camera is on the right button. The pointer commands
   // where the hand IS and fluid::HandFollower turns that into the vessel's
@@ -215,6 +221,22 @@ struct SolubilityState {
   // and live in fluid/frame.hpp.
   bool fluidGrabActive = false;
   std::array<float, 2> fluidGrabAnchorPx{};
+
+  // Grabbing the vessel promotes the stage to a full-window overlay drawn above
+  // every other panel, so the funnel can be flung right across the application
+  // instead of being clipped at the edge of its dock rect. The presented rect
+  // lags the request by one frame because the renderer composites into an FBO
+  // that ImGui shows on the NEXT frame; drawing this frame's texture into this
+  // frame's rect would stretch it during the transition.
+  bool fluidOverlayActive = false;
+  std::array<float, 4> fluidPresentedRectPx{};  // min x, min y, max x, max y
+  bool fluidPresentedValid = false;
+  // Vertical field of view of the docked stage. The overlay narrows it so the
+  // vessel keeps its on-screen size when the render target grows.
+  float fluidStageFovDeg = 38.0f;
+  // Last stage size, so a resized panel re-frames instead of cropping.
+  std::array<float, 2> fluidStageSizePx{};
+
   fluid::HandFollower fluidHand;
 
   // Pose animation state. The angular rate is retained so setPose receives an

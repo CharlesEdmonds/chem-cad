@@ -112,14 +112,17 @@ double outlineMaxHalfWidth(sol::Vessel vessel, double height) {
 
 }  // namespace
 
-TEST_CASE("the cross-section draws and responds to shaking") {
+TEST_CASE("the vessel stage draws and responds to shaking") {
   HeadlessImGui gui;
   ui::AppState st;
+  // The stage is permanently visible beside the console, and until the
+  // particle solver has been built it draws the analytic vessel -- which is
+  // exactly the state a headless test runs in.
   const int settled = settledVertexCount(st);
 
   // Two default phases are seeded on the first frame; five seconds into a
   // firm 6 s shake the column is full of droplets, every one of which is an
-  // extra filled circle.
+  // extra filled circle on the stage.
   REQUIRE(st.solubility.funnel.phases.size() == 2);
   sol::shake(st.solubility.funnel, sol::ShakeParams{6.0, 3.5, 0.06});
   for (int i = 0; i < 100; ++i) sol::step(st.solubility.funnel, 0.05);  // 5 s
@@ -180,10 +183,13 @@ TEST_CASE("a bad import id keeps the default phases") {
 TEST_CASE("the solute distribution panel draws when a solute is available") {
   HeadlessImGui gui;
 
+  // Partitioning is reported on the Charge tab beside the phases it splits.
   ui::AppState bare;
+  bare.solubility.extractionTab = 1;
   const int bareVertices = settledVertexCount(bare);
 
   ui::AppState withSolute;
+  withSolute.solubility.extractionTab = 1;
   withSolute.doc.molecules.push_back(chem::fromSmiles("OC(=O)c1ccccc1"));
   withSolute.touch();
   withSolute.solubility.solute =
@@ -191,8 +197,8 @@ TEST_CASE("the solute distribution panel draws when a solute is available") {
   withSolute.solubility.soluteValid = true;
   const int soluteVertices = settledVertexCount(withSolute);
 
-  // The stacked partition bar and its labels are real geometry on top of the
-  // bare vessel.
+  // The stacked partition bar and its labels are real geometry the bare
+  // workspace does not draw.
   CHECK(soluteVertices > bareVertices);
 }
 

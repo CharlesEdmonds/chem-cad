@@ -12,6 +12,7 @@
 #include "naming/naming.hpp"
 #include "rxn/engine.hpp"
 #include "ui/charts.hpp"
+#include "ui/layout.hpp"
 #include "ui/icons.hpp"
 #include "ui/mol_thumb.hpp"
 #include "ui/theme.hpp"
@@ -21,15 +22,7 @@
 namespace chemcad::ui {
 namespace {
 
-// Sized from the current font rather than fixed pixels: the app runs at a 1.25
-// UI scale by default, and hardcoded widths clip their own button labels.
-inline float uiScale() { return ImGui::GetFontSize() / 13.0f; }
 inline float materialWidth() { return ImGui::GetFontSize() * 17.7f; }
-inline float materialHeight() {
-  return ImGui::GetFrameHeight() * 4.0f +
-         ImGui::GetTextLineHeightWithSpacing() * 7.0f +
-         style::metrics().gap * 4.0f;
-}
 inline ImVec2 routeThumbSize() {
   return ImVec2(ImGui::GetFontSize() * 6.75f,
                 ImGui::GetTextLineHeightWithSpacing() * 3.25f);
@@ -51,7 +44,6 @@ std::string ellipsize(const std::string& text, float maxWidth) {
   return text.substr(0, end) + suffix;
 }
 
-constexpr float kRouteEnterSeconds = 0.25f;
 constexpr float kSearchMinimumSeconds = 0.45f;
 
 struct RoutePreviewCache {
@@ -63,7 +55,6 @@ struct RoutePreviewCache {
 struct PlannerAnimationState {
   double searchStartedAt = -1.0;
   bool awaitingResults = false;
-  std::unordered_map<std::string, double> routeFirstSeen;
 };
 
 std::string formatScore(double score) {
@@ -83,25 +74,8 @@ std::string routeName(const rxn::Route& route, size_t routeIndex) {
   return name;
 }
 
-void provenanceBadge(bool ai) {
-  const icons::Icon icon = ai ? icons::Icon::Sparkle : icons::Icon::Book;
-  const ImVec4 colour = ai ? style::col::Violet : style::col::Teal;
-  const float glyphSize = ImGui::GetFontSize();
-  const ImVec2 cursor = ImGui::GetCursorScreenPos();
-  ImGui::Dummy(ImVec2(glyphSize, ImGui::GetFrameHeight()));
-  icons::draw(ImGui::GetWindowDrawList(), icon,
-              ImVec2(cursor.x + glyphSize * 0.5f,
-                     cursor.y + ImGui::GetFrameHeight() * 0.5f),
-              glyphSize, style::u32(colour));
-  ImGui::SameLine(0.0f, style::metrics().gap * 0.5f);
-  widgets::badge(ai ? "AI" : "KNOWLEDGE BASE", colour);
-}
-
-float easeOutCubic(float t) {
-  t = std::clamp(t, 0.0f, 1.0f);
-  const float inverse = 1.0f - t;
-  return 1.0f - inverse * inverse * inverse;
-}
+// rxn::Step exposes no per-step score or yield contribution, so a route
+// waterfall would fabricate data and is intentionally omitted.
 
 
 MaterialBox* materialAt(AppState& st, bool target, int startIndex) {
@@ -184,12 +158,7 @@ void appendRouteSignature(std::string& signature, const rxn::Route& route) {
   }
 }
 
-std::string routeIdentity(const rxn::Route& route) {
-  std::string identity;
-  identity.reserve(route.steps.size() * 128);
-  appendRouteSignature(identity, route);
-  return identity;
-}
+
 
 std::string routesSignature(const std::vector<rxn::Route>& routes) {
   std::string signature;
@@ -256,49 +225,48 @@ void lookupName(AppState& st, bool target, int startIndex, MaterialBox& box) {
 
 bool materialBoxWidget(AppState& st, MaterialBox& box, bool target, int startIndex) {
   bool remove = false;
-  const float liftReserve = 3.0f * uiScale();
+  const layout::Frame outerFrame = layout::measure();
+  const float liftReserve = outerFrame.gap * 0.35f;
   const ImGuiID hoverId = ImGui::GetID("##material_hover");
   const float previousHover = ImGui::GetStateStorage()->GetFloat(hoverId, 0.0f);
   ImGui::Dummy(ImVec2(0.0f, liftReserve * (1.0f - previousHover)));
 
-  const float availableWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
-  const ImVec2 cardSize(std::min(materialWidth(), availableWidth), materialHeight());
-  if (!widgets::beginCard("##material_box", cardSize)) return false;
+  const layout::Frame frame = layout::measure();
+  const ImVec2 cardSize(std::min(materialWidth(), frame.size.x),
+                        std::max(layout::pageHeight(), frame.row));
+  constexpr ImGuiWindowFlags cardFlags =
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+  if (!widgets::beginCard("##material_box", cardSize, style::col::BgSurface,
+                          cardFlags))
+    return false;
 
-  const char* heading = target ? "PRODUCT" : "STARTING MATERIAL";
-  const ImVec4 headingColor = target ? style::col::Accent : style::col::TextDim;
-  const float fs = ImGui::GetFontSize();
-  constexpr ImGuiTableFlags headerFlags =
-      ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings |
-      ImGuiTableFlags_NoPadOuterX;
-  const int headerColumns = target ? 1 : 2;
-  if (ImGui::BeginTable("##material_header", headerColumns, headerFlags)) {
-    ImGui::TableSetupColumn("##material_label", ImGuiTableColumnFlags_WidthStretch);
-    if (!target)
-      ImGui::TableSetupColumn("##material_remove", ImGuiTableColumnFlags_WidthFixed,
-                              fs * 5.5f);
-    ImGui::TableNextColumn();
-    const bool pushed = style::pushFont(style::fonts::semibold());
-    ImGui::TextColored(headingColor, "%s", heading);
-    style::popFont(pushed);
-    if (!target) {
-      ImGui::TableNextColumn();
-      const bool onlyStart = st.planner.starts.size() <= 1;
-      ImGui::BeginDisabled(onlyStart);
-      ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha, 0.35f);
-      remove = widgets::actionButton(
-          "##remove", icons::Icon::Trash, "Remove", ImVec2(0.0f, 0.0f), false,
-          "Remove this starting material");
-      ImGui::PopStyleVar();
-      ImGui::EndDisabled();
-    }
-    ImGui::EndTable();
+  const char* heading = target ? "Product" : "Starting material";
+  const ImVec4 headingColor = target ? style::col::Violet : style::col::Teal;
+  const float headerRight =
+      ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+  const bool pushed = style::pushFont(style::fonts::semibold());
+  ImGui::TextColored(headingColor, "%s", heading);
+  style::popFont(pushed);
+  if (!target) {
+    const float removeWidth =
+        widgets::actionButtonWidth(icons::Icon::Trash, "Remove");
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(
+        std::max(ImGui::GetCursorPosX(), headerRight - removeWidth));
+    const bool onlyStart = st.planner.starts.size() <= 1;
+    ImGui::BeginDisabled(onlyStart);
+    ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha, 0.35f);
+    remove = widgets::actionButton(
+        "##remove", icons::Icon::Trash, "Remove", ImVec2(removeWidth, 0.0f),
+        false, "Remove this starting material");
+    ImGui::PopStyleVar();
+    ImGui::EndDisabled();
   }
 
-  const float innerWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+  const layout::Frame contentFrame = layout::measure();
   if (moleculeThumbButton(
           "##preview", box.preview,
-          ImVec2(innerWidth, ImGui::GetTextLineHeightWithSpacing() * 3.3f)) &&
+          ImVec2(contentFrame.size.x, contentFrame.row * 3.3f)) &&
       box.previewValid) {
     openInSketch(st, box.smiles);
   }
@@ -306,9 +274,10 @@ bool materialBoxWidget(AppState& st, MaterialBox& box, bool target, int startInd
     ImGui::SetTooltip("%s", box.previewValid ? "Open in the Sketch canvas"
                                              : "Structure preview");
 
-  ImGui::SetNextItemWidth(-1.0f);
+  ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
   const bool smilesEnter = widgets::stringInputWithHint(
-      "##smiles", "SMILES", box.smiles, ImGuiInputTextFlags_EnterReturnsTrue, true);
+      "##smiles", "Structure (SMILES)", box.smiles,
+      ImGuiInputTextFlags_EnterReturnsTrue, true);
   const bool smilesCommitted = smilesEnter || ImGui::IsItemDeactivatedAfterEdit();
   if (smilesCommitted) rebuildPreview(box);
   if (ImGui::IsItemHovered())
@@ -316,11 +285,11 @@ bool materialBoxWidget(AppState& st, MaterialBox& box, bool target, int startInd
 
   // The reservation and the button share one width, so the pair can never
   // disagree and push the action past the card edge in a narrow flow column.
-  const float lookupWidth = ImGui::CalcTextSize("Look up").x + ImGui::GetFontSize() +
-                            style::metrics().gap * 2.5f;
+  const float lookupWidth = ImGui::CalcTextSize("Look up").x + frame.em +
+                            frame.gap * 2.5f;
   ImGui::SetNextItemWidth(std::max(
-      1.0f, ImGui::GetContentRegionAvail().x - lookupWidth -
-                ImGui::GetStyle().ItemSpacing.x));
+      frame.em, ImGui::GetContentRegionAvail().x - lookupWidth -
+                    ImGui::GetStyle().ItemSpacing.x));
   const bool nameEnter = widgets::stringInputWithHint(
       "##name", "Chemical name", box.nameInput, ImGuiInputTextFlags_EnterReturnsTrue);
   if (ImGui::IsItemHovered())
@@ -360,17 +329,12 @@ bool materialBoxWidget(AppState& st, MaterialBox& box, bool target, int startInd
   } else if (!box.label.empty()) {
     statusText = box.label.c_str();
   }
-  if (statusText && ImGui::GetContentRegionAvail().x > ImGui::GetFontSize() * 2.0f) {
+  if (statusText && layout::fits(statusText, ImGui::GetContentRegionAvail().x)) {
     ImGui::SameLine();
-    const std::string fitted =
-        ellipsize(statusText, std::max(ImGui::GetContentRegionAvail().x, 1.0f));
-    ImGui::TextColored(style::col::TextDim, "%s", fitted.c_str());
-    if (ImGui::IsItemHovered() && fitted != statusText)
-      ImGui::SetTooltip("%s", statusText);
+    ImGui::TextColored(style::col::DataDim, "%s", statusText);
   }
-  if (!box.error.empty()) {
+  if (!box.error.empty())
     widgets::notice(icons::Icon::Warning, box.error.c_str(), style::col::Danger);
-  }
 
   widgets::endCard();
   const ImVec2 cardMin = ImGui::GetItemRectMin();
@@ -414,34 +378,10 @@ void drawArrow(ImVec2 size, ImVec4 color, float thicknessScale = 1.0f,
     dl->AddCircleFilled(
         ImVec2(x, y),
         std::max(style::metrics().hairline * 2.0f, ImGui::GetFontSize() * 0.18f),
-                        style::u32(style::col::AccentHover));
+        style::u32(style::col::DataBright));
   }
 }
 
-void drawSearchingIndicator() {
-  const float width = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
-  const float height = ImGui::GetTextLineHeightWithSpacing();
-  const ImVec2 min = ImGui::GetCursorScreenPos();
-  ImGui::Dummy(ImVec2(width, height));
-  ImDrawList* draw = ImGui::GetWindowDrawList();
-  const char* label = "Searching routes";
-  const ImVec2 labelSize = ImGui::CalcTextSize(label);
-  draw->AddText(ImVec2(min.x, min.y + (height - labelSize.y) * 0.5f),
-                style::u32(style::col::TextDim), label);
-  const float radius =
-      std::max(style::metrics().hairline * 2.0f, ImGui::GetFontSize() * 0.14f);
-  const float spacing = radius * 3.0f;
-  const float dotsWidth = spacing * 2.0f + radius * 2.0f;
-  const float firstX =
-      min.x + std::max(radius, width - dotsWidth + radius);
-  for (int i = 0; i < 3; ++i) {
-    const float wave = 0.5f + 0.5f * std::sin(
-        static_cast<float>(ImGui::GetTime()) * 7.0f - static_cast<float>(i) * 0.9f);
-    draw->AddCircleFilled(ImVec2(firstX + spacing * static_cast<float>(i),
-                                min.y + height * 0.5f - wave * radius * 0.8f),
-                          radius, style::u32(style::col::Accent, 0.35f + wave * 0.65f));
-  }
-}
 
 void dispatchSearch(AppState& st, PlannerAnimationState& animation) {
   rxn::Request request;
@@ -478,30 +418,32 @@ void dispatchSearch(AppState& st, PlannerAnimationState& animation) {
 
 void connectorControls(AppState& st, PlannerAnimationState& animation) {
   ImGui::BeginGroup();
-  const float width = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
-  constexpr ImGuiTableFlags labelFlags =
-      ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings |
-      ImGuiTableFlags_NoPadOuterX;
-  if (ImGui::BeginTable("##connector_labels", 2, labelFlags)) {
-    ImGui::TableNextColumn();
-    ImGui::TextDisabled("INPUTS");
-    ImGui::TableNextColumn();
-    ImGui::TextDisabled("TARGET");
-    ImGui::EndTable();
-  }
-  drawArrow(ImVec2(width, ImGui::GetTextLineHeightWithSpacing() * 1.7f),
-            style::col::Accent, 1.0f, st.planner.searching);
+  const layout::Frame frame = layout::measure();
+  const char* const inputLabels[] = {"Starting materials", "Inputs"};
+  const char* const targetLabels[] = {"Target product", "Target"};
+  const char* inputLabel =
+      layout::bestLabel(frame.size.x * 0.5f, inputLabels, 2);
+  const char* targetLabel =
+      layout::bestLabel(frame.size.x * 0.5f, targetLabels, 2);
+  const float targetWidth = ImGui::CalcTextSize(targetLabel).x;
+  ImGui::TextDisabled("%s", inputLabel);
+  ImGui::SameLine();
+  ImGui::SetCursorPosX(std::max(
+      ImGui::GetCursorPosX(),
+      ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - targetWidth));
+  ImGui::TextDisabled("%s", targetLabel);
+  drawArrow(ImVec2(frame.size.x, frame.row * 1.7f), style::col::Data,
+            1.0f, st.planner.searching);
 
-  // Widths must be measured INSIDE the toolbar: it insets its content by half a
-  // gap on each side and tightens item spacing, so sizing against the card's
-  // width pushes the trailing action past the card edge.
+  // Widths are measured inside the toolbar because its inset is part of the
+  // actual budget available to the two actions.
   widgets::beginToolbar("##route_actions");
+  const layout::Frame toolbarFrame = layout::measure();
   const float actionGap = ImGui::GetStyle().ItemSpacing.x;
-  const float toolbarWidth = std::max(
-      ImGui::GetContentRegionAvail().x - style::metrics().gap * 0.5f, 1.0f);
   const float clearWidth = widgets::actionButtonWidth(icons::Icon::Undo, "Clear");
-  const float runWidth = std::max(ImGui::GetFrameHeight() * 3.0f,
-                                  toolbarWidth - clearWidth - actionGap);
+  const float runWidth = std::max(
+      toolbarFrame.control * 3.0f,
+      toolbarFrame.size.x - clearWidth - actionGap - toolbarFrame.gap * 0.5f);
   ImGui::BeginDisabled(st.planner.searching);
   if (widgets::actionButton("##suggest_routes", icons::Icon::Play, "Suggest routes",
                             ImVec2(runWidth, 0.0f), true,
@@ -526,44 +468,40 @@ void connectorControls(AppState& st, PlannerAnimationState& animation) {
   const double elapsed = animation.searchStartedAt < 0.0
                              ? kSearchMinimumSeconds
                              : ImGui::GetTime() - animation.searchStartedAt;
-  if (st.planner.searching || elapsed < kSearchMinimumSeconds) {
-    drawSearchingIndicator();
-  } else {
-    widgets::keyValue("Route source", "Knowledge base + optional AI");
-  }
+  const bool searchActive =
+      st.planner.searching || elapsed < kSearchMinimumSeconds;
+  widgets::statusDot(searchActive ? "Searching routes" : "Planner ready",
+                     searchActive, style::col::Data);
 
-  const bool aiAvailable = rxn::llmAvailable();
-  ImGui::BeginDisabled(!aiAvailable);
-  widgets::toggle("##ai_fallback", "Use AI fallback", st.planner.allowLlm,
-                  "Let the AI propose a route when the knowledge base stalls");
-  ImGui::EndDisabled();
-  if (!aiAvailable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip("CHEMCAD_LLM_API_KEY is not set.");
+  if (widgets::onlyWhen(rxn::llmAvailable(),
+                        "AI fallback requires CHEMCAD_LLM_API_KEY.")) {
+    widgets::toggle("##ai_fallback", "Use AI fallback", st.planner.allowLlm,
+                    "Let the AI propose a route when the knowledge base stalls");
+  }
 
   static constexpr const char* depthLabels[] = {"1", "2", "3", "4"};
   int depthIndex = std::clamp(st.planner.maxDepth - 1, 0, 3);
-  widgets::keyValue("Maximum depth", depthLabels[depthIndex]);
-  if (widgets::segmented("##route_depth", depthLabels, 4, depthIndex, width))
+  ImGui::TextDisabled("Maximum depth");
+  if (widgets::segmented("##route_depth", depthLabels, 4, depthIndex,
+                         frame.size.x))
     st.planner.maxDepth = depthIndex + 1;
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("%s", "Maximum number of reaction steps per route");
 
-  // The trailing ImGui label would be clipped by the narrow flow column, so the
-  // value is reported above the control the same way the depth row is.
-  char routesValue[16];
-  std::snprintf(routesValue, sizeof(routesValue), "%d", st.planner.maxRoutes);
-  widgets::keyValue("Routes", routesValue);
-  ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x));
-  ImGui::SliderInt("##route_count", &st.planner.maxRoutes, 1, 10);
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("%s", "Maximum number of routes to report");
+  float routeCount = static_cast<float>(st.planner.maxRoutes);
+  if (widgets::glyphSlider(
+          "##route_count", icons::Icon::List, "Routes", routeCount, 1.0f,
+          10.0f, "%.0f", "Maximum number of routes to report")) {
+    st.planner.maxRoutes =
+        std::clamp(static_cast<int>(std::lround(routeCount)), 1, 10);
+  }
   ImGui::EndGroup();
 }
 
 void stepArrow(float width) {
-  width = std::max(width, 1.0f);
-  drawArrow(ImVec2(width, ImGui::GetTextLineHeightWithSpacing()),
-            style::col::TextDim);
+  const layout::Frame frame = layout::measure();
+  drawArrow(ImVec2(std::max(width, frame.em), frame.row),
+            style::col::DataDim);
 }
 
 void drawStep(AppState& st, const rxn::Step& step, const RoutePreviewCache& cache,
@@ -572,10 +510,12 @@ void drawStep(AppState& st, const rxn::Step& step, const RoutePreviewCache& cach
   std::string heading = "Step " + std::to_string(stepIndex + 1);
   if (!step.reactionName.empty()) heading += "  ·  " + step.reactionName;
   const style::Metrics& metrics = style::metrics();
+  const layout::Frame detailFrame = layout::measure();
   const float tickWidth = std::max(metrics.hairline * 2.0f,
-                                   ImGui::GetFontSize() * 0.16f);
+                                   detailFrame.em * 0.16f);
   const float headingWidth = std::max(
-      ImGui::GetContentRegionAvail().x - tickWidth - metrics.gap * 1.75f, 1.0f);
+      detailFrame.size.x - tickWidth - detailFrame.gap * 1.75f,
+      detailFrame.em);
   const bool headingFont = style::pushFont(style::fonts::semibold());
   const std::string fittedHeading = ellipsize(heading, headingWidth);
   style::popFont(headingFont);
@@ -586,32 +526,47 @@ void drawStep(AppState& st, const rxn::Step& step, const RoutePreviewCache& cach
   const std::string reactants = joined(step.reactantSmiles);
   const std::string reagents = joined(step.reagents);
   const std::string sideProducts = joined(step.sideProductSmiles);
-  widgets::keyValue("Reaction",
-                    step.reactionName.empty() ? "Unspecified" : step.reactionName.c_str());
-  widgets::keyValue("Provenance",
-                    step.source == rxn::Step::Source::LLM ? "AI" : "Knowledge base");
+  widgets::keyValue(
+      "Reaction",
+      step.reactionName.empty() ? "Unspecified" : step.reactionName.c_str(),
+      style::col::Data);
+  widgets::keyValue(
+      "Provenance",
+      step.source == rxn::Step::Source::LLM ? "AI" : "Knowledge base",
+      step.source == rxn::Step::Source::LLM ? style::col::Violet
+                                            : style::col::Teal);
   widgets::keyValue("Reactant SMILES",
-                    reactants.empty() ? "Unspecified" : reactants.c_str());
-  widgets::keyValue("Reagents", reagents.empty() ? "None specified" : reagents.c_str());
-  widgets::keyValue("Conditions",
-                    step.conditions.empty() ? "Not specified" : step.conditions.c_str());
-  widgets::keyValue("Product SMILES",
-                    step.productSmiles.empty() ? "Unspecified" : step.productSmiles.c_str());
-  widgets::keyValue("Side-product SMILES",
-                    sideProducts.empty() ? "None predicted" : sideProducts.c_str());
+                    reactants.empty() ? "Unspecified" : reactants.c_str(),
+                    style::col::Data);
+  widgets::keyValue("Reagents",
+                    reagents.empty() ? "None specified" : reagents.c_str(),
+                    style::col::Data);
+  widgets::keyValue(
+      "Conditions",
+      step.conditions.empty() ? "Not specified" : step.conditions.c_str(),
+      style::col::Data);
+  widgets::keyValue(
+      "Product SMILES",
+      step.productSmiles.empty() ? "Unspecified" : step.productSmiles.c_str(),
+      style::col::Data);
+  widgets::keyValue(
+      "Side-product SMILES",
+      sideProducts.empty() ? "None predicted" : sideProducts.c_str(),
+      style::col::Data);
   if (!step.notes.empty())
-    widgets::keyValue("Mechanism / caveats", step.notes.c_str(), style::col::TextDim);
+    widgets::keyValue("Mechanism / caveats", step.notes.c_str(),
+                      style::col::DataDim);
 
-  const float rowWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
-  const ImVec2 thumbSize(std::min(routeThumbSize().x, rowWidth), routeThumbSize().y);
+  const layout::Frame rowFrame = layout::measure();
+  const float rowWidth = rowFrame.size.x;
+  const ImVec2 thumbSize(std::min(routeThumbSize().x, rowWidth),
+                         routeThumbSize().y);
   const float actionWidth =
-      ImGui::CalcTextSize("Send to canvas").x + ImGui::GetFrameHeight() +
-      metrics.gap;
+      ImGui::CalcTextSize("Send to canvas").x + rowFrame.control + rowFrame.gap;
   const float productWidth = std::max(thumbSize.x, actionWidth);
-  const float rowGap = metrics.gap;
-  const float minimumArrowWidth = ImGui::GetFontSize() * 6.0f;
-  const bool horizontal =
-      rowWidth >= thumbSize.x + productWidth + minimumArrowWidth + rowGap * 2.0f;
+  const float rowGap = rowFrame.gap;
+  const float minimumArrowWidth = rowFrame.em * 6.0f;
+  const bool horizontal = layout::columnsThatFit(rowFrame, 18.0f) >= 2;
   const float arrowWidth =
       horizontal
           ? std::max(minimumArrowWidth,
@@ -658,21 +613,21 @@ void drawStep(AppState& st, const rxn::Step& step, const RoutePreviewCache& cach
 
   if (!step.sideProductSmiles.empty()) {
     ImGui::Spacing();
+    const layout::Frame sideFrame = layout::measure();
+    const int sideColumns =
+        layout::columnsThatFit(sideFrame, routeThumbSize().x / sideFrame.em);
     for (size_t i = 0; i < step.sideProductSmiles.size(); ++i) {
       const std::string& smiles = step.sideProductSmiles[i];
       ImGui::PushID(static_cast<int>(i));
       ImGui::BeginGroup();
-      const ImVec2 sideSize(ImGui::GetFontSize() * 6.3f,
-                            ImGui::GetTextLineHeightWithSpacing() * 2.75f);
+      const ImVec2 sideSize(sideFrame.em * 6.3f, sideFrame.row * 2.75f);
       moleculeThumbButton("##side_product", cachedMolecule(cache, smiles), sideSize);
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", smiles.c_str());
       ImGui::EndGroup();
       ImGui::PopID();
-      const float contentRight =
-          ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
       if (i + 1 < step.sideProductSmiles.size() &&
-          ImGui::GetItemRectMax().x + metrics.gap + sideSize.x <= contentRight)
-        ImGui::SameLine(0.0f, metrics.gap);
+          static_cast<int>((i + 1) % static_cast<size_t>(sideColumns)) != 0)
+        ImGui::SameLine(0.0f, sideFrame.gap);
     }
   }
   ImGui::PopID();
@@ -685,10 +640,8 @@ void drawResults(AppState& st, RoutePreviewCache& cache,
   if (signature != cache.signature)
     rebuildRouteCache(cache, st.planner.routes, signature);
 
-  if (animation.awaitingResults && !st.planner.searching && st.planner.searched) {
-    animation.routeFirstSeen.clear();
+  if (animation.awaitingResults && !st.planner.searching && st.planner.searched)
     animation.awaitingResults = false;
-  }
 
   if (!st.planner.error.empty()) {
     widgets::notice(icons::Icon::Warning, st.planner.error.c_str(),
@@ -740,6 +693,14 @@ void drawResults(AppState& st, RoutePreviewCache& cache,
   cache.selectedRoute =
       std::clamp(cache.selectedRoute, 0,
                  static_cast<int>(st.planner.routes.size()) - 1);
+
+  double minimumScore = st.planner.routes.front().score;
+  double maximumScore = minimumScore;
+  for (const rxn::Route& route : st.planner.routes) {
+    minimumScore = std::min(minimumScore, route.score);
+    maximumScore = std::max(maximumScore, route.score);
+  }
+
   std::vector<std::string> barLabels;
   std::vector<std::string> barAnnotations;
   barLabels.reserve(st.planner.routes.size());
@@ -755,205 +716,192 @@ void drawResults(AppState& st, RoutePreviewCache& cache,
     row.label = barLabels[i].c_str();
     row.value = st.planner.routes[i].score;
     row.annotation = barAnnotations[i].c_str();
-    row.accent = i == 0 ? style::col::Accent : style::col::Teal;
+    row.accent = static_cast<int>(i) == cache.selectedRoute
+                     ? style::col::Accent
+                     : style::col::Data;
     row.selected = static_cast<int>(i) == cache.selectedRoute;
     bars.push_back(row);
   }
-  const float rankingHeight =
-      ImGui::GetTextLineHeightWithSpacing() *
-      (static_cast<float>(bars.size()) + 1.0f);
-  const int selected =
-      charts::rankedBars("##route_ranking", bars.data(), static_cast<int>(bars.size()),
-                         ImVec2(ImGui::GetContentRegionAvail().x, rankingHeight));
-  if (selected >= 0) cache.selectedRoute = selected;
 
-  double minimumScore = st.planner.routes.front().score;
-  double maximumScore = minimumScore;
-  for (const rxn::Route& route : st.planner.routes) {
-    minimumScore = std::min(minimumScore, route.score);
-    maximumScore = std::max(maximumScore, route.score);
-  }
-  const rxn::Route& selectedRoute =
-      st.planner.routes[static_cast<size_t>(cache.selectedRoute)];
-  const double relativeScore =
-      maximumScore > minimumScore
-          ? std::clamp((selectedRoute.score - minimumScore) /
-                           (maximumScore - minimumScore),
-                       0.0, 1.0)
-          : 1.0;
-  char confidenceBuffer[16];
-  std::snprintf(confidenceBuffer, sizeof(confidenceBuffer), "%.0f%%",
-                relativeScore * 100.0);
+  const layout::Frame resultFrame = layout::measure(
+      ImVec2(ImGui::GetContentRegionAvail().x, layout::pageHeight()));
+  const float resultStartY = ImGui::GetCursorPosY();
+  const float sectionWeights[] = {1.0f, 1.35f};
+  const float sectionMinimums[] = {resultFrame.row * 5.0f,
+                                   resultFrame.row * 5.0f};
+  float sectionHeights[2]{};
+  layout::distribute(resultFrame.size.y, sectionWeights, sectionMinimums, 2,
+                     resultFrame.gap, sectionHeights);
+
   charts::GaugeStyle gaugeStyle;
-  gaugeStyle.accent = style::col::Accent;
-  gaugeStyle.minLabel = "LOWER";
-  gaugeStyle.maxLabel = "BEST";
-  charts::gauge(
-      "##route_confidence", relativeScore, confidenceBuffer,
-      "Relative confidence",
-      ImVec2(std::min(ImGui::GetContentRegionAvail().x,
-                      ImGui::GetFontSize() * 14.0f),
-             ImGui::GetTextLineHeightWithSpacing() * 6.0f),
-      gaugeStyle);
+  gaugeStyle.accent = style::col::Data;
+  gaugeStyle.minLabel = "Lower";
+  gaugeStyle.maxLabel = "Best";
 
-  const std::string selectedScore = formatScore(selectedRoute.score);
-  const std::string candidateCount = std::to_string(st.planner.routes.size());
-  const std::string selectedRank =
-      "#" + std::to_string(cache.selectedRoute + 1);
-  constexpr ImGuiTableFlags metricFlags =
-      ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings |
-      ImGuiTableFlags_NoPadOuterX;
-  if (ImGui::BeginTable("##result_metrics", 3, metricFlags)) {
-    ImGui::TableNextColumn();
-    widgets::metric("CANDIDATES", candidateCount.c_str());
-    ImGui::TableNextColumn();
-    widgets::metric("SELECTED", selectedRank.c_str());
-    ImGui::TableNextColumn();
-    widgets::metric("ROUTE SCORE", selectedScore.c_str(), nullptr, nullptr,
-                    style::col::Accent);
-    ImGui::EndTable();
+  const int chartColumns =
+      std::min(2, layout::columnsThatFit(resultFrame, 20.0f));
+  if (chartColumns == 2) {
+    const float chartWidth = layout::columnWidth(resultFrame, 2);
+    const int selected = charts::rankedBars(
+        "##route_ranking", bars.data(), static_cast<int>(bars.size()),
+        ImVec2(chartWidth, sectionHeights[0]));
+    if (selected >= 0) cache.selectedRoute = selected;
+
+    const rxn::Route& selectedRoute =
+        st.planner.routes[static_cast<size_t>(cache.selectedRoute)];
+    const double relativeScore =
+        maximumScore > minimumScore
+            ? std::clamp((selectedRoute.score - minimumScore) /
+                             (maximumScore - minimumScore),
+                         0.0, 1.0)
+            : 1.0;
+    char confidenceBuffer[16];
+    std::snprintf(confidenceBuffer, sizeof(confidenceBuffer), "%.0f%%",
+                  relativeScore * 100.0);
+    ImGui::SameLine(0.0f, resultFrame.gap);
+    charts::gauge("##route_confidence", relativeScore, confidenceBuffer,
+                  "Relative confidence",
+                  ImVec2(chartWidth, sectionHeights[0]), gaugeStyle);
+  } else {
+    const float chartWeights[] = {1.0f, 1.0f};
+    const float chartMinimums[] = {resultFrame.row * 2.0f,
+                                   resultFrame.row * 2.0f};
+    float chartHeights[2]{};
+    layout::distribute(sectionHeights[0], chartWeights, chartMinimums, 2,
+                       resultFrame.gap, chartHeights);
+    const int selected = charts::rankedBars(
+        "##route_ranking", bars.data(), static_cast<int>(bars.size()),
+        ImVec2(resultFrame.size.x, chartHeights[0]));
+    if (selected >= 0) cache.selectedRoute = selected;
+
+    const rxn::Route& selectedRoute =
+        st.planner.routes[static_cast<size_t>(cache.selectedRoute)];
+    const double relativeScore =
+        maximumScore > minimumScore
+            ? std::clamp((selectedRoute.score - minimumScore) /
+                             (maximumScore - minimumScore),
+                         0.0, 1.0)
+            : 1.0;
+    char confidenceBuffer[16];
+    std::snprintf(confidenceBuffer, sizeof(confidenceBuffer), "%.0f%%",
+                  relativeScore * 100.0);
+    layout::nextRow(resultStartY + chartHeights[0] + resultFrame.gap);
+    charts::gauge("##route_confidence", relativeScore, confidenceBuffer,
+                  "Relative confidence",
+                  ImVec2(resultFrame.size.x, chartHeights[1]), gaugeStyle);
   }
 
-  const double now = ImGui::GetTime();
-  for (size_t routeIndex = 0; routeIndex < st.planner.routes.size(); ++routeIndex) {
-    const rxn::Route& route = st.planner.routes[routeIndex];
-    ImGui::PushID(static_cast<int>(routeIndex));
-
-    const std::string identity = routeIdentity(route);
-    const auto [seen, inserted] = animation.routeFirstSeen.emplace(identity, now);
-    (void)inserted;
-    const float enter = easeOutCubic(static_cast<float>(
-        (now - seen->second) / static_cast<double>(kRouteEnterSeconds)));
-    ImGui::PushStyleVar(ImGuiStyleVar_Alpha,
-                        ImGui::GetStyle().Alpha * (0.12f + 0.88f * enter));
-    ImGui::Dummy(
-        ImVec2(0.0f, (1.0f - enter) * ImGui::GetTextLineHeightWithSpacing() * 0.4f));
-
-    const ImGuiID hoverId = ImGui::GetID("##route_hover");
-    const float previousHover = ImGui::GetStateStorage()->GetFloat(hoverId, 0.0f);
-    const float liftReserve = style::metrics().gap * 0.35f;
-    ImGui::Dummy(ImVec2(0.0f, liftReserve * (1.0f - previousHover)));
-
-    const bool cardOpen =
-        widgets::beginCard("##route_result", ImVec2(0.0f, 0.0f), style::col::BgSurface);
-    if (cardOpen) {
-      const std::string title = routeName(route, routeIndex);
-      const bool titleFont = style::pushFont(style::fonts::semibold());
-      ImGui::TextUnformatted(title.c_str());
-      style::popFont(titleFont);
-
-      const std::string routeScore = formatScore(route.score);
-      const std::string stepCount = std::to_string(route.steps.size());
-      constexpr ImGuiTableFlags headlineFlags =
-          ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings |
-          ImGuiTableFlags_NoPadOuterX;
-      if (ImGui::BeginTable("##route_headline", 3, headlineFlags)) {
-        ImGui::TableNextColumn();
-        widgets::metric("SCORE", routeScore.c_str(), nullptr, nullptr,
-                        routeIndex == 0 ? style::col::Accent : style::col::Text);
-        ImGui::TableNextColumn();
-        widgets::metric("STEPS", stepCount.c_str());
-        ImGui::TableNextColumn();
-        provenanceBadge(route.usesLlm());
-        if (routeIndex == 0) {
-          ImGui::SameLine(0.0f, style::metrics().gap);
-          widgets::badge("BEST", style::col::Accent);
-        }
-        ImGui::EndTable();
+  layout::nextRow(resultStartY + sectionHeights[0] + resultFrame.gap);
+  const bool listOpen = ImGui::BeginChild(
+      "##route_results_list", ImVec2(0.0f, sectionHeights[1]),
+      ImGuiChildFlags_None, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+  if (listOpen) {
+    const widgets::Column columns[] = {
+        {"Route name", false, true, nullptr, 12.0f},
+        {"Steps", true, false, nullptr, 4.0f},
+        {"Score", true, false, nullptr, 5.0f},
+        {"Source", false, false, nullptr, 8.0f},
+    };
+    if (widgets::beginDataTable("##routes_table", columns, 4,
+                                ImVec2(0.0f, 0.0f))) {
+      for (size_t routeIndex = 0; routeIndex < st.planner.routes.size();
+           ++routeIndex) {
+        const rxn::Route& route = st.planner.routes[routeIndex];
+        const std::string name = routeName(route, routeIndex);
+        const std::string source =
+            route.usesLlm() ? "AI-assisted" : "Knowledge base";
+        widgets::dataRow(static_cast<int>(routeIndex) == cache.selectedRoute
+                             ? style::col::Accent
+                             : ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        widgets::dataCell(name.c_str());
+        widgets::dataCellf("%zu", route.steps.size());
+        widgets::dataCellf("%.1f", route.score);
+        widgets::dataCell(source.c_str());
       }
-
-      std::string summary = stepCount + (route.steps.size() == 1 ? " step" : " steps");
-      summary += " · score " + routeScore;
-      const bool detailsOpen =
-          widgets::disclosure("##route_details", "Conditions and mechanism",
-                              summary.c_str(), false, icons::Icon::Retro,
-                              routeIndex == 0 ? style::col::Accent : style::col::Teal);
-      if (detailsOpen) {
-        ImGui::Indent(style::metrics().gap);
-        const std::string bestScore = formatScore(maximumScore);
-        const double routeRelative =
-            maximumScore > minimumScore
-                ? std::clamp((route.score - minimumScore) /
-                                 (maximumScore - minimumScore),
-                             0.0, 1.0)
-                : 1.0;
-        char routeConfidence[16];
-        std::snprintf(routeConfidence, sizeof(routeConfidence), "%.0f%%",
-                      routeRelative * 100.0);
-        widgets::keyValue("Score target", bestScore.c_str());
-        widgets::keyValue("Relative confidence", routeConfidence);
-        charts::bullet(
-            "##route_score_bullet", route.score, maximumScore, minimumScore,
-            maximumScore,
-            ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFrameHeight() * 1.5f),
-            routeIndex == 0 ? style::col::Accent : style::col::Teal);
-        for (size_t stepIndex = 0; stepIndex < route.steps.size(); ++stepIndex) {
-          drawStep(st, route.steps[stepIndex], cache, static_cast<int>(stepIndex));
-          if (stepIndex + 1 < route.steps.size()) ImGui::Spacing();
-        }
-        ImGui::Unindent(style::metrics().gap);
-      }
-      widgets::endCard();
+      widgets::endDataTable();
     }
 
-    const ImVec2 cardMin = ImGui::GetItemRectMin();
-    const ImVec2 cardMax = ImGui::GetItemRectMax();
-    const bool hovered = ImGui::IsItemHovered();
-    const float hover = widgets::hoverT(hoverId, hovered);
-    ImGui::GetWindowDrawList()->AddRect(
-        cardMin, cardMax, style::mix(style::col::Border, style::col::Teal, hover),
-        style::metrics().radiusMd, 0,
-        style::metrics().hairline * (1.0f + hover));
-
-    ImGui::PopStyleVar();
-    ImGui::PopID();
-    ImGui::Spacing();
+    for (size_t routeIndex = 0; routeIndex < st.planner.routes.size();
+         ++routeIndex) {
+      const rxn::Route& route = st.planner.routes[routeIndex];
+      ImGui::PushID(static_cast<int>(routeIndex));
+      const std::string title = routeName(route, routeIndex);
+      if (widgets::disclosure(
+              "##route_details", title.c_str(), "Steps, conditions and provenance",
+              false, icons::Icon::Retro, style::col::Accent)) {
+        ImGui::Indent(resultFrame.gap);
+        for (size_t stepIndex = 0; stepIndex < route.steps.size(); ++stepIndex) {
+          drawStep(st, route.steps[stepIndex], cache,
+                   static_cast<int>(stepIndex));
+          if (stepIndex + 1 < route.steps.size()) ImGui::Spacing();
+        }
+        ImGui::Unindent(resultFrame.gap);
+      }
+      ImGui::PopID();
+    }
   }
+  ImGui::EndChild();
 }
 
-void drawStartingMaterialsCard(AppState& st, float cardHeight) {
+void drawStartingMaterialsCard(AppState& st, ImVec2 cardSize) {
+  static int selectedMaterial = 0;
   int removeIndex = -1;
-  if (widgets::beginCard("##starting_materials_card", ImVec2(0.0f, cardHeight),
-                         style::col::BgSurface)) {
+  constexpr ImGuiWindowFlags cardFlags =
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+  if (widgets::beginCard("##starting_materials_card", cardSize,
+                         style::col::BgSurface, cardFlags)) {
     widgets::cardHeader(icons::Icon::Flask, "Starting materials",
                         "Combine one or more molecular inputs", style::col::Teal);
     if (widgets::actionButton(
             "##add_starting_material", icons::Icon::Plus, "Add starting material",
             ImVec2(0.0f, 0.0f), false,
-            "Add another molecular input to the reaction"))
+            "Add another molecular input to the reaction")) {
       st.planner.starts.emplace_back();
+      selectedMaterial = static_cast<int>(st.planner.starts.size()) - 1;
+    }
 
     if (st.planner.starts.empty()) {
       widgets::emptyState(
           icons::Icon::Flask, "No starting materials",
           "Choose Add starting material, then enter SMILES or import from Sketch.");
-    } else if (ImGui::BeginChild("##starting_materials_row", ImVec2(0.0f, 0.0f),
-                                 ImGuiChildFlags_None,
-                                 ImGuiWindowFlags_HorizontalScrollbar)) {
-      for (size_t i = 0; i < st.planner.starts.size(); ++i) {
-        ImGui::PushID(static_cast<int>(i));
-        if (materialBoxWidget(st, st.planner.starts[i], false, static_cast<int>(i)))
-          removeIndex = static_cast<int>(i);
-        ImGui::PopID();
-        if (i + 1 < st.planner.starts.size()) {
-          ImGui::SameLine(0.0f, style::metrics().gap);
-          ImGui::AlignTextToFramePadding();
-          ImGui::TextColored(style::col::TextFaint, "+");
-          ImGui::SameLine(0.0f, style::metrics().gap);
-        }
+    } else {
+      selectedMaterial = std::clamp(
+          selectedMaterial, 0, static_cast<int>(st.planner.starts.size()) - 1);
+      if (st.planner.starts.size() > 1) {
+        std::vector<std::string> tabLabels;
+        std::vector<const char*> tabPointers;
+        tabLabels.reserve(st.planner.starts.size());
+        tabPointers.reserve(st.planner.starts.size());
+        for (size_t i = 0; i < st.planner.starts.size(); ++i)
+          tabLabels.push_back("Material " + std::to_string(i + 1));
+        for (const std::string& label : tabLabels)
+          tabPointers.push_back(label.c_str());
+        widgets::subTabs("##material_tabs", tabPointers.data(), nullptr,
+                         static_cast<int>(tabPointers.size()), selectedMaterial);
       }
+      ImGui::PushID(selectedMaterial);
+      if (materialBoxWidget(
+              st, st.planner.starts[static_cast<size_t>(selectedMaterial)],
+              false, selectedMaterial))
+        removeIndex = selectedMaterial;
+      ImGui::PopID();
     }
-    if (!st.planner.starts.empty()) ImGui::EndChild();
     widgets::endCard();
   }
 
-  if (removeIndex >= 0 && st.planner.starts.size() > 1)
+  if (removeIndex >= 0 && st.planner.starts.size() > 1) {
     st.planner.starts.erase(st.planner.starts.begin() + removeIndex);
+    selectedMaterial = std::clamp(
+        selectedMaterial, 0, static_cast<int>(st.planner.starts.size()) - 1);
+  }
 }
 
-void drawRouteCard(AppState& st, PlannerAnimationState& animation, float cardHeight) {
-  if (!widgets::beginCard("##route_card", ImVec2(0.0f, cardHeight),
-                          style::col::BgSurface))
+void drawRouteCard(AppState& st, PlannerAnimationState& animation,
+                   ImVec2 cardSize) {
+  constexpr ImGuiWindowFlags cardFlags =
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+  if (!widgets::beginCard("##route_card", cardSize, style::col::BgSurface,
+                          cardFlags))
     return;
   widgets::cardHeader(icons::Icon::Retro, "Route", "Search and ranking controls",
                       style::col::Accent);
@@ -961,15 +909,17 @@ void drawRouteCard(AppState& st, PlannerAnimationState& animation, float cardHei
   widgets::endCard();
 }
 
-void drawTargetCard(AppState& st, float cardHeight) {
-  if (!widgets::beginCard("##target_card", ImVec2(0.0f, cardHeight),
-                          style::col::BgSurface))
+void drawTargetCard(AppState& st, ImVec2 cardSize) {
+  constexpr ImGuiWindowFlags cardFlags =
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+  if (!widgets::beginCard("##target_card", cardSize, style::col::BgSurface,
+                          cardFlags))
     return;
-  widgets::cardHeader(icons::Icon::Molecule, "Target",
+  widgets::cardHeader(icons::Icon::Molecule, "Target product",
                       "The product this route must reach", style::col::Violet);
-  const float availableWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
-  const float targetWidth = std::min(materialWidth(), availableWidth);
-  const float offset = std::max((availableWidth - targetWidth) * 0.5f, 0.0f);
+  const layout::Frame frame = layout::measure();
+  const float targetWidth = std::min(materialWidth(), frame.size.x);
+  const float offset = std::max((frame.size.x - targetWidth) * 0.5f, 0.0f);
   ImGui::Indent(offset);
   ImGui::PushID("target");
   materialBoxWidget(st, st.planner.target, true, -1);
@@ -979,12 +929,14 @@ void drawTargetCard(AppState& st, float cardHeight) {
 }
 
 void drawResultsCard(AppState& st, RoutePreviewCache& cache,
-                     PlannerAnimationState& animation) {
-  if (!widgets::beginCard("##results_card", ImVec2(0.0f, 0.0f),
-                          style::col::BgSurface))
+                     PlannerAnimationState& animation, float cardHeight) {
+  constexpr ImGuiWindowFlags cardFlags =
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+  if (!widgets::beginCard("##results_card", ImVec2(0.0f, cardHeight),
+                          style::col::BgSurface, cardFlags))
     return;
   widgets::cardHeader(icons::Icon::ChartBars, "Results",
-                      "Ranked retrosynthetic candidates", style::col::Violet);
+                      "Ranked retrosynthetic candidates", style::col::Data);
   drawResults(st, cache, animation);
   widgets::endCard();
 }
@@ -996,39 +948,54 @@ void drawReactionPlanner(AppState& st) {
 
   static RoutePreviewCache routeCache;
   static PlannerAnimationState animation;
-  const float flowCardHeight =
-      materialHeight() + ImGui::GetFrameHeight() * 4.0f;
-  const float availableWidth = ImGui::GetContentRegionAvail().x;
-  const bool horizontalFlow = availableWidth >= 880.0f * uiScale();
+  static int flowTab = 0;
 
-  if (horizontalFlow) {
-    constexpr ImGuiTableFlags flowFlags =
-        ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings;
-    if (ImGui::BeginTable("##reaction_flow", 3, flowFlags)) {
-      // The route column carries the widest fixed content -- the run and clear
-      // actions side by side -- so it gets a share close to the target card
-      // rather than the narrowest one.
-      ImGui::TableSetupColumn("##starts", ImGuiTableColumnFlags_WidthStretch, 1.25f);
-      ImGui::TableSetupColumn("##route", ImGuiTableColumnFlags_WidthStretch, 1.05f);
-      ImGui::TableSetupColumn("##target", ImGuiTableColumnFlags_WidthStretch, 1.00f);
-      ImGui::TableNextColumn();
-      drawStartingMaterialsCard(st, flowCardHeight);
-      ImGui::TableNextColumn();
-      drawRouteCard(st, animation, flowCardHeight);
-      ImGui::TableNextColumn();
-      drawTargetCard(st, flowCardHeight);
-      ImGui::EndTable();
-    }
+  const layout::Frame page = layout::measure(
+      ImVec2(ImGui::GetContentRegionAvail().x, layout::pageHeight()));
+  const float pageStartY = ImGui::GetCursorPosY();
+  const float pageWeights[] = {1.0f, 0.75f};
+  const float pageMinimums[] = {page.row * 18.0f, page.row * 10.0f};
+  float pageHeights[2]{};
+  layout::distribute(page.size.y, pageWeights, pageMinimums, 2, page.gap,
+                     pageHeights);
+
+  const layout::Frame flowFrame =
+      layout::measure(ImVec2(page.size.x, pageHeights[0]));
+  const int flowColumns =
+      std::min(3, layout::columnsThatFit(flowFrame, 18.0f));
+  if (flowColumns == 3) {
+    const float cardWidth = layout::columnWidth(flowFrame, 3);
+    const ImVec2 cardSize(cardWidth, pageHeights[0]);
+    drawStartingMaterialsCard(st, cardSize);
+    ImGui::SameLine(0.0f, flowFrame.gap);
+    drawRouteCard(st, animation, cardSize);
+    ImGui::SameLine(0.0f, flowFrame.gap);
+    drawTargetCard(st, cardSize);
   } else {
-    drawStartingMaterialsCard(st, flowCardHeight);
-    ImGui::Spacing();
-    drawRouteCard(st, animation, 0.0f);
-    ImGui::Spacing();
-    drawTargetCard(st, 0.0f);
+    constexpr ImGuiWindowFlags flowFlags =
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+    const bool flowOpen = ImGui::BeginChild(
+        "##reaction_flow", ImVec2(0.0f, pageHeights[0]),
+        ImGuiChildFlags_None, flowFlags);
+    if (flowOpen) {
+      static constexpr const char* labels[] = {
+          "Starting materials", "Route", "Target product"};
+      static constexpr icons::Icon glyphs[] = {
+          icons::Icon::Flask, icons::Icon::Retro, icons::Icon::Molecule};
+      widgets::subTabs("##flow_tabs", labels, glyphs, 3, flowTab);
+      const ImVec2 cardSize(0.0f, layout::pageHeight());
+      if (flowTab == 0)
+        drawStartingMaterialsCard(st, cardSize);
+      else if (flowTab == 1)
+        drawRouteCard(st, animation, cardSize);
+      else
+        drawTargetCard(st, cardSize);
+    }
+    ImGui::EndChild();
   }
 
-  ImGui::Spacing();
-  drawResultsCard(st, routeCache, animation);
+  layout::nextRow(pageStartY + pageHeights[0] + page.gap);
+  drawResultsCard(st, routeCache, animation, pageHeights[1]);
 }
 
 }  // namespace chemcad::ui

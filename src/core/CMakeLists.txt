@@ -3,6 +3,7 @@ add_library(chemcad_core STATIC
   model.cpp
   sprout.cpp
   paths.cpp
+  profiler.cpp
   subprocess.cpp)
 target_include_directories(chemcad_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_compile_definitions(chemcad_core PRIVATE

@@ -37,6 +37,7 @@
 #include "app/screenshot.hpp"
 #include "chem/bridge.hpp"
 #include "core/paths.hpp"
+#include "core/profiler.hpp"
 #include "gfx/fluid_renderer.hpp"
 #include "gfx/gl_api.hpp"
 #include "ui/app_state.hpp"
@@ -331,8 +332,8 @@ void renderFluidStage(AppState& state, chemcad::gfx::FluidRenderer& renderer) {
     stage.requested = false;
     return;
   }
-  const std::uint32_t texture =
-      renderer.render(*stage.snapshot, stage.camera, stage.width, stage.height, stage.settings);
+  const std::uint32_t texture = renderer.render(*stage.snapshot, stage.pose, stage.camera,
+                                                stage.width, stage.height, stage.settings);
   stage.texture = texture;
   stage.textureWidth = renderer.width();
   stage.textureHeight = renderer.height();
@@ -434,7 +435,11 @@ int main(int, char**) {
       continue;
     }
 
-    state.tasks.pump();
+    chemcad::core::profiler().beginFrame();
+    {
+      CHEMCAD_PROFILE_ZONE("tasks.pump");
+      state.tasks.pump();
+    }
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -540,24 +545,45 @@ int main(int, char**) {
 
     chemcad::ui::drawStatusBar(state);
 
+    // A floating developer surface, deliberately outside the dockspace: the
+    // profiler measures the bench, it is not part of it.
+    if (state.showProfiler) {
+      CHEMCAD_PROFILE_ZONE("ui.profiler");
+      ImGui::SetNextWindowSize(ImVec2(vp->Size.x * 0.55f, vp->Size.y * 0.55f),
+                               ImGuiCond_FirstUseEver);
+      if (ImGui::Begin("Performance", &state.showProfiler)) {
+        chemcad::ui::drawProfiler(state);
+      }
+      ImGui::End();
+    }
+
     pumpWindowChrome(window, state, chrome);
 
     // ---- render
-    ImGui::Render();
+    {
+      CHEMCAD_PROFILE_ZONE("imgui.render");
+      ImGui::Render();
+    }
     glfwGetFramebufferSize(window, &fbw, &fbh);
     if (chemcad::gfx::glLoaded()) {
       chemcad::gfx::glViewport(0, 0, fbw, fbh);
       chemcad::gfx::glClearColor(0.043f, 0.055f, 0.075f, 1.0f);
       chemcad::gfx::glClear(chemcad::gfx::GL_COLOR_BUFFER_BIT);
     }
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    {
+      CHEMCAD_PROFILE_ZONE("imgui.submit");
+      ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    }
 
     // The 3D fluid is rendered here, after ImGui has recorded its draw data
     // and before the backend submits it: the panel published a request during
     // submission and drew the PREVIOUS frame's texture, so the stage is always
     // exactly one frame behind, which is invisible at 60 Hz and keeps every GL
     // call for the fluid on the main thread inside one seam.
-    renderFluidStage(state, fluidRenderer);
+    {
+      CHEMCAD_PROFILE_ZONE("fluid.stage");
+      renderFluidStage(state, fluidRenderer);
+    }
 
     // PNG export must sample the framebuffer before the swap.
     if (state.pendingPngExport.has_value()) {
@@ -575,6 +601,7 @@ int main(int, char**) {
     }
 
     glfwSwapBuffers(window);
+    chemcad::core::profiler().endFrame();
   }
 
   ImGui_ImplOpenGL3_Shutdown();

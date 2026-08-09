@@ -23,6 +23,9 @@ void drawExtractionLab(AppState&);  // ui/extraction_view.cpp
 void warmExtractionPhysics(AppState&);
 void drawViewer3D(AppState&);       // ui/viewer3d_view.cpp
 void drawStatusBar(AppState&);      // ui/status_bar.cpp
+// Live performance instrumentation: per-zone CPU and GPU timings, a frame
+// timeline and a CSV export. ui/profiler_view.cpp
+void drawProfiler(AppState&);
 
 // Applies the dark theme, sizing and fonts. Called once at startup.
 void applyTheme(float uiScale);

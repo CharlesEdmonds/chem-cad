@@ -10,6 +10,7 @@
 #include "ui/charts.hpp"
 #include "ui/element_data.hpp"
 #include "ui/icons.hpp"
+#include "ui/layout.hpp"
 #include "ui/theme.hpp"
 #include "ui/ui.hpp"
 #include "ui/widgets.hpp"
@@ -168,7 +169,7 @@ std::string documentName(const AppState& st) {
   return name.empty() ? "Untitled" : name;
 }
 
-void glyphText(icons::Icon icon, const char* text, ImVec4 colour = style::col::Text) {
+void glyphText(icons::Icon icon, const char* text, ImVec4 colour = style::col::Data) {
   const style::Metrics& m = style::metrics();
   const float iconSize = m.iconSize * 0.66f;
   const ImVec2 measured = ImGui::CalcTextSize(text);
@@ -197,15 +198,15 @@ void compactMetric(icons::Icon icon, const char* caption, const char* value) {
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
   icons::draw(dl, icon, ImVec2(min.x + iconSize * 0.5f, min.y + height * 0.5f),
-              iconSize, style::u32(style::col::TextDim));
+              iconSize, style::u32(style::col::DataDim));
   const float valueX = min.x + iconSize + m.gap * 0.45f;
   const bool mono = style::pushFont(style::fonts::mono());
-  dl->AddText(ImVec2(valueX, min.y), style::u32(style::col::Text), value);
+  dl->AddText(ImVec2(valueX, min.y), style::u32(style::col::DataBright), value);
   style::popFont(mono);
   dl->AddText(style::fonts::semibold(), smallSize,
               ImVec2(valueX + valueSize.x + m.gap * 0.35f,
                      min.y + (height - smallSize) * 0.5f),
-              style::u32(style::col::TextFaint), caption);
+              style::u32(style::col::DataDim), caption);
 }
 
 void drawBadgeCluster(const AppState& st) {
@@ -215,13 +216,13 @@ void drawBadgeCluster(const AppState& st) {
   std::snprintf(zoom, sizeof(zoom), "%.0f%%", std::round(st.cam.zoom * 100.0f));
 
   const bool mono = style::pushFont(style::fonts::mono());
-  widgets::badge(formula.c_str(), style::col::TextDim);
+  widgets::badge(formula.c_str(), style::col::DataDim);
   style::popFont(mono);
   ImGui::SameLine(0.0f, m.gap * 0.5f);
-  widgets::badge(zoom, style::col::TextDim);
+  widgets::badge(zoom, style::col::DataDim);
   if (st.tasks.busy()) {
     ImGui::SameLine(0.0f, m.gap * 0.5f);
-    widgets::badge("working", style::col::Accent);
+    widgets::badge("Working", style::col::Data);
   }
 }
 
@@ -245,6 +246,8 @@ void drawStatusBar(AppState& st) {
   std::snprintf(atoms, sizeof(atoms), "%zu", atomCount);
   std::snprintf(bonds, sizeof(bonds), "%zu", bondCount);
   std::snprintf(selection, sizeof(selection), "%zu", selectionCount);
+  char frameTime[24];
+  std::snprintf(frameTime, sizeof(frameTime), "%.1f ms", frameTimes.latest());
 
   ImGuiViewport* viewport = ImGui::GetMainViewport();
   const style::Metrics& m = style::metrics();
@@ -258,62 +261,70 @@ void drawStatusBar(AppState& st) {
     const ImVec2 wmin = ImGui::GetWindowPos();
     ImGui::GetWindowDrawList()->AddLine(
         wmin, ImVec2(wmin.x + ImGui::GetWindowWidth(), wmin.y),
-        style::u32(style::col::Border), m.hairline);
+        style::u32(style::col::GridLine), m.hairline);
 
-    if (ImGui::BeginTable("##status_layout", 3,
-                          ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX |
-                              ImGuiTableFlags_NoPadInnerX)) {
-      ImGui::TableSetupColumn("##identity", ImGuiTableColumnFlags_WidthStretch, 0.28f);
-      ImGui::TableSetupColumn("##message", ImGuiTableColumnFlags_WidthStretch, 0.34f);
-      ImGui::TableSetupColumn("##metrics", ImGuiTableColumnFlags_WidthStretch, 0.38f);
+    const layout::Frame frame = layout::measure();
+    const float columnWeights[]{0.28f, 0.34f, 0.38f};
+    float columnWidths[3]{};
+    layout::distribute(frame.size.x, columnWeights, nullptr, 3, frame.gap,
+                       columnWidths);
+    constexpr ImGuiWindowFlags childFlags =
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
-      ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0);
-      std::string identity =
-          std::string(toolName(st.tool)) + "  ·  " + documentName(st) + (st.dirty ? " *" : "");
-      glyphText(toolIcon(st), identity.c_str());
+    ImGui::BeginChild("##status_identity", ImVec2(columnWidths[0], frame.size.y),
+                      false, childFlags);
+    const std::string identity =
+        std::string(toolName(st.tool)) + "  ·  " + documentName(st) + (st.dirty ? " *" : "");
+    glyphText(toolIcon(st), identity.c_str());
+    const std::string hover = hoverDescription(st);
+    ImGui::TextColored(style::col::DataDim, "%s", hover.c_str());
+    ImGui::EndChild();
 
-      ImGui::TableSetColumnIndex(1);
-      const std::string idleMessage = toolHint(st);
-      const char* message =
-          st.statusMessage.empty() ? idleMessage.c_str() : st.statusMessage.c_str();
-      ImGui::TextUnformatted(message);
-      if (ImGui::IsItemHovered() && ImGui::CalcTextSize(message).x > ImGui::GetContentRegionAvail().x)
-        ImGui::SetTooltip("%s", message);
-
-      ImGui::TableSetColumnIndex(2);
-      compactMetric(icons::Icon::Atom, "ATOMS", atoms);
-      ImGui::SameLine(0.0f, m.gap);
-      compactMetric(icons::Icon::Bond, "BONDS", bonds);
-      ImGui::SameLine(0.0f, m.gap);
-      compactMetric(icons::Icon::Select, "SELECTED", selection);
-      ImGui::SameLine(0.0f, m.gap);
-      charts::SparklineStyle sparkStyle;
-      sparkStyle.accent = style::col::Teal;
-      sparkStyle.fill = true;
-      sparkStyle.showLatest = true;
-      sparkStyle.autoFloor = false;
-      sparkStyle.floorValue = 0.0;
-      sparkStyle.ceilingValue = 0.0;
-      charts::sparkline("##frame_time", frameTimes,
-                        ImVec2(ImGui::GetFontSize() * 5.2f, ImGui::GetTextLineHeight()),
-                        sparkStyle);
-      if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Frame time %.2f ms", frameTimes.latest());
-      }
-
-      ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0);
-      const std::string hover = hoverDescription(st);
-      ImGui::TextDisabled("%s", hover.c_str());
-
-      ImGui::TableSetColumnIndex(1);
-      ImGui::TextDisabled("Live document status");
-
-      ImGui::TableSetColumnIndex(2);
-      drawBadgeCluster(st);
-      ImGui::EndTable();
+    ImGui::SameLine(0.0f, frame.gap);
+    ImGui::BeginChild("##status_message", ImVec2(columnWidths[1], frame.size.y),
+                      false, childFlags);
+    const std::string idleMessage = toolHint(st);
+    const char* message =
+        st.statusMessage.empty() ? idleMessage.c_str() : st.statusMessage.c_str();
+    ImGui::TextColored(style::col::Data, "%s", message);
+    if (ImGui::IsItemHovered() &&
+        ImGui::CalcTextSize(message).x > ImGui::GetContentRegionAvail().x) {
+      ImGui::SetTooltip("%s", message);
     }
+    widgets::statusDot(st.solubility.funnelRunning ? "Fluid solver running"
+                                                   : "Fluid solver paused",
+                       st.solubility.funnelRunning, style::col::Data);
+    ImGui::EndChild();
+
+    ImGui::SameLine(0.0f, frame.gap);
+    ImGui::BeginChild("##status_metrics", ImVec2(columnWidths[2], frame.size.y),
+                      false, childFlags);
+    compactMetric(icons::Icon::Atom, "Atoms", atoms);
+    ImGui::SameLine(0.0f, frame.gap);
+    compactMetric(icons::Icon::Bond, "Bonds", bonds);
+    ImGui::SameLine(0.0f, frame.gap);
+    compactMetric(icons::Icon::Select, "Selected", selection);
+
+    compactMetric(icons::Icon::ChartLine, "Frame time", frameTime);
+    ImGui::SameLine(0.0f, frame.gap);
+    charts::SparklineStyle sparkStyle;
+    sparkStyle.accent = style::col::Data;
+    sparkStyle.fill = true;
+    sparkStyle.showLatest = true;
+    sparkStyle.autoFloor = false;
+    sparkStyle.floorValue = 0.0;
+    sparkStyle.ceilingValue = 0.0;
+    charts::sparkline("##frame_time", frameTimes,
+                      ImVec2(frame.em * 5.2f, ImGui::GetTextLineHeight()),
+                      sparkStyle);
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("Frame time %.2f ms", frameTimes.latest());
+    }
+    if (frame.density != layout::Density::Compact) {
+      ImGui::SameLine(0.0f, frame.gap);
+      drawBadgeCluster(st);
+    }
+    ImGui::EndChild();
   }
   ImGui::End();
 }

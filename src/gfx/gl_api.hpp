@@ -1,12 +1,12 @@
 #pragma once
-// Minimal OpenGL 3.3 core function loader.
+// Minimal OpenGL loader for the 3.3 renderer and optional 4.3 compute path.
 //
-// The application creates a GL 3.3 core context (src/app/main.cpp) and Dear
-// ImGui's backend carries its own private loader, whose header states plainly
-// that the rest of the application must use a different one. Rather than adding
-// a code generator or a whole loader library for the ~30 entry points the fluid
-// renderer needs, this declares exactly those and resolves them through the
-// context's own getProcAddress.
+// Dear ImGui's backend carries its own private loader, whose header states
+// plainly that the rest of the application must use a different one. Rather
+// than adding a code generator or a loader dependency, this declares exactly
+// the entry points ChemCAD uses and resolves them through the context's own
+// getProcAddress. Compute-only functions are optional so a 3.3 context still
+// loads successfully and retains the CPU fluid solver.
 //
 // Everything here is a no-op until `loadGl` succeeds, and every pointer is null
 // until then, so a headless build that never calls it cannot accidentally issue
@@ -94,6 +94,23 @@ using GLsizeiptr = std::intptr_t;
 #undef GL_RENDERER
 #undef GL_RG
 #undef GL_RG16F
+#undef GL_BUFFER_UPDATE_BARRIER_BIT
+#undef GL_COMPUTE_SHADER
+#undef GL_DYNAMIC_DRAW
+#undef GL_MAJOR_VERSION
+#undef GL_MAP_READ_BIT
+#undef GL_MAP_WRITE_BIT
+#undef GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS
+#undef GL_MAX_COMPUTE_WORK_GROUP_COUNT
+#undef GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS
+#undef GL_MAX_COMPUTE_WORK_GROUP_SIZE
+#undef GL_MAX_SHADER_STORAGE_BLOCK_SIZE
+#undef GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS
+#undef GL_MINOR_VERSION
+#undef GL_R32UI
+#undef GL_RED_INTEGER
+#undef GL_SHADER_STORAGE_BARRIER_BIT
+#undef GL_SHADER_STORAGE_BUFFER
 #undef GL_RGBA
 #undef GL_RGBA8
 #undef GL_SCISSOR_TEST
@@ -123,6 +140,23 @@ inline constexpr GLboolean GL_FALSE = 0;
 inline constexpr GLboolean GL_TRUE = 1;
 inline constexpr GLenum GL_NO_ERROR = 0;
 inline constexpr GLenum GL_VERSION = 0x1F02;
+inline constexpr GLenum GL_MAJOR_VERSION = 0x821B;
+inline constexpr GLenum GL_MINOR_VERSION = 0x821C;
+inline constexpr GLenum GL_COMPUTE_SHADER = 0x91B9;
+inline constexpr GLenum GL_SHADER_STORAGE_BUFFER = 0x90D2;
+inline constexpr GLenum GL_DYNAMIC_DRAW = 0x88E8;
+inline constexpr GLenum GL_R32UI = 0x8236;
+inline constexpr GLenum GL_RED_INTEGER = 0x8D94;
+inline constexpr GLenum GL_MAX_COMPUTE_WORK_GROUP_COUNT = 0x91BE;
+inline constexpr GLenum GL_MAX_COMPUTE_WORK_GROUP_SIZE = 0x91BF;
+inline constexpr GLenum GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS = 0x90EB;
+inline constexpr GLenum GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS = 0x90DB;
+inline constexpr GLenum GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS = 0x90DD;
+inline constexpr GLenum GL_MAX_SHADER_STORAGE_BLOCK_SIZE = 0x90DE;
+inline constexpr GLbitfield GL_MAP_READ_BIT = 0x0001;
+inline constexpr GLbitfield GL_MAP_WRITE_BIT = 0x0002;
+inline constexpr GLbitfield GL_BUFFER_UPDATE_BARRIER_BIT = 0x0200;
+inline constexpr GLbitfield GL_SHADER_STORAGE_BARRIER_BIT = 0x2000;
 inline constexpr GLenum GL_RENDERER = 0x1F01;
 inline constexpr GLenum GL_ARRAY_BUFFER = 0x8892;
 inline constexpr GLenum GL_ARRAY_BUFFER_BINDING = 0x8894;
@@ -223,6 +257,8 @@ using PFNGLCLEARPROC = void (CHEMCAD_GL_APIENTRY*)(GLbitfield);
 using PFNGLCLEARBUFFERFVPROC = void (CHEMCAD_GL_APIENTRY*)(GLenum, GLint, const GLfloat*);
 using PFNGLDEPTHFUNCPROC = void (CHEMCAD_GL_APIENTRY*)(GLenum);
 using PFNGLDEPTHMASKPROC = void (CHEMCAD_GL_APIENTRY*)(GLboolean);
+using PFNGLGETINTEGERI_VPROC = void (CHEMCAD_GL_APIENTRY*)(GLenum, GLuint, GLint*);
+using PFNGLGETINTEGER64VPROC = void (CHEMCAD_GL_APIENTRY*)(GLenum, std::int64_t*);
 using PFNGLBLENDFUNCSEPARATEPROC =
     void (CHEMCAD_GL_APIENTRY*)(GLenum, GLenum, GLenum, GLenum);
 using PFNGLBLENDEQUATIONSEPARATEPROC = void (CHEMCAD_GL_APIENTRY*)(GLenum, GLenum);
@@ -243,6 +279,16 @@ using PFNGLENABLEVERTEXATTRIBARRAYPROC = void (CHEMCAD_GL_APIENTRY*)(GLuint);
 using PFNGLVERTEXATTRIBPOINTERPROC =
     void (CHEMCAD_GL_APIENTRY*)(GLuint, GLint, GLenum, GLboolean, GLsizei, const void*);
 using PFNGLVERTEXATTRIBDIVISORPROC = void (CHEMCAD_GL_APIENTRY*)(GLuint, GLuint);
+using PFNGLBUFFERSUBDATAPROC =
+    void (CHEMCAD_GL_APIENTRY*)(GLenum, GLintptr, GLsizeiptr, const void*);
+using PFNGLGETBUFFERSUBDATAPROC =
+    void (CHEMCAD_GL_APIENTRY*)(GLenum, GLintptr, GLsizeiptr, void*);
+using PFNGLBINDBUFFERBASEPROC = void (CHEMCAD_GL_APIENTRY*)(GLenum, GLuint, GLuint);
+using PFNGLMAPBUFFERRANGEPROC =
+    void* (CHEMCAD_GL_APIENTRY*)(GLenum, GLintptr, GLsizeiptr, GLbitfield);
+using PFNGLUNMAPBUFFERPROC = GLboolean (CHEMCAD_GL_APIENTRY*)(GLenum);
+using PFNGLCLEARBUFFERDATAPROC =
+    void (CHEMCAD_GL_APIENTRY*)(GLenum, GLenum, GLenum, GLenum, const void*);
 using PFNGLCREATESHADERPROC = GLuint (CHEMCAD_GL_APIENTRY*)(GLenum);
 using PFNGLSHADERSOURCEPROC =
     void (CHEMCAD_GL_APIENTRY*)(GLuint, GLsizei, const GLchar* const*, const GLint*);
@@ -277,6 +323,13 @@ using PFNGLACTIVETEXTUREPROC = void (CHEMCAD_GL_APIENTRY*)(GLenum);
 using PFNGLBINDTEXTUREPROC = void (CHEMCAD_GL_APIENTRY*)(GLenum, GLuint);
 using PFNGLTEXIMAGE2DPROC = void (CHEMCAD_GL_APIENTRY*)(GLenum, GLint, GLint, GLsizei, GLsizei,
                                                        GLint, GLenum, GLenum, const void*);
+using PFNGLUNIFORM1UIPROC = void (CHEMCAD_GL_APIENTRY*)(GLint, GLuint);
+using PFNGLUNIFORM3IPROC = void (CHEMCAD_GL_APIENTRY*)(GLint, GLint, GLint, GLint);
+using PFNGLDISPATCHCOMPUTEPROC =
+    void (CHEMCAD_GL_APIENTRY*)(GLuint, GLuint, GLuint);
+using PFNGLMEMORYBARRIERPROC = void (CHEMCAD_GL_APIENTRY*)(GLbitfield);
+using PFNGLSHADERSTORAGEBLOCKBINDINGPROC =
+    void (CHEMCAD_GL_APIENTRY*)(GLuint, GLuint, GLuint);
 using PFNGLTEXPARAMETERIPROC = void (CHEMCAD_GL_APIENTRY*)(GLenum, GLenum, GLint);
 using PFNGLGENFRAMEBUFFERSPROC = void (CHEMCAD_GL_APIENTRY*)(GLsizei, GLuint*);
 using PFNGLDELETEFRAMEBUFFERSPROC = void (CHEMCAD_GL_APIENTRY*)(GLsizei, const GLuint*);
@@ -301,6 +354,8 @@ using PFNGLDRAWELEMENTSPROC =
 extern PFNGLGETSTRINGPROC glGetString;
 extern PFNGLGETERRORPROC glGetError;
 extern PFNGLGETINTEGERVPROC glGetIntegerv;
+extern PFNGLGETINTEGERI_VPROC glGetIntegeri_v;
+extern PFNGLGETINTEGER64VPROC glGetInteger64v;
 extern PFNGLGETBOOLEANVPROC glGetBooleanv;
 extern PFNGLGETFLOATVPROC glGetFloatv;
 extern PFNGLISENABLEDPROC glIsEnabled;
@@ -319,6 +374,12 @@ extern PFNGLGENBUFFERSPROC glGenBuffers;
 extern PFNGLDELETEBUFFERSPROC glDeleteBuffers;
 extern PFNGLBINDBUFFERPROC glBindBuffer;
 extern PFNGLBUFFERDATAPROC glBufferData;
+extern PFNGLBUFFERSUBDATAPROC glBufferSubData;
+extern PFNGLGETBUFFERSUBDATAPROC glGetBufferSubData;
+extern PFNGLBINDBUFFERBASEPROC glBindBufferBase;
+extern PFNGLMAPBUFFERRANGEPROC glMapBufferRange;
+extern PFNGLUNMAPBUFFERPROC glUnmapBuffer;
+extern PFNGLCLEARBUFFERDATAPROC glClearBufferData;
 extern PFNGLGENVERTEXARRAYSPROC glGenVertexArrays;
 extern PFNGLDELETEVERTEXARRAYSPROC glDeleteVertexArrays;
 extern PFNGLBINDVERTEXARRAYPROC glBindVertexArray;
@@ -347,6 +408,11 @@ extern PFNGLUNIFORM2FPROC glUniform2f;
 extern PFNGLUNIFORM3FPROC glUniform3f;
 extern PFNGLUNIFORM4FPROC glUniform4f;
 extern PFNGLUNIFORM1FVPROC glUniform1fv;
+extern PFNGLUNIFORM1UIPROC glUniform1ui;
+extern PFNGLUNIFORM3IPROC glUniform3i;
+extern PFNGLDISPATCHCOMPUTEPROC glDispatchCompute;
+extern PFNGLMEMORYBARRIERPROC glMemoryBarrier;
+extern PFNGLSHADERSTORAGEBLOCKBINDINGPROC glShaderStorageBlockBinding;
 extern PFNGLUNIFORMMATRIX3FVPROC glUniformMatrix3fv;
 extern PFNGLUNIFORMMATRIX4FVPROC glUniformMatrix4fv;
 extern PFNGLGENTEXTURESPROC glGenTextures;

@@ -413,6 +413,7 @@ struct Simulation::Impl {
     // world lets the renderer move the glassware with the hand instead of
     // leaving it planted while its contents slosh.
     const std::array<double, 3> shakeOffset = shakeDisplacement(motion, elapsed);
+    next->shakeOffset = shakeOffset;
     next->pose.position = {shakeOffset[0] + motion.manualOffset[0],
                            shakeOffset[1] + motion.manualOffset[1],
                            shakeOffset[2] + motion.manualOffset[2]};

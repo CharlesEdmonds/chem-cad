@@ -1,4 +1,5 @@
 #include "ui/charts.hpp"
+#include "ui/layout.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -6,6 +7,7 @@
 #include <cstdio>
 #include <limits>
 #include <string>
+#include <vector>
 
 namespace chemcad::ui::charts {
 
@@ -47,11 +49,32 @@ bool nearlyEqual(double left, double right) {
   return std::abs(left - right) <= std::numeric_limits<double>::epsilon() * scale * 8.0;
 }
 
-float sampleY(double value, double floor, double ceiling, bool degenerate,
-              float top, float bottom) {
-  if (degenerate) return (top + bottom) * 0.5f;
-  const double normalized = std::clamp((value - floor) / (ceiling - floor), 0.0, 1.0);
-  return bottom - static_cast<float>(normalized) * (bottom - top);
+struct AxisBuilder {
+  bool hasValue = false;
+  double low = 0.0;
+  double high = 0.0;
+
+  void add(double value) {
+    if (!std::isfinite(value)) return;
+    if (!hasValue) {
+      low = value;
+      high = value;
+      hasValue = true;
+      return;
+    }
+    low = std::min(low, value);
+    high = std::max(high, value);
+  }
+
+  Axis linear(bool includeZero, int targetTicks) const {
+    if (!hasValue) return {};
+    return niceAxis(includeZero ? std::min(0.0, low) : low,
+                    includeZero ? std::max(0.0, high) : high, targetTicks);
+  }
+};
+
+float sampleY(double value, const Axis& axis, float top, float bottom) {
+  return bottom - static_cast<float>(axis.normalise(value)) * (bottom - top);
 }
 
 void drawSparkline(ImDrawList* drawList, const DrawRect& rect, const Trace& trace,
@@ -67,21 +90,23 @@ void drawSparkline(ImDrawList* drawList, const DrawRect& rect, const Trace& trac
   const float bottom = std::max(top, rect.max.y - inset);
 
   drawList->AddLine(ImVec2(left, bottom), ImVec2(right, bottom),
-                    style::u32(style::col::Border, 0.65f), metrics.hairline);
+                    style::u32(style::col::GridLine, 0.65f), metrics.hairline);
   if (trace.empty()) return;
 
-  const double traceMinimum = trace.minimum();
-  const double traceMaximum = trace.maximum();
-  double floor = sparkStyle.autoFloor ? traceMinimum : sparkStyle.floorValue;
-  if (!std::isfinite(floor)) floor = 0.0;
-
-  double ceiling = sparkStyle.ceilingValue;
-  if (!std::isfinite(ceiling) || ceiling <= floor) ceiling = traceMaximum;
-
-  const bool flatTrace = nearlyEqual(traceMinimum, traceMaximum);
-  const bool invalidRange = !std::isfinite(ceiling) || ceiling <= floor || nearlyEqual(floor, ceiling);
-  const bool degenerate = flatTrace || invalidRange;
-  if (invalidRange) ceiling = floor;
+  const bool flatTrace = nearlyEqual(trace.minimum(), trace.maximum());
+  AxisBuilder bounds;
+  bounds.add(trace.minimum());
+  bounds.add(trace.maximum());
+  const double requestedFloor =
+      std::isfinite(sparkStyle.floorValue) ? sparkStyle.floorValue : 0.0;
+  if (!flatTrace) {
+    if (!sparkStyle.autoFloor) bounds.add(requestedFloor);
+    if (std::isfinite(sparkStyle.ceilingValue) &&
+        sparkStyle.ceilingValue > requestedFloor) {
+      bounds.add(sparkStyle.ceilingValue);
+    }
+  }
+  const Axis axis = bounds.linear(false, 4);
 
   const std::size_t count = trace.size();
   const float span = right - left;
@@ -89,10 +114,10 @@ void drawSparkline(ImDrawList* drawList, const DrawRect& rect, const Trace& trac
     const float x = count > 1
                         ? left + span * static_cast<float>(index) / static_cast<float>(count - 1)
                         : (left + right) * 0.5f;
-    return ImVec2(x, sampleY(trace[index], floor, ceiling, degenerate, top, bottom));
+    return ImVec2(x, sampleY(trace[index], axis, top, bottom));
   };
 
-  if (sparkStyle.fill && count > 1) {
+  if (sparkStyle.fill && !flatTrace && count > 1) {
     ImVec2 previous = pointAt(0);
     for (std::size_t index = 1; index < count; ++index) {
       const ImVec2 current = pointAt(index);
@@ -134,11 +159,123 @@ std::string uppercase(const char* text) {
   return result;
 }
 
-double finiteMagnitude(double value) {
-  return std::isfinite(value) ? std::abs(value) : 0.0;
+float chartLabelFont(float requested) {
+  return layout::labelFont(requested);
+}
+
+ImVec2 chartTextSize(const char* text, float requested) {
+  const float fontSize = chartLabelFont(requested);
+  return ImGui::GetFont()->CalcTextSizeA(
+      fontSize, std::numeric_limits<float>::max(), 0.0f, text ? text : "");
+}
+
+void drawChartText(ImDrawList* drawList, ImVec2 position, ImU32 colour,
+                   const char* text, float requested) {
+  const float fontSize = chartLabelFont(requested);
+  drawList->AddText(nullptr, fontSize, position, colour, text ? text : "");
+}
+
+bool chartTextFits(const char* text, float width, float requested) {
+  return width >= 0.0f && chartTextSize(text, requested).x <= width;
 }
 
 }  // namespace
+
+double Axis::normalise(double value) const {
+  const double span = max - min;
+  if (!std::isfinite(value)) return 0.0;
+  if (!std::isfinite(span) || span <= 0.0) return 0.5;
+  return std::clamp((value - min) / span, 0.0, 1.0);
+}
+
+Axis niceAxis(double low, double high, int targetTicks) {
+  if (std::isfinite(low) && std::isfinite(high) && low > high) {
+    std::swap(low, high);
+  }
+
+  if (!std::isfinite(low) || !std::isfinite(high) || nearlyEqual(low, high)) {
+    if (!std::isfinite(low) && !std::isfinite(high)) return {};
+    const double centre = std::isfinite(low) ? low : high;
+    low = centre - 0.5;
+    high = centre + 0.5;
+  }
+
+  targetTicks = std::max(1, targetTicks);
+  const double rawStep = (high - low) / static_cast<double>(targetTicks);
+  if (!std::isfinite(rawStep) || rawStep <= 0.0) return {};
+
+  double exponent = std::floor(std::log10(rawStep));
+  double power = std::pow(10.0, exponent);
+  if (!std::isfinite(power) || power <= 0.0) return {};
+  const double mantissa = rawStep / power;
+  double snapped = 1.0;
+  if (mantissa > 5.0) {
+    snapped = 1.0;
+    power *= 10.0;
+    exponent += 1.0;
+  } else if (mantissa > 2.0) {
+    snapped = 5.0;
+  } else if (mantissa > 1.0) {
+    snapped = 2.0;
+  }
+  const double step = snapped * power;
+  if (!std::isfinite(step) || step <= 0.0) return {};
+
+  double axisMin = std::floor(low / step) * step;
+  double axisMax = std::ceil(high / step) * step;
+  if (!(axisMin < low)) axisMin -= step;
+  if (!(axisMax > high)) axisMax += step;
+  if (!std::isfinite(axisMin) || !std::isfinite(axisMax) ||
+      !(axisMax > axisMin)) {
+    return {};
+  }
+
+  const double rawTicks = std::round((axisMax - axisMin) / step) + 1.0;
+  Axis axis;
+  axis.min = axisMin;
+  axis.max = axisMax;
+  axis.step = step;
+  axis.decimals =
+      std::clamp(static_cast<int>(std::max(0.0, -exponent)), 0, 6);
+  axis.ticks = std::clamp(
+      static_cast<int>(std::min(rawTicks, static_cast<double>(std::numeric_limits<int>::max()))),
+      2, std::numeric_limits<int>::max());
+  return axis;
+}
+
+Axis niceLogAxis(double low, double high, double fallbackLow) {
+  if (!std::isfinite(fallbackLow) || fallbackLow <= 0.0) fallbackLow = 1.0e-9;
+  if (!std::isfinite(low) || low <= 0.0) low = fallbackLow;
+  if (!std::isfinite(high) || high <= 0.0) high = fallbackLow;
+  if (low > high) std::swap(low, high);
+
+  double minDecade = std::floor(std::log10(low));
+  double maxDecade = std::ceil(std::log10(high));
+  if (!std::isfinite(minDecade) || !std::isfinite(maxDecade)) return {};
+  if (maxDecade - minDecade < 1.0) {
+    if (nearlyEqual(low, high)) {
+      minDecade = std::floor(std::log10(low));
+      maxDecade = minDecade + 1.0;
+    } else {
+      maxDecade = minDecade + 1.0;
+    }
+  }
+
+  Axis axis;
+  axis.min = minDecade;
+  axis.max = maxDecade;
+  axis.step = 1.0;
+  axis.decimals = 0;
+  axis.ticks = std::max(2, static_cast<int>(maxDecade - minDecade) + 1);
+  return axis;
+}
+
+Axis axisFor(const double* values, int count, bool includeZero) {
+  if (!values || count <= 0) return {};
+  AxisBuilder bounds;
+  for (int index = 0; index < count; ++index) bounds.add(values[index]);
+  return bounds.linear(includeZero, 5);
+}
 
 Trace::Trace(std::size_t capacity) : values_(capacity) {}
 
@@ -243,7 +380,7 @@ void meter(const char* id, double fraction, ImVec2 size, const MeterStyle& meter
   ImVec4 fillColour = meterStyle.accent;
   if (std::isfinite(meterStyle.warnAt) && meterStyle.warnAt > 0.0 &&
       clamped >= meterStyle.warnAt) {
-    fillColour = style::col::Accent;
+    fillColour = style::col::DataBright;
   }
   if (std::isfinite(meterStyle.dangerAt) && meterStyle.dangerAt > 0.0 &&
       clamped >= meterStyle.dangerAt) {
@@ -255,7 +392,7 @@ void meter(const char* id, double fraction, ImVec2 size, const MeterStyle& meter
   ImDrawList* drawList = ImGui::GetWindowDrawList();
   drawList->PushClipRect(rect.min, rect.max, true);
   if (meterStyle.showTrack) {
-    drawList->AddRectFilled(rect.min, rect.max, style::u32(style::col::BgSurface), radius);
+    drawList->AddRectFilled(rect.min, rect.max, style::u32(style::col::DataDim, 0.18f), radius);
   }
 
   const float fillWidth = rect.size.x * static_cast<float>(clamped);
@@ -269,11 +406,11 @@ void meter(const char* id, double fraction, ImVec2 size, const MeterStyle& meter
     if (!std::isfinite(threshold) || threshold <= 0.0) return;
     const float x = rect.min.x + rect.size.x * static_cast<float>(std::clamp(threshold, 0.0, 1.0));
     drawList->AddLine(ImVec2(x, rect.min.y), ImVec2(x, rect.max.y),
-                      style::u32(style::col::BorderStrong), metrics.hairline);
+                      style::u32(style::col::GridLine), metrics.hairline);
   };
   drawThreshold(meterStyle.warnAt);
   drawThreshold(meterStyle.dangerAt);
-  drawList->AddRect(rect.min, rect.max, style::u32(style::col::Border), radius,
+  drawList->AddRect(rect.min, rect.max, style::u32(style::col::DataDim), radius,
                     metrics.hairline, ImDrawFlags_None);
   drawList->PopClipRect();
 }
@@ -286,31 +423,42 @@ void instrument(const char* id, const char* caption, const char* value, const ch
   const style::Metrics& metrics = style::metrics();
   const float fontSize = ImGui::GetFontSize();
   const float padding = metrics.gap * 0.9f;
-  const float captionSize = fontSize * 0.72f;
+  const float captionSize = chartLabelFont(fontSize * 0.72f);
   const std::string upperCaption = uppercase(caption);
   ImDrawList* drawList = ImGui::GetWindowDrawList();
   drawList->PushClipRect(rect.min, rect.max, true);
   drawList->AddRectFilled(rect.min, rect.max, style::u32(style::col::BgSurface), metrics.radiusMd);
-  drawList->AddRect(rect.min, rect.max, style::u32(style::col::Border), metrics.radiusMd,
+  drawList->AddRect(rect.min, rect.max, style::u32(style::col::DataDim), metrics.radiusMd,
                     metrics.hairline, ImDrawFlags_None);
 
   const ImVec2 captionPosition(rect.min.x + padding, rect.min.y + padding);
-  drawList->AddText(nullptr, captionSize, captionPosition, style::u32(style::col::TextDim),
-                    upperCaption.c_str());
+  const float textWidth = std::max(0.0f, rect.size.x - padding * 2.0f);
+  if (chartTextFits(upperCaption.c_str(), textWidth, captionSize)) {
+    drawChartText(drawList, captionPosition, style::u32(style::col::DataDim),
+                  upperCaption.c_str(), captionSize);
+  }
 
   const float valueY = captionPosition.y + captionSize + metrics.gap * 0.35f;
   const char* shownValue = value ? value : "";
+  const float valueFont = chartLabelFont(fontSize);
   const bool monoPushed = style::pushFont(style::fonts::mono());
-  const ImVec2 valueSize = ImGui::CalcTextSize(shownValue);
-  const ImVec4 valueColour = trace.empty() ? style::col::TextFaint : style::col::Text;
-  drawList->AddText(ImVec2(rect.min.x + padding, valueY), style::u32(valueColour), shownValue);
+  const ImVec2 valueSize = chartTextSize(shownValue, valueFont);
+  const ImVec4 valueColour = trace.empty() ? style::col::DataDim : style::col::DataBright;
+  if (valueSize.x <= textWidth) {
+    drawChartText(drawList, ImVec2(rect.min.x + padding, valueY),
+                  style::u32(valueColour), shownValue, valueFont);
+  }
   style::popFont(monoPushed);
 
   if (unit && unit[0] != '\0') {
-    const ImVec2 unitSize = ImGui::CalcTextSize(unit);
+    const float unitFont = chartLabelFont(fontSize * 0.82f);
+    const ImVec2 unitSize = chartTextSize(unit, unitFont);
     const float unitX = rect.min.x + padding + valueSize.x + fontSize * 0.28f;
-    const float unitY = valueY + (fontSize - unitSize.y) * 0.5f;
-    drawList->AddText(ImVec2(unitX, unitY), style::u32(style::col::TextFaint), unit);
+    const float unitY = valueY + (valueFont - unitSize.y) * 0.5f;
+    if (unitX + unitSize.x <= rect.max.x - padding) {
+      drawChartText(drawList, ImVec2(unitX, unitY), style::u32(style::col::DataDim),
+                    unit, unitFont);
+    }
   }
 
   const float traceTop = valueY + fontSize + metrics.gap * 0.55f;
@@ -336,21 +484,26 @@ int rankedBars(const char* id, const BarRow* rows, int count, ImVec2 size) {
   const float columnGap = metrics.gap * 0.75f;
   const float innerWidth = std::max(0.0f, rect.size.x - padding * 2.0f);
 
-  double maximumMagnitude = 0.0;
+  std::vector<double> magnitudes(static_cast<std::size_t>(count));
+  const float labelFont = chartLabelFont(fontSize * 0.88f);
   float widestLabel = 0.0f;
   for (int index = 0; index < count; ++index) {
-    maximumMagnitude = std::max(maximumMagnitude, finiteMagnitude(rows[index].value));
+    magnitudes[static_cast<std::size_t>(index)] =
+        std::isfinite(rows[index].value) ? std::abs(rows[index].value)
+                                         : std::numeric_limits<double>::quiet_NaN();
     if (rows[index].label) {
-      widestLabel = std::max(widestLabel, ImGui::CalcTextSize(rows[index].label).x);
+      widestLabel =
+          std::max(widestLabel, chartTextSize(rows[index].label, labelFont).x);
     }
   }
+  const Axis magnitudeAxis = axisFor(magnitudes.data(), count, true);
 
   float widestAnnotation = 0.0f;
   const bool monoPushed = style::pushFont(style::fonts::mono());
   for (int index = 0; index < count; ++index) {
     if (rows[index].annotation) {
-      widestAnnotation =
-          std::max(widestAnnotation, ImGui::CalcTextSize(rows[index].annotation).x);
+      widestAnnotation = std::max(
+          widestAnnotation, chartTextSize(rows[index].annotation, labelFont).x);
     }
   }
   style::popFont(monoPushed);
@@ -398,13 +551,14 @@ int rankedBars(const char* id, const BarRow* rows, int count, ImVec2 size) {
                               ImDrawFlags_RoundCornersLeft);
     }
 
-    const float textY = rowTop + (rowHeight - fontSize) * 0.5f;
+    const float textY = rowTop + (rowHeight - labelFont) * 0.5f;
     if (row.label) {
       const float labelRight = std::max(rect.min.x + padding, barLeft - columnGap * 0.5f);
-      drawList->PushClipRect(ImVec2(rect.min.x, rowTop), ImVec2(labelRight, rowBottom), true);
-      drawList->AddText(ImVec2(rect.min.x + padding, textY), style::u32(style::col::Text),
-                        row.label);
-      drawList->PopClipRect();
+      const float available = labelRight - rect.min.x - padding;
+      if (chartTextFits(row.label, available, labelFont)) {
+        drawChartText(drawList, ImVec2(rect.min.x + padding, textY),
+                      style::u32(style::col::DataBright), row.label, labelFont);
+      }
     }
 
     if (barSpan > 0.0f) {
@@ -412,10 +566,12 @@ int rankedBars(const char* id, const BarRow* rows, int count, ImVec2 size) {
       const float barTop = rowTop + (rowHeight - barHeight) * 0.5f;
       const float barBottom = barTop + barHeight;
       drawList->AddRectFilled(ImVec2(barLeft, barTop), ImVec2(barRight, barBottom),
-                              style::u32(style::col::BgPanel), barHeight * 0.5f);
-      const double normalized = maximumMagnitude > 0.0
-                                    ? finiteMagnitude(row.value) / maximumMagnitude
-                                    : 0.0;
+                              style::u32(style::col::DataDim, 0.18f), barHeight * 0.5f);
+      const double zero = magnitudeAxis.normalise(0.0);
+      const double available = std::max(1.0 - zero, std::numeric_limits<double>::epsilon());
+      const double normalized =
+          (magnitudeAxis.normalise(magnitudes[static_cast<std::size_t>(index)]) - zero) /
+          available;
       const float width = barSpan * static_cast<float>(std::clamp(normalized, 0.0, 1.0));
       if (width > 0.0f) {
         const ImU32 barColour = index == hoveredRow
@@ -429,9 +585,12 @@ int rankedBars(const char* id, const BarRow* rows, int count, ImVec2 size) {
 
     if (row.annotation) {
       const bool annotationMono = style::pushFont(style::fonts::mono());
-      const ImVec2 annotationSize = ImGui::CalcTextSize(row.annotation);
-      drawList->AddText(ImVec2(rect.max.x - padding - annotationSize.x, textY),
-                        style::u32(style::col::TextDim), row.annotation);
+      const ImVec2 annotationSize = chartTextSize(row.annotation, labelFont);
+      if (annotationSize.x <= annotationWidth) {
+        drawChartText(drawList,
+                      ImVec2(rect.max.x - padding - annotationSize.x, textY),
+                      style::u32(style::col::DataDim), row.annotation, labelFont);
+      }
       style::popFont(annotationMono);
     }
   }
@@ -444,44 +603,57 @@ void stackedBar(const char* id, const StackSegment* segments, int count, ImVec2 
   if (!hasArea(rect)) return;
 
   const style::Metrics& metrics = style::metrics();
+  const float fontSize = ImGui::GetFontSize();
+  const float labelFont = chartLabelFont(fontSize * 0.78f);
   const float radius = std::min(metrics.radiusSm, rect.size.y * 0.5f);
   ImDrawList* drawList = ImGui::GetWindowDrawList();
   drawList->PushClipRect(rect.min, rect.max, true);
-  drawList->AddRectFilled(rect.min, rect.max, style::u32(style::col::BgSurface), radius);
+  drawList->AddRectFilled(rect.min, rect.max,
+                          style::u32(style::col::DataDim, 0.14f), radius);
 
-  double largest = 0.0;
-  if (segments && count > 0) {
-    for (int index = 0; index < count; ++index) {
-      if (std::isfinite(segments[index].value) && segments[index].value > 0.0) {
-        largest = std::max(largest, segments[index].value);
-      }
-    }
+  const int sampleCount = segments && count > 0 ? count : 0;
+  std::vector<double> values(static_cast<std::size_t>(sampleCount));
+  for (int index = 0; index < sampleCount; ++index) {
+    values[static_cast<std::size_t>(index)] =
+        std::isfinite(segments[index].value) && segments[index].value > 0.0
+            ? segments[index].value
+            : std::numeric_limits<double>::quiet_NaN();
   }
-
+  const Axis valueAxis = axisFor(values.data(), sampleCount, true);
+  const double scale = valueAxis.max > 0.0 ? valueAxis.max : 1.0;
   double scaledTotal = 0.0;
   int first = -1;
   int last = -1;
-  if (largest > 0.0) {
-    for (int index = 0; index < count; ++index) {
-      const double value = segments[index].value;
-      if (!std::isfinite(value) || value <= 0.0) continue;
-      scaledTotal += value / largest;
-      if (first < 0) first = index;
-      last = index;
-    }
+  for (int index = 0; index < sampleCount; ++index) {
+    const double sample = values[static_cast<std::size_t>(index)];
+    if (!std::isfinite(sample)) continue;
+    scaledTotal += sample / scale;
+    if (first < 0) first = index;
+    last = index;
   }
 
-  float x = rect.min.x;
   if (scaledTotal > 0.0) {
-    for (int index = 0; index < count; ++index) {
-      const StackSegment& segment = segments[index];
-      if (!std::isfinite(segment.value) || segment.value <= 0.0) continue;
+    const Axis totalAxis = niceAxis(0.0, scaledTotal);
+    const double axisZero = totalAxis.normalise(0.0);
+    const double axisEnd = totalAxis.normalise(scaledTotal);
+    const double axisSpan =
+        std::max(axisEnd - axisZero, std::numeric_limits<double>::epsilon());
+    double cumulative = 0.0;
+    float x = rect.min.x;
+    for (int index = 0; index < sampleCount; ++index) {
+      const double sample = values[static_cast<std::size_t>(index)];
+      if (!std::isfinite(sample)) continue;
+      const double scaled = sample / scale;
+      cumulative += scaled;
+      const double proportion = scaled / scaledTotal;
+      const double normalized =
+          (totalAxis.normalise(cumulative) - axisZero) / axisSpan;
+      const float nextX =
+          index == last
+              ? rect.max.x
+              : rect.min.x + rect.size.x *
+                                 static_cast<float>(std::clamp(normalized, 0.0, 1.0));
 
-      const double proportion = (segment.value / largest) / scaledTotal;
-      const float segmentWidth = index == last
-                                     ? rect.max.x - x
-                                     : rect.size.x * static_cast<float>(proportion);
-      const float nextX = std::min(rect.max.x, x + std::max(0.0f, segmentWidth));
       ImDrawFlags corners = ImDrawFlags_RoundCornersNone;
       if (index == first && index == last) {
         corners = ImDrawFlags_RoundCornersAll;
@@ -491,32 +663,34 @@ void stackedBar(const char* id, const StackSegment* segments, int count, ImVec2 
         corners = ImDrawFlags_RoundCornersRight;
       }
       drawList->AddRectFilled(ImVec2(x, rect.min.y), ImVec2(nextX, rect.max.y),
-                              style::u32(segment.colour), radius, corners);
+                              style::u32(segments[index].colour), radius, corners);
 
       char label[256];
-      if (segment.label && segment.label[0] != '\0') {
-        std::snprintf(label, sizeof(label), "%s  %.0f%%", segment.label, proportion * 100.0);
+      if (segments[index].label && segments[index].label[0] != '\0') {
+        std::snprintf(label, sizeof(label), "%s  %.0f%%", segments[index].label,
+                      proportion * 100.0);
       } else {
         std::snprintf(label, sizeof(label), "%.0f%%", proportion * 100.0);
       }
-      const ImVec2 textSize = ImGui::CalcTextSize(label);
+      const ImVec2 textSize = chartTextSize(label, labelFont);
       const float textPadding = metrics.gap * 0.55f;
       if (nextX - x >= textSize.x + textPadding * 2.0f &&
           rect.size.y >= textSize.y) {
-        drawList->AddText(ImVec2(x + (nextX - x - textSize.x) * 0.5f,
-                                 rect.min.y + (rect.size.y - textSize.y) * 0.5f),
-                          style::u32(style::col::OnAccent), label);
+        drawChartText(
+            drawList,
+            ImVec2(x + (nextX - x - textSize.x) * 0.5f,
+                   rect.min.y + (rect.size.y - textSize.y) * 0.5f),
+            style::u32(style::col::OnAccent), label, labelFont);
       }
-
       if (index != last) {
         drawList->AddLine(ImVec2(nextX, rect.min.y), ImVec2(nextX, rect.max.y),
-                          style::u32(style::col::Border), metrics.hairline);
+                          style::u32(style::col::GridLine), metrics.hairline);
       }
       x = nextX;
     }
   }
 
-  drawList->AddRect(rect.min, rect.max, style::u32(style::col::Border), radius,
+  drawList->AddRect(rect.min, rect.max, style::u32(style::col::DataDim), radius,
                     metrics.hairline, ImDrawFlags_None);
   drawList->PopClipRect();
 }
@@ -549,7 +723,7 @@ void gauge(const char* id, double fraction, const char* value, const char* capti
   drawList->PushClipRect(rect.min, rect.max, true);
   drawList->AddRectFilled(rect.min, rect.max, style::u32(style::col::BgSurface),
                           metrics.radiusMd);
-  drawList->AddRect(rect.min, rect.max, style::u32(style::col::Border),
+  drawList->AddRect(rect.min, rect.max, style::u32(style::col::DataDim),
                     metrics.radiusMd, metrics.hairline, ImDrawFlags_None);
   if (radius <= 0.0f) {
     drawList->PopClipRect();
@@ -563,7 +737,7 @@ void gauge(const char* id, double fraction, const char* value, const char* capti
     drawList->PathStroke(colour, ImDrawFlags_None, thickness);
   };
 
-  strokeArc(radius, startAngle, endAngle, style::u32(style::col::Border), trackWidth);
+  strokeArc(radius, startAngle, endAngle, style::u32(style::col::DataDim, 0.45f), trackWidth);
 
   const auto thresholdAngle = [&](double threshold) {
     if (!std::isfinite(threshold)) return startAngle;
@@ -581,7 +755,7 @@ void gauge(const char* id, double fraction, const char* value, const char* capti
         hasDanger && gaugeStyle.dangerAt > gaugeStyle.warnAt
             ? thresholdAngle(gaugeStyle.dangerAt)
             : endAngle;
-    strokeArc(bandRadius, warnStart, warnEnd, style::u32(style::col::Accent),
+    strokeArc(bandRadius, warnStart, warnEnd, style::u32(style::col::DataBright),
               bandWidth);
   }
   if (hasDanger) {
@@ -596,36 +770,46 @@ void gauge(const char* id, double fraction, const char* value, const char* capti
   const float needleLength = radius * 0.73f;
   const ImVec2 needleTip(centre.x + std::cos(valueAngle) * needleLength,
                          centre.y + std::sin(valueAngle) * needleLength);
-  drawList->AddLine(centre, needleTip, style::u32(style::col::Text),
+  drawList->AddLine(centre, needleTip, style::u32(style::col::DataBright),
                     metrics.hairline * 1.5f);
   drawList->AddCircleFilled(centre, fontSize * 0.17f,
                             style::u32(gaugeStyle.accent));
-  drawList->AddCircle(centre, fontSize * 0.17f, style::u32(style::col::BorderStrong),
+  drawList->AddCircle(centre, fontSize * 0.17f, style::u32(style::col::DataDim),
                       0, metrics.hairline);
 
   const char* shownValue = value ? value : "";
+  const float valueFont = chartLabelFont(fontSize);
   const bool monoPushed = style::pushFont(style::fonts::mono());
-  const ImVec2 valueSize = ImGui::CalcTextSize(shownValue);
-  drawList->AddText(
-      ImVec2(centre.x - valueSize.x * 0.5f, centre.y + fontSize * 0.28f),
-      style::u32(style::col::Text), shownValue);
+  const ImVec2 valueSize = chartTextSize(shownValue, valueFont);
+  if (valueSize.x <= rect.size.x - padding * 2.0f) {
+    drawChartText(
+        drawList,
+        ImVec2(centre.x - valueSize.x * 0.5f, centre.y + fontSize * 0.28f),
+        style::u32(style::col::DataBright), shownValue, valueFont);
+  }
   style::popFont(monoPushed);
 
   const char* shownCaption = caption ? caption : "";
-  const ImVec2 captionSize = ImGui::CalcTextSize(shownCaption);
-  drawList->AddText(
-      ImVec2(centre.x - captionSize.x * 0.5f, centre.y + fontSize * 1.18f),
-      style::u32(style::col::TextDim), shownCaption);
+  const float captionFont = chartLabelFont(fontSize * 0.78f);
+  const ImVec2 captionSize = chartTextSize(shownCaption, captionFont);
+  if (captionSize.x <= rect.size.x - padding * 2.0f) {
+    drawChartText(
+        drawList,
+        ImVec2(centre.x - captionSize.x * 0.5f, centre.y + fontSize * 1.18f),
+        style::u32(style::col::DataDim), shownCaption, captionFont);
+  }
 
   const auto drawEndLabel = [&](const char* label, float angle, bool rightAligned) {
     if (!label || label[0] == '\0') return;
-    const ImVec2 labelSize = ImGui::CalcTextSize(label);
+    const float endLabelFont = chartLabelFont(fontSize * 0.72f);
+    const ImVec2 labelSize = chartTextSize(label, endLabelFont);
+    if (labelSize.x > radius) return;
     const float labelRadius = std::max(0.0f, radius - trackWidth * 0.25f);
     const ImVec2 anchor(centre.x + std::cos(angle) * labelRadius,
                         centre.y + std::sin(angle) * labelRadius);
     const float x = rightAligned ? anchor.x - labelSize.x : anchor.x;
-    drawList->AddText(ImVec2(x, anchor.y + fontSize * 0.16f),
-                      style::u32(style::col::TextFaint), label);
+    drawChartText(drawList, ImVec2(x, anchor.y + fontSize * 0.16f),
+                  style::u32(style::col::DataDim), label, endLabelFont);
   };
   drawEndLabel(gaugeStyle.minLabel, startAngle, true);
   drawEndLabel(gaugeStyle.maxLabel, endAngle, false);
@@ -652,68 +836,88 @@ void donut(const char* id, const StackSegment* segments, int count,
   drawList->PushClipRect(rect.min, rect.max, true);
   if (ringRadius > 0.0f && ringWidth > 0.0f) {
     drawList->PathArcTo(centre, ringRadius, 0.0f, kPi * 2.0f, arcSegments);
-    drawList->PathStroke(style::u32(style::col::Border, 0.45f),
+    drawList->PathStroke(style::u32(style::col::DataDim, 0.24f),
                          ImDrawFlags_Closed, ringWidth);
   }
 
-  double largest = 0.0;
-  if (segments && count > 0) {
-    for (int index = 0; index < count; ++index) {
-      if (std::isfinite(segments[index].value) && segments[index].value > 0.0) {
-        largest = std::max(largest, segments[index].value);
-      }
-    }
+  const int sampleCount = segments && count > 0 ? count : 0;
+  std::vector<double> values(static_cast<std::size_t>(sampleCount));
+  for (int index = 0; index < sampleCount; ++index) {
+    values[static_cast<std::size_t>(index)] =
+        std::isfinite(segments[index].value) && segments[index].value > 0.0
+            ? segments[index].value
+            : std::numeric_limits<double>::quiet_NaN();
   }
+  const Axis valueAxis = axisFor(values.data(), sampleCount, true);
+  const double scale = valueAxis.max > 0.0 ? valueAxis.max : 1.0;
   double scaledTotal = 0.0;
   int validSegments = 0;
-  if (largest > 0.0) {
-    for (int index = 0; index < count; ++index) {
-      const double segmentValue = segments[index].value;
-      if (std::isfinite(segmentValue) && segmentValue > 0.0) {
-        scaledTotal += segmentValue / largest;
-        ++validSegments;
-      }
-    }
+  for (double sample : values) {
+    if (!std::isfinite(sample)) continue;
+    scaledTotal += sample / scale;
+    ++validSegments;
   }
 
   if (scaledTotal > 0.0 && ringRadius > 0.0f && ringWidth > 0.0f) {
-    float angle = -kPi * 0.5f;
+    const Axis totalAxis = niceAxis(0.0, scaledTotal);
+    const double axisZero = totalAxis.normalise(0.0);
+    const double axisEnd = totalAxis.normalise(scaledTotal);
+    const double axisSpan =
+        std::max(axisEnd - axisZero, std::numeric_limits<double>::epsilon());
     const float gapAngle =
         validSegments > 1
             ? std::min(kPi * 0.025f,
                        metrics.hairline / std::max(ringRadius, metrics.hairline))
             : 0.0f;
-    for (int index = 0; index < count; ++index) {
-      const StackSegment& segment = segments[index];
-      if (!std::isfinite(segment.value) || segment.value <= 0.0) continue;
-      const float segmentSweep = kPi * 2.0f *
-                                 static_cast<float>((segment.value / largest) /
-                                                    scaledTotal);
+    double cumulative = 0.0;
+    float angle = -kPi * 0.5f;
+    for (int index = 0; index < sampleCount; ++index) {
+      const double sample = values[static_cast<std::size_t>(index)];
+      if (!std::isfinite(sample)) continue;
+      const double nextCumulative = cumulative + sample / scale;
+      const float nextAngle =
+          nextCumulative >= scaledTotal
+              ? -kPi * 0.5f + kPi * 2.0f
+              : -kPi * 0.5f +
+                    kPi * 2.0f *
+                        static_cast<float>(
+                            (totalAxis.normalise(nextCumulative) - axisZero) / axisSpan);
       const float from = angle + gapAngle * 0.5f;
-      const float to = angle + segmentSweep - gapAngle * 0.5f;
+      const float to = nextAngle - gapAngle * 0.5f;
       if (to > from) {
-        const int segmentCount =
-            std::max(2, static_cast<int>(arcSegments * segmentSweep / (kPi * 2.0f)));
+        const int segmentCount = std::max(
+            2, static_cast<int>(arcSegments * (to - from) / (kPi * 2.0f)));
         drawList->PathArcTo(centre, ringRadius, from, to, segmentCount);
-        drawList->PathStroke(style::u32(segment.colour), ImDrawFlags_None, ringWidth);
+        drawList->PathStroke(style::u32(segments[index].colour),
+                             ImDrawFlags_None, ringWidth);
       }
-      angle += segmentSweep;
+      cumulative = nextCumulative;
+      angle = nextAngle;
     }
   }
 
+  const float holeWidth = std::max(0.0f, (ringRadius - ringWidth * 0.5f) * 2.0f);
   const char* shownValue = centreValue ? centreValue : "";
+  const float valueFont = chartLabelFont(fontSize);
   const bool monoPushed = style::pushFont(style::fonts::mono());
-  const ImVec2 valueSize = ImGui::CalcTextSize(shownValue);
-  drawList->AddText(
-      ImVec2(centre.x - valueSize.x * 0.5f, centre.y - fontSize * 0.78f),
-      style::u32(style::col::Text), shownValue);
+  const ImVec2 valueSize = chartTextSize(shownValue, valueFont);
+  if (valueSize.x <= holeWidth) {
+    drawChartText(
+        drawList,
+        ImVec2(centre.x - valueSize.x * 0.5f, centre.y - fontSize * 0.78f),
+        style::u32(style::col::DataBright), shownValue, valueFont);
+  }
   style::popFont(monoPushed);
 
   const char* shownCaption = centreCaption ? centreCaption : "";
-  const ImVec2 captionSize = ImGui::CalcTextSize(shownCaption);
-  drawList->AddText(
-      ImVec2(centre.x - captionSize.x * 0.5f, centre.y + fontSize * 0.18f),
-      style::u32(style::col::TextDim), shownCaption);
+  const float captionFont = chartLabelFont(fontSize * 0.72f);
+  const ImVec2 captionSize = chartTextSize(shownCaption, captionFont);
+  if (captionSize.x <= holeWidth) {
+    drawChartText(
+        drawList,
+        ImVec2(centre.x - captionSize.x * 0.5f, centre.y + fontSize * 0.18f),
+        style::u32(style::col::DataDim), shownCaption, captionFont);
+  }
   drawList->PopClipRect();
 }
 
@@ -725,6 +929,8 @@ double linePlot(const char* id, const Series* series, int count, ImVec2 size,
 
   const style::Metrics& metrics = style::metrics();
   const float fontSize = ImGui::GetFontSize();
+  const float tickFont = chartLabelFont(fontSize * 0.72f);
+  const float axisLabelFont = chartLabelFont(fontSize * 0.78f);
   const float leftGutter = fontSize * 3.25f;
   const float rightGutter = metrics.gap * 0.45f;
   const float topGutter = metrics.gap * 0.45f;
@@ -741,28 +947,30 @@ double linePlot(const char* id, const Series* series, int count, ImVec2 size,
   ImDrawList* drawList = ImGui::GetWindowDrawList();
   drawList->AddRectFilled(rect.min, rect.max, style::u32(style::col::BgPanel),
                           metrics.radiusMd);
-  drawList->AddRect(rect.min, rect.max, style::u32(style::col::Border),
+  drawList->AddRect(rect.min, rect.max, style::u32(style::col::DataDim),
                     metrics.radiusMd, metrics.hairline, ImDrawFlags_None);
   if (!hasArea(plot)) return noHover;
   drawList->AddRectFilled(plot.min, plot.max, style::u32(style::col::BgSurface),
                           metrics.radiusSm);
 
-  const bool autoX = !std::isfinite(plotStyle.xMin) || !std::isfinite(plotStyle.xMax) ||
-                     nearlyEqual(plotStyle.xMin, plotStyle.xMax);
-  const bool invalidLogBounds =
-      plotStyle.logY && (plotStyle.yMin <= 0.0 || plotStyle.yMax <= 0.0);
-  const bool autoY = !std::isfinite(plotStyle.yMin) || !std::isfinite(plotStyle.yMax) ||
-                     nearlyEqual(plotStyle.yMin, plotStyle.yMax) || invalidLogBounds;
-  double xMinimum = autoX ? std::numeric_limits<double>::infinity() : plotStyle.xMin;
-  double xMaximum =
-      autoX ? -std::numeric_limits<double>::infinity() : plotStyle.xMax;
-  double yMinimum =
-      autoY ? std::numeric_limits<double>::infinity()
-            : (plotStyle.logY ? std::log10(plotStyle.yMin) : plotStyle.yMin);
-  double yMaximum =
-      autoY ? -std::numeric_limits<double>::infinity()
-            : (plotStyle.logY ? std::log10(plotStyle.yMax) : plotStyle.yMax);
-
+  AxisBuilder xBounds;
+  AxisBuilder yBounds;
+  const bool explicitX = std::isfinite(plotStyle.xMin) &&
+                         std::isfinite(plotStyle.xMax) &&
+                         !nearlyEqual(plotStyle.xMin, plotStyle.xMax);
+  const bool explicitY = std::isfinite(plotStyle.yMin) &&
+                         std::isfinite(plotStyle.yMax) &&
+                         !nearlyEqual(plotStyle.yMin, plotStyle.yMax) &&
+                         (!plotStyle.logY ||
+                          (plotStyle.yMin > 0.0 && plotStyle.yMax > 0.0));
+  if (explicitX) {
+    xBounds.add(plotStyle.xMin);
+    xBounds.add(plotStyle.xMax);
+  }
+  if (explicitY) {
+    yBounds.add(plotStyle.yMin);
+    yBounds.add(plotStyle.yMax);
+  }
   if (series && count > 0) {
     for (int seriesIndex = 0; seriesIndex < count; ++seriesIndex) {
       const Series& item = series[seriesIndex];
@@ -774,127 +982,110 @@ double linePlot(const char* id, const Series* series, int count, ImVec2 size,
             (plotStyle.logY && y <= 0.0)) {
           continue;
         }
-        if (autoX) {
-          xMinimum = std::min(xMinimum, x);
-          xMaximum = std::max(xMaximum, x);
-        }
-        if (!autoY) continue;
-        const double transformed = plotStyle.logY ? std::log10(y) : y;
-        yMinimum = std::min(yMinimum, transformed);
-        yMaximum = std::max(yMaximum, transformed);
+        xBounds.add(x);
+        yBounds.add(y);
       }
     }
   }
 
-  if (!std::isfinite(xMinimum) || !std::isfinite(xMaximum)) {
-    xMinimum = 0.0;
-    xMaximum = 1.0;
-  }
-  if (!std::isfinite(yMinimum) || !std::isfinite(yMaximum)) {
-    yMinimum = 0.0;
-    yMaximum = 1.0;
-  }
-  if (xMinimum > xMaximum) std::swap(xMinimum, xMaximum);
-  if (yMinimum > yMaximum) std::swap(yMinimum, yMaximum);
-  if (nearlyEqual(xMinimum, xMaximum)) {
-    const double halfSpan = std::max(1.0, std::abs(xMinimum) * 0.06);
-    xMinimum -= halfSpan;
-    xMaximum += halfSpan;
-  }
-  if (autoY && !nearlyEqual(yMinimum, yMaximum)) {
-    const double padding = (yMaximum - yMinimum) * 0.06;
-    yMinimum -= padding;
-    yMaximum += padding;
-  } else if (nearlyEqual(yMinimum, yMaximum)) {
-    const double halfSpan = std::max(1.0, std::abs(yMinimum) * 0.06);
-    yMinimum -= halfSpan;
-    yMaximum += halfSpan;
-  }
-
+  const Axis xAxis = xBounds.linear(false, 5);
+  const Axis yAxis =
+      plotStyle.logY
+          ? (yBounds.hasValue
+                 ? niceLogAxis(yBounds.low, yBounds.high, yBounds.low)
+                 : Axis{})
+          : yBounds.linear(false, 4);
   const auto mapX = [&](double x) {
-    return plot.min.x + static_cast<float>((x - xMinimum) / (xMaximum - xMinimum)) *
-                            plot.size.x;
+    return plot.min.x + static_cast<float>(xAxis.normalise(x)) * plot.size.x;
   };
-  const auto mapY = [&](double transformedY) {
-    return plot.max.y -
-           static_cast<float>((transformedY - yMinimum) / (yMaximum - yMinimum)) *
-               plot.size.y;
+  const auto mapY = [&](double y) {
+    const double transformed = plotStyle.logY ? std::log10(y) : y;
+    return plot.max.y - static_cast<float>(yAxis.normalise(transformed)) * plot.size.y;
   };
-  const auto niceStep = [](double span, int target) {
-    if (!std::isfinite(span) || span <= 0.0 || target <= 0) return 1.0;
-    const double raw = span / static_cast<double>(target);
-    const double power = std::pow(10.0, std::floor(std::log10(raw)));
-    const double fraction = raw / power;
-    const double nice = fraction <= 1.0 ? 1.0 : (fraction <= 2.0 ? 2.0 :
-                                                (fraction <= 5.0 ? 5.0 : 10.0));
-    return nice * power;
+  const auto formatTick = [](char* buffer, std::size_t capacity,
+                             const Axis& axis, double tick, bool logarithmic) {
+    if (logarithmic) {
+      std::snprintf(buffer, capacity, "1e%.0f", tick);
+      return;
+    }
+    const double magnitude = std::abs(tick);
+    if (magnitude >= 1.0e6 || (magnitude > 0.0 && magnitude < 1.0e-4)) {
+      std::snprintf(buffer, capacity, "%.3g", tick);
+    } else {
+      std::snprintf(buffer, capacity, "%.*f", axis.decimals, tick);
+    }
   };
 
+  const float yLabelWidth = std::max(0.0f, leftGutter - metrics.gap * 0.65f);
   if (plotStyle.grid) {
-    const double xStep = niceStep(xMaximum - xMinimum, 5);
-    const double firstX = std::ceil(xMinimum / xStep) * xStep;
-    for (int tick = 0; tick < 64; ++tick) {
-      const double x = firstX + xStep * static_cast<double>(tick);
-      if (x > xMaximum + xStep * 0.001) break;
-      const float screenX = mapX(x);
+    float widestXTick = 0.0f;
+    char label[64];
+    for (int tick = 0; tick < xAxis.ticks; ++tick) {
+      const double value = xAxis.min + xAxis.step * static_cast<double>(tick);
+      formatTick(label, sizeof(label), xAxis, value, false);
+      widestXTick = std::max(widestXTick, chartTextSize(label, tickFont).x);
+    }
+    const float xSlot =
+        plot.size.x / static_cast<float>(std::max(1, xAxis.ticks - 1));
+    const int xStride =
+        std::max(1, static_cast<int>(std::ceil(
+                        (widestXTick + metrics.gap * 0.35f) /
+                        std::max(xSlot, metrics.hairline))));
+    for (int tick = 0; tick < xAxis.ticks; ++tick) {
+      const double value = xAxis.min + xAxis.step * static_cast<double>(tick);
+      const float screenX = mapX(value);
       drawList->AddLine(ImVec2(screenX, plot.min.y), ImVec2(screenX, plot.max.y),
-                        style::u32(style::col::Border, 0.45f), metrics.hairline);
-      char label[64];
-      std::snprintf(label, sizeof(label), "%.3g", x);
-      const ImVec2 labelSize = ImGui::CalcTextSize(label);
-      drawList->AddText(ImVec2(screenX - labelSize.x * 0.5f,
-                               plot.max.y + fontSize * 0.22f),
-                        style::u32(style::col::TextFaint), label);
+                        style::u32(style::col::GridLine), metrics.hairline);
+      if (tick % xStride != 0 && tick != xAxis.ticks - 1) continue;
+      formatTick(label, sizeof(label), xAxis, value, false);
+      const ImVec2 labelSize = chartTextSize(label, tickFont);
+      if (labelSize.x > xSlot * static_cast<float>(xStride)) continue;
+      drawChartText(drawList,
+                    ImVec2(screenX - labelSize.x * 0.5f,
+                           plot.max.y + fontSize * 0.22f),
+                    style::u32(style::col::DataDim), label, tickFont);
     }
 
-    if (plotStyle.logY) {
-      const int exponentStep =
-          std::max(1, static_cast<int>(std::ceil((yMaximum - yMinimum) / 4.0)));
-      const int firstExponent =
-          static_cast<int>(std::ceil(yMinimum / exponentStep)) * exponentStep;
-      for (int tick = 0; tick < 64; ++tick) {
-        const int exponent = firstExponent + tick * exponentStep;
-        if (static_cast<double>(exponent) > yMaximum) break;
-        const float screenY = mapY(static_cast<double>(exponent));
-        drawList->AddLine(ImVec2(plot.min.x, screenY), ImVec2(plot.max.x, screenY),
-                          style::u32(style::col::Border, 0.45f), metrics.hairline);
-        char label[64];
-        std::snprintf(label, sizeof(label), "1e%d", exponent);
-        const ImVec2 labelSize = ImGui::CalcTextSize(label);
-        drawList->AddText(ImVec2(plot.min.x - metrics.gap * 0.35f - labelSize.x,
-                                 screenY - labelSize.y * 0.5f),
-                          style::u32(style::col::TextFaint), label);
-      }
-    } else {
-      const double yStep = niceStep(yMaximum - yMinimum, 4);
-      const double firstY = std::ceil(yMinimum / yStep) * yStep;
-      for (int tick = 0; tick < 64; ++tick) {
-        const double y = firstY + yStep * static_cast<double>(tick);
-        if (y > yMaximum + yStep * 0.001) break;
-        const float screenY = mapY(y);
-        drawList->AddLine(ImVec2(plot.min.x, screenY), ImVec2(plot.max.x, screenY),
-                          style::u32(style::col::Border, 0.45f), metrics.hairline);
-        char label[64];
-        std::snprintf(label, sizeof(label), "%.3g", y);
-        const ImVec2 labelSize = ImGui::CalcTextSize(label);
-        drawList->AddText(ImVec2(plot.min.x - metrics.gap * 0.35f - labelSize.x,
-                                 screenY - labelSize.y * 0.5f),
-                          style::u32(style::col::TextFaint), label);
-      }
+    const float ySlot =
+        plot.size.y / static_cast<float>(std::max(1, yAxis.ticks - 1));
+    const int yStride =
+        std::max(1, static_cast<int>(std::ceil(
+                        (tickFont + metrics.gap * 0.2f) /
+                        std::max(ySlot, metrics.hairline))));
+
+    for (int tick = 0; tick < yAxis.ticks; ++tick) {
+      const double value = yAxis.min + yAxis.step * static_cast<double>(tick);
+      const float screenY =
+          plot.max.y - static_cast<float>(yAxis.normalise(value)) * plot.size.y;
+      drawList->AddLine(ImVec2(plot.min.x, screenY), ImVec2(plot.max.x, screenY),
+                        style::u32(style::col::GridLine), metrics.hairline);
+      if (tick % yStride != 0 && tick != yAxis.ticks - 1) continue;
+      formatTick(label, sizeof(label), yAxis, value, plotStyle.logY);
+      const ImVec2 labelSize = chartTextSize(label, tickFont);
+      if (labelSize.x > yLabelWidth) continue;
+      drawChartText(drawList,
+                    ImVec2(plot.min.x - metrics.gap * 0.35f - labelSize.x,
+                           screenY - labelSize.y * 0.5f),
+                    style::u32(style::col::DataDim), label, tickFont);
     }
   }
 
-  if (plotStyle.xLabel && plotStyle.xLabel[0] != '\0') {
-    const ImVec2 labelSize = ImGui::CalcTextSize(plotStyle.xLabel);
-    drawList->AddText(
+  if (plotStyle.xLabel && plotStyle.xLabel[0] != '\0' &&
+      chartTextFits(plotStyle.xLabel, plot.size.x, axisLabelFont)) {
+    const ImVec2 labelSize = chartTextSize(plotStyle.xLabel, axisLabelFont);
+    drawChartText(
+        drawList,
         ImVec2(plot.min.x + (plot.size.x - labelSize.x) * 0.5f,
                rect.max.y - labelSize.y - metrics.gap * 0.22f),
-        style::u32(style::col::TextFaint), plotStyle.xLabel);
+        style::u32(style::col::DataDim), plotStyle.xLabel, axisLabelFont);
   }
-  if (plotStyle.yLabel && plotStyle.yLabel[0] != '\0') {
-    drawList->AddText(ImVec2(rect.min.x + metrics.gap * 0.25f,
-                             rect.min.y + metrics.gap * 0.25f),
-                      style::u32(style::col::TextFaint), plotStyle.yLabel);
+  if (plotStyle.yLabel && plotStyle.yLabel[0] != '\0' &&
+      chartTextFits(plotStyle.yLabel, yLabelWidth, axisLabelFont)) {
+    drawChartText(drawList,
+                  ImVec2(rect.min.x + metrics.gap * 0.25f,
+                         rect.min.y + metrics.gap * 0.25f),
+                  style::u32(style::col::DataDim), plotStyle.yLabel,
+                  axisLabelFont);
   }
 
   drawList->PushClipRect(plot.min, plot.max, true);
@@ -913,8 +1104,7 @@ double linePlot(const char* id, const Series* series, int count, ImVec2 size,
             (plotStyle.logY && y <= 0.0)) {
           return false;
         }
-        const double transformed = plotStyle.logY ? std::log10(y) : y;
-        point = ImVec2(mapX(x), mapY(transformed));
+        point = ImVec2(mapX(x), mapY(y));
         return true;
       };
 
@@ -961,8 +1151,7 @@ double linePlot(const char* id, const Series* series, int count, ImVec2 size,
         for (int sample = 0; sample < item.count; ++sample) {
           ImVec2 point;
           if (pointAt(sample, point)) {
-            drawList->AddCircleFilled(point, markerRadius,
-                                      style::u32(item.colour));
+            drawList->AddCircleFilled(point, markerRadius, style::u32(item.colour));
           }
         }
       }
@@ -975,21 +1164,26 @@ double linePlot(const char* id, const Series* series, int count, ImVec2 size,
   if (plotStyle.hasCursor && std::isfinite(plotStyle.cursorX)) {
     const float cursorX = mapX(plotStyle.cursorX);
     drawList->AddLine(ImVec2(cursorX, plot.min.y), ImVec2(cursorX, plot.max.y),
-                      style::u32(style::col::Accent, 0.55f),
-                      metrics.hairline);
+                      style::u32(style::col::Accent, 0.55f), metrics.hairline);
   }
 
   double hoveredX = noHover;
   if (ImGui::IsItemHovered() && series && count > 0 && series[0].count > 0) {
     const Series& first = series[0];
+    const double mouseNormal =
+        std::clamp(static_cast<double>((ImGui::GetIO().MousePos.x - plot.min.x) /
+                                       std::max(plot.size.x, metrics.hairline)),
+                   0.0, 1.0);
     const double mouseDataX =
-        xMinimum + static_cast<double>((ImGui::GetIO().MousePos.x - plot.min.x) /
-                                       std::max(plot.size.x, metrics.hairline)) *
-                       (xMaximum - xMinimum);
+        xAxis.min + mouseNormal * (xAxis.max - xAxis.min);
     double nearestDistance = std::numeric_limits<double>::infinity();
     for (int sample = 0; sample < first.count; ++sample) {
       const double x = first.x ? first.x[sample] : static_cast<double>(sample);
-      if (!std::isfinite(x)) continue;
+      const double y = first.y ? first.y[sample] : noHover;
+      if (!std::isfinite(x) || !std::isfinite(y) ||
+          (plotStyle.logY && y <= 0.0)) {
+        continue;
+      }
       const double distance = std::abs(x - mouseDataX);
       if (distance < nearestDistance) {
         nearestDistance = distance;
@@ -1001,7 +1195,7 @@ double linePlot(const char* id, const Series* series, int count, ImVec2 size,
       const float hoverScreenX = mapX(hoveredX);
       drawList->AddLine(ImVec2(hoverScreenX, plot.min.y),
                         ImVec2(hoverScreenX, plot.max.y),
-                        style::u32(style::col::TextDim, 0.72f), metrics.hairline);
+                        style::u32(style::col::DataBright, 0.72f), metrics.hairline);
       char line[160];
       std::snprintf(line, sizeof(line), "x  %.3g", hoveredX);
       std::string tooltip = line;
@@ -1030,8 +1224,7 @@ double linePlot(const char* id, const Series* series, int count, ImVec2 size,
           const double x =
               item.x ? item.x[nearest] : static_cast<double>(nearest);
           const double y = item.y[nearest];
-          const double transformed = plotStyle.logY ? std::log10(y) : y;
-          drawList->AddCircleFilled(ImVec2(mapX(x), mapY(transformed)),
+          drawList->AddCircleFilled(ImVec2(mapX(x), mapY(y)),
                                     fontSize * 0.18f,
                                     style::u32(item.colour));
           std::snprintf(line, sizeof(line), "\n%s  %.3g", label, y);
@@ -1043,38 +1236,33 @@ double linePlot(const char* id, const Series* series, int count, ImVec2 size,
       ImGui::SetTooltip("%s", tooltip.c_str());
     }
   }
+  drawList->PopClipRect();
 
   if (plotStyle.legend && series && count > 0) {
-    float legendWidth = 0.0f;
-    int labelled = 0;
-    const float swatch = fontSize * 0.58f;
+    const float legendFont = chartLabelFont(fontSize * 0.72f);
+    const float swatch = legendFont * 0.58f;
     const float legendGap = metrics.gap * 0.45f;
-    for (int seriesIndex = 0; seriesIndex < count; ++seriesIndex) {
-      const char* label = series[seriesIndex].label;
-      if (!label || label[0] == '\0') continue;
-      if (labelled > 0) legendWidth += legendGap;
-      legendWidth += swatch + metrics.gap * 0.28f + ImGui::CalcTextSize(label).x;
-      ++labelled;
-    }
-    float legendX = std::max(plot.min.x, plot.max.x - legendWidth - metrics.gap * 0.35f);
+    float legendX = plot.min.x + metrics.gap * 0.35f;
     const float legendY = plot.min.y + metrics.gap * 0.3f;
     for (int seriesIndex = 0; seriesIndex < count; ++seriesIndex) {
       const char* label = series[seriesIndex].label;
       if (!label || label[0] == '\0') continue;
+      const ImVec2 textSize = chartTextSize(label, legendFont);
+      const float entryWidth = swatch + metrics.gap * 0.28f + textSize.x;
+      if (legendX + entryWidth > plot.max.x - metrics.gap * 0.35f) break;
       drawList->AddRectFilled(
-          ImVec2(legendX, legendY + (fontSize - swatch) * 0.5f),
-          ImVec2(legendX + swatch, legendY + (fontSize + swatch) * 0.5f),
+          ImVec2(legendX, legendY + (legendFont - swatch) * 0.5f),
+          ImVec2(legendX + swatch, legendY + (legendFont + swatch) * 0.5f),
           style::u32(series[seriesIndex].colour), metrics.radiusSm);
       legendX += swatch + metrics.gap * 0.28f;
-      drawList->AddText(ImVec2(legendX, legendY), style::u32(style::col::TextDim),
-                        label);
-      legendX += ImGui::CalcTextSize(label).x + legendGap;
+      drawChartText(drawList, ImVec2(legendX, legendY),
+                    style::u32(style::col::DataBright), label, legendFont);
+      legendX += textSize.x + legendGap;
     }
   }
 
-  drawList->AddRect(plot.min, plot.max, style::u32(style::col::Border),
+  drawList->AddRect(plot.min, plot.max, style::u32(style::col::DataDim),
                     metrics.radiusSm, metrics.hairline, ImDrawFlags_None);
-  drawList->PopClipRect();
   return hoveredX;
 }
 
@@ -1085,6 +1273,7 @@ int heatmap(const char* id, const double* values, int columns, int rows, ImVec2 
 
   const style::Metrics& metrics = style::metrics();
   const float fontSize = ImGui::GetFontSize();
+  const float labelFont = chartLabelFont(fontSize * 0.72f);
   const bool hasXLabel = heatmapStyle.xLabel && heatmapStyle.xLabel[0] != '\0';
   const bool hasYLabel = heatmapStyle.yLabel && heatmapStyle.yLabel[0] != '\0';
   const float leftGutter = hasYLabel ? fontSize * 1.1f : metrics.gap * 0.35f;
@@ -1104,32 +1293,19 @@ int heatmap(const char* id, const double* values, int columns, int rows, ImVec2 
   drawList->PushClipRect(rect.min, rect.max, true);
   drawList->AddRectFilled(rect.min, rect.max, style::u32(style::col::BgPanel),
                           metrics.radiusMd);
-  drawList->AddRect(rect.min, rect.max, style::u32(style::col::Border),
+  drawList->AddRect(rect.min, rect.max, style::u32(style::col::DataDim),
                     metrics.radiusMd, metrics.hairline, ImDrawFlags_None);
   if (columns <= 0 || rows <= 0 || !hasArea(field)) {
     drawList->PopClipRect();
     return -1;
   }
 
-  double minimum = std::numeric_limits<double>::infinity();
-  double maximum = -std::numeric_limits<double>::infinity();
-  if (values) {
-    for (int index = 0; index < columns * rows; ++index) {
-      if (!std::isfinite(values[index])) continue;
-      minimum = std::min(minimum, values[index]);
-      maximum = std::max(maximum, values[index]);
-    }
-  }
-  const bool hasFiniteRange = std::isfinite(minimum) && std::isfinite(maximum);
-  if (!hasFiniteRange) {
-    minimum = 0.0;
-    maximum = 1.0;
-  }
-  const bool degenerate = nearlyEqual(minimum, maximum);
+  const int sampleCount =
+      columns <= std::numeric_limits<int>::max() / rows ? columns * rows : 0;
+  const Axis valueAxis = axisFor(values, sampleCount, false);
   const auto colourFor = [&](double value) {
     if (!std::isfinite(value)) return style::u32(style::col::BgSurface);
-    const double normalized =
-        degenerate ? 0.5 : std::clamp((value - minimum) / (maximum - minimum), 0.0, 1.0);
+    const double normalized = valueAxis.normalise(value);
     if (normalized <= 0.5) {
       return style::mix(heatmapStyle.low, heatmapStyle.mid,
                         static_cast<float>(normalized * 2.0));
@@ -1225,7 +1401,7 @@ int heatmap(const char* id, const double* values, int columns, int rows, ImVec2 
     }
   }
 
-  drawList->AddRect(field.min, field.max, style::u32(style::col::Border),
+  drawList->AddRect(field.min, field.max, style::u32(style::col::DataDim),
                     metrics.radiusSm, metrics.hairline, ImDrawFlags_None);
   if (heatmapStyle.showScale) {
     const float rampWidth = fontSize * 0.5f;
@@ -1238,40 +1414,52 @@ int heatmap(const char* id, const double* values, int columns, int rows, ImVec2 
       const float y0 = field.max.y - field.size.y * t1;
       const float y1 = field.max.y - field.size.y * t0;
       const double value =
-          minimum + (maximum - minimum) * (static_cast<double>(t0 + t1) * 0.5);
+          valueAxis.min + (valueAxis.max - valueAxis.min) *
+                              (static_cast<double>(t0 + t1) * 0.5);
       drawList->AddRectFilled(ImVec2(rampX, y0),
                               ImVec2(rampX + rampWidth, y1),
                               colourFor(value));
     }
     drawList->AddRect(ImVec2(rampX, field.min.y),
                       ImVec2(rampX + rampWidth, field.max.y),
-                      style::u32(style::col::Border), metrics.radiusSm,
+                      style::u32(style::col::DataDim), metrics.radiusSm,
                       metrics.hairline, ImDrawFlags_None);
-    char label[64];
-    std::snprintf(label, sizeof(label), "%.3g", maximum);
-    drawList->AddText(ImVec2(rampX + rampWidth + metrics.gap * 0.25f,
-                             field.min.y),
-                      style::u32(style::col::TextFaint), label);
-    std::snprintf(label, sizeof(label), "%.3g", minimum);
-    const ImVec2 minLabelSize = ImGui::CalcTextSize(label);
-    drawList->AddText(ImVec2(rampX + rampWidth + metrics.gap * 0.25f,
-                             field.max.y - minLabelSize.y),
-                      style::u32(style::col::TextFaint), label);
+    const float labelX = rampX + rampWidth + metrics.gap * 0.25f;
+    const float labelWidth = std::max(0.0f, rect.max.x - labelX);
+    if (field.size.y >= labelFont * 2.0f) {
+      char label[64];
+      std::snprintf(label, sizeof(label), "%.*f", valueAxis.decimals, valueAxis.max);
+      if (chartTextFits(label, labelWidth, labelFont)) {
+        drawChartText(drawList, ImVec2(labelX, field.min.y),
+                      style::u32(style::col::DataDim), label, labelFont);
+      }
+      std::snprintf(label, sizeof(label), "%.*f", valueAxis.decimals, valueAxis.min);
+      const ImVec2 minLabelSize = chartTextSize(label, labelFont);
+      if (minLabelSize.x <= labelWidth) {
+        drawChartText(drawList, ImVec2(labelX, field.max.y - minLabelSize.y),
+                      style::u32(style::col::DataDim), label, labelFont);
+      }
+    }
   }
 
-  if (hasXLabel) {
-    const ImVec2 labelSize = ImGui::CalcTextSize(heatmapStyle.xLabel);
-    drawList->AddText(
+  if (hasXLabel && chartTextFits(heatmapStyle.xLabel, field.size.x, labelFont)) {
+    const ImVec2 labelSize = chartTextSize(heatmapStyle.xLabel, labelFont);
+    drawChartText(
+        drawList,
         ImVec2(field.min.x + (field.size.x - labelSize.x) * 0.5f,
                rect.max.y - labelSize.y - metrics.gap * 0.18f),
-        style::u32(style::col::TextFaint), heatmapStyle.xLabel);
+        style::u32(style::col::DataDim), heatmapStyle.xLabel, labelFont);
   }
-  if (hasYLabel) {
-    const ImVec2 labelSize = ImGui::CalcTextSize(heatmapStyle.yLabel);
-    drawList->AddText(
+  if (hasYLabel &&
+      chartTextFits(heatmapStyle.yLabel,
+                    std::max(0.0f, leftGutter - metrics.gap * 0.3f),
+                    labelFont)) {
+    const ImVec2 labelSize = chartTextSize(heatmapStyle.yLabel, labelFont);
+    drawChartText(
+        drawList,
         ImVec2(rect.min.x + metrics.gap * 0.15f,
                field.min.y + (field.size.y - labelSize.y) * 0.5f),
-        style::u32(style::col::TextFaint), heatmapStyle.yLabel);
+        style::u32(style::col::DataDim), heatmapStyle.yLabel, labelFont);
   }
   drawList->PopClipRect();
   return hovered;
@@ -1284,6 +1472,7 @@ void radar(const char* id, const char* const* axisLabels, int axisCount,
 
   const style::Metrics& metrics = style::metrics();
   const float fontSize = ImGui::GetFontSize();
+  const float labelFont = chartLabelFont(fontSize * 0.72f);
   const ImVec2 centre((rect.min.x + rect.max.x) * 0.5f,
                       (rect.min.y + rect.max.y) * 0.5f);
   const float radius =
@@ -1293,7 +1482,7 @@ void radar(const char* id, const char* const* axisLabels, int axisCount,
   drawList->PushClipRect(rect.min, rect.max, true);
   drawList->AddRectFilled(rect.min, rect.max, style::u32(style::col::BgPanel),
                           metrics.radiusMd);
-  drawList->AddRect(rect.min, rect.max, style::u32(style::col::Border),
+  drawList->AddRect(rect.min, rect.max, style::u32(style::col::DataDim),
                     metrics.radiusMd, metrics.hairline, ImDrawFlags_None);
   if (axisCount < 3 || radius <= 0.0f) {
     drawList->PopClipRect();
@@ -1311,21 +1500,25 @@ void radar(const char* id, const char* const* axisLabels, int axisCount,
     for (int axis = 0; axis < axisCount; ++axis) {
       drawList->PathLineTo(axisPoint(axis, magnitude));
     }
-    drawList->PathStroke(style::u32(style::col::Border, 0.72f),
+    drawList->PathStroke(style::u32(style::col::GridLine),
                          ImDrawFlags_Closed, metrics.hairline);
   }
   for (int axis = 0; axis < axisCount; ++axis) {
     drawList->AddLine(centre, axisPoint(axis, 1.0f),
-                      style::u32(style::col::Border, 0.72f),
-                      metrics.hairline);
+                      style::u32(style::col::GridLine), metrics.hairline);
   }
 
   if (axisLabels) {
+    const float labelSlot =
+        std::max(labelFont, 2.0f * radius * std::sin(kPi / axisCount));
     for (int axis = 0; axis < axisCount; ++axis) {
       const char* label = axisLabels[axis];
-      if (!label || label[0] == '\0') continue;
+      if (!label || label[0] == '\0' ||
+          !chartTextFits(label, labelSlot, labelFont)) {
+        continue;
+      }
       const float angle = -kPi * 0.5f + angleStep * static_cast<float>(axis);
-      const ImVec2 labelSize = ImGui::CalcTextSize(label);
+      const ImVec2 labelSize = chartTextSize(label, labelFont);
       const float labelRadius = radius + fontSize * 0.58f;
       ImVec2 position(centre.x + std::cos(angle) * labelRadius,
                       centre.y + std::sin(angle) * labelRadius -
@@ -1336,7 +1529,12 @@ void radar(const char* id, const char* const* axisLabels, int axisCount,
       } else if (horizontal <= 0.18f) {
         position.x -= labelSize.x * 0.5f;
       }
-      drawList->AddText(position, style::u32(style::col::TextDim), label);
+      if (position.x < rect.min.x || position.x + labelSize.x > rect.max.x ||
+          position.y < rect.min.y || position.y + labelSize.y > rect.max.y) {
+        continue;
+      }
+      drawChartText(drawList, position, style::u32(style::col::DataDim), label,
+                    labelFont);
     }
   }
 
@@ -1345,26 +1543,26 @@ void radar(const char* id, const char* const* axisLabels, int axisCount,
     for (int seriesIndex = 0; seriesIndex < seriesCount; ++seriesIndex) {
       const RadarSeries& item = series[seriesIndex];
       if (!item.values) continue;
-      const auto seriesPoint = [&](int axis) {
-        const double value = std::isfinite(item.values[axis])
-                                 ? std::clamp(item.values[axis], 0.0, 1.0)
-                                 : 0.0;
-        return axisPoint(axis, static_cast<float>(value));
+      const auto valid = [&](int axis) {
+        return std::isfinite(item.values[axis]);
       };
-      if (item.filled) {
-        for (int axis = 0; axis < axisCount; ++axis) {
-          const int next = (axis + 1) % axisCount;
+      const auto seriesPoint = [&](int axis) {
+        return axisPoint(
+            axis, static_cast<float>(std::clamp(item.values[axis], 0.0, 1.0)));
+      };
+      for (int axis = 0; axis < axisCount; ++axis) {
+        const int next = (axis + 1) % axisCount;
+        if (!valid(axis) || !valid(next)) continue;
+        if (item.filled) {
           drawList->AddTriangleFilled(centre, seriesPoint(axis),
                                       seriesPoint(next),
                                       style::u32(item.colour, 0.18f));
         }
+        drawList->AddLine(seriesPoint(axis), seriesPoint(next),
+                          style::u32(item.colour), metrics.hairline * 2.0f);
       }
       for (int axis = 0; axis < axisCount; ++axis) {
-        drawList->PathLineTo(seriesPoint(axis));
-      }
-      drawList->PathStroke(style::u32(item.colour), ImDrawFlags_Closed,
-                           metrics.hairline * 2.0f);
-      for (int axis = 0; axis < axisCount; ++axis) {
+        if (!valid(axis)) continue;
         drawList->AddCircleFilled(seriesPoint(axis), pointRadius,
                                   style::u32(item.colour));
       }
@@ -1393,50 +1591,51 @@ void bullet(const char* id, double value, double target, double rangeMin,
   drawList->PushClipRect(rect.min, rect.max, true);
   drawList->AddRectFilled(ImVec2(left, centreY - trackHeight * 0.5f),
                           ImVec2(right, centreY + trackHeight * 0.5f),
-                          style::u32(style::col::Border, 0.48f), radius);
+                          style::u32(style::col::DataDim, 0.18f), radius);
 
-  const bool finiteInputs =
-      std::isfinite(value) && std::isfinite(target) && std::isfinite(rangeMin) &&
-      std::isfinite(rangeMax) && !nearlyEqual(rangeMin, rangeMax);
-  if (!finiteInputs) {
-    drawList->PopClipRect();
-    return;
-  }
-  if (rangeMin > rangeMax) std::swap(rangeMin, rangeMax);
-  const double span = rangeMax - rangeMin;
+  const double samples[] = {value, target, rangeMin, rangeMax};
+  const Axis axis = axisFor(samples, 4, false);
   const auto mapValue = [&](double sample) {
-    const double normalized =
-        std::clamp((sample - rangeMin) / span, 0.0, 1.0);
-    return left + (right - left) * static_cast<float>(normalized);
+    return left + (right - left) * static_cast<float>(axis.normalise(sample));
   };
 
-  const double clampedTarget = std::clamp(target, rangeMin, rangeMax);
-  const double nearerEnd =
-      std::abs(clampedTarget - rangeMin) <= std::abs(rangeMax - clampedTarget)
-          ? rangeMin
-          : rangeMax;
-  const float targetX = mapValue(clampedTarget);
-  const float bandEndX = mapValue(nearerEnd);
-  drawList->AddRectFilled(
-      ImVec2(std::min(targetX, bandEndX), centreY - trackHeight * 0.5f),
-      ImVec2(std::max(targetX, bandEndX), centreY + trackHeight * 0.5f),
-      style::u32(style::col::Accent, 0.20f), radius);
-
-  const bool outside = value < rangeMin || value > rangeMax;
-  const float valueX = mapValue(value);
-  const ImVec4 barColour = outside ? style::col::Danger : accent;
-  if (valueX > left) {
-    drawList->AddRectFilled(ImVec2(left, centreY - barHeight * 0.5f),
-                            ImVec2(valueX, centreY + barHeight * 0.5f),
-                            style::u32(barColour),
-                            std::min(metrics.radiusSm, barHeight * 0.5f));
-  } else if (outside) {
-    drawList->AddCircleFilled(ImVec2(left, centreY), barHeight * 0.5f,
-                              style::u32(barColour));
+  const bool hasRange = std::isfinite(rangeMin) && std::isfinite(rangeMax);
+  if (hasRange && rangeMin > rangeMax) std::swap(rangeMin, rangeMax);
+  if (hasRange && std::isfinite(target)) {
+    const double clampedTarget = std::clamp(target, rangeMin, rangeMax);
+    const double nearerEnd =
+        std::abs(clampedTarget - rangeMin) <= std::abs(rangeMax - clampedTarget)
+            ? rangeMin
+            : rangeMax;
+    const float targetX = mapValue(clampedTarget);
+    const float bandEndX = mapValue(nearerEnd);
+    drawList->AddRectFilled(
+        ImVec2(std::min(targetX, bandEndX), centreY - trackHeight * 0.5f),
+        ImVec2(std::max(targetX, bandEndX), centreY + trackHeight * 0.5f),
+        style::u32(style::col::DataDim, 0.28f), radius);
   }
-  drawList->AddLine(ImVec2(targetX, centreY - tickHeight * 0.5f),
-                    ImVec2(targetX, centreY + tickHeight * 0.5f),
-                    style::u32(style::col::Text), metrics.hairline * 2.0f);
+
+  if (std::isfinite(value)) {
+    const bool outside = hasRange && (value < rangeMin || value > rangeMax);
+    const float valueX = mapValue(value);
+    const ImVec4 barColour = outside ? style::col::Danger : accent;
+    if (valueX > left) {
+      drawList->AddRectFilled(ImVec2(left, centreY - barHeight * 0.5f),
+                              ImVec2(valueX, centreY + barHeight * 0.5f),
+                              style::u32(barColour),
+                              std::min(metrics.radiusSm, barHeight * 0.5f));
+    } else {
+      drawList->AddCircleFilled(ImVec2(left, centreY), barHeight * 0.5f,
+                                style::u32(barColour));
+    }
+  }
+  if (std::isfinite(target)) {
+    const float targetX = mapValue(target);
+    drawList->AddLine(ImVec2(targetX, centreY - tickHeight * 0.5f),
+                      ImVec2(targetX, centreY + tickHeight * 0.5f),
+                      style::u32(style::col::DataBright),
+                      metrics.hairline * 2.0f);
+  }
   drawList->PopClipRect();
 }
 

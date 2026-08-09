@@ -384,13 +384,13 @@ TEST_CASE("tool command rail switches the active tool") {
   st.tool = ui::Tool::Select;
   panelFrame(st, &ui::drawToolPalette, "Tools");
 
-  // The active-tool header comes first, then the Navigate grid (Select,
-  // Eraser) and the Build grid (Bond, Chain, RingTemplate, Atom). Coordinates
-  // are tile centres in the 700 px test panel.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 84.0f, 85.0f);
+  // The palette is a compact grid: row one is Select, Eraser, Bond, Chain,
+  // RingTemplate, Atom; row two is the charge tools. Coordinates are tile
+  // centres in the 700 px test panel.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 176.0f, 48.0f);
   CHECK(st.tool == ui::Tool::Eraser);
 
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 28.0f, 168.0f);
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 292.0f, 48.0f);
   CHECK(st.tool == ui::Tool::Bond);
 }
 
@@ -402,8 +402,8 @@ TEST_CASE("bond gallery switches the bond order") {
 
   // Selecting the Bond tool also opens its gallery; Double is the second tile
   // of the bond-order section.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 28.0f, 168.0f);
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 136.0f, 266.0f);
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 292.0f, 48.0f);
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 392.0f, 154.0f);
   CHECK(st.currentOrder == core::BondOrder::Double);
   CHECK(st.tool == ui::Tool::Bond);
 }
@@ -414,10 +414,10 @@ TEST_CASE("bond gallery switches stereochemistry") {
   panelFrame(st, &ui::drawToolPalette, "Tools");
   REQUIRE(st.currentStereo == core::BondStereo::None);
 
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 28.0f, 168.0f);
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 292.0f, 48.0f);
 
   // Wavy is the fourth tile of the stereochemistry section.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 288.0f, 320.0f);
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 552.0f, 228.0f);
   CHECK(st.currentStereo == core::BondStereo::Wavy);
   CHECK(st.tool == ui::Tool::Bond);
 }
@@ -428,9 +428,9 @@ TEST_CASE("atom gallery quick-picks a common element") {
   panelFrame(st, &ui::drawToolPalette, "Tools");
   REQUIRE(st.currentElement == 6);
 
-  // Atom is the fourth Build tile; oxygen is the fourth quick element.
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 188.0f, 168.0f);
-  panelClickAt(st, &ui::drawToolPalette, "Tools", 496.0f, 272.0f);
+  // Selecting Atom opens its gallery; oxygen is the fourth quick element.
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 640.0f, 48.0f);
+  panelClickAt(st, &ui::drawToolPalette, "Tools", 944.0f, 174.0f);
   CHECK(st.currentElement == 8);
   CHECK(st.tool == ui::Tool::Atom);
 }
@@ -451,7 +451,7 @@ TEST_CASE("hovering a tool button fires its tooltip after the hover delay") {
   ui::AppState st;
   // Park the cursor over the Eraser command and let ImGui's hover/stationary
   // delays elapse before looking for the tooltip window.
-  mouseTo(100.0f, 185.0f);
+  mouseTo(176.0f, 48.0f);
   for (int i = 0; i < 60; ++i) panelFrame(st, &ui::drawToolPalette, "Tools");
 
   bool tooltipActive = false;

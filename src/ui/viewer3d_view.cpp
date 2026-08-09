@@ -17,7 +17,9 @@
 #include "chem/embed3d.hpp"
 #include "core/model.hpp"
 #include "ui/app_state.hpp"
+#include "ui/charts3d.hpp"
 #include "ui/icons.hpp"
+#include "ui/layout.hpp"
 #include "ui/theme.hpp"
 #include "ui/viewer3d_state.hpp"
 #include "ui/widgets.hpp"
@@ -30,17 +32,17 @@ constexpr float kPi = 3.14159265f;
 // ------------------------------------------------------------ element table
 ImVec4 elementColor(uint8_t z) {
   switch (z) {
-    case 1:  return {0.90f, 0.90f, 0.92f, 1.0f};  // H
-    case 6:  return {0.52f, 0.52f, 0.56f, 1.0f};  // C
-    case 7:  return {0.24f, 0.46f, 0.95f, 1.0f};  // N
-    case 8:  return {0.88f, 0.22f, 0.22f, 1.0f};  // O
-    case 9:  return {0.55f, 0.85f, 0.38f, 1.0f};  // F
-    case 15: return {0.95f, 0.58f, 0.16f, 1.0f};  // P
-    case 16: return {0.92f, 0.82f, 0.26f, 1.0f};  // S
-    case 17: return {0.36f, 0.80f, 0.38f, 1.0f};  // Cl
-    case 35: return {0.68f, 0.26f, 0.18f, 1.0f};  // Br
-    case 53: return {0.66f, 0.32f, 0.78f, 1.0f};  // I
-    default: return {0.78f, 0.50f, 0.88f, 1.0f};  // anything exotic
+    case 1:  return style::col::Text;
+    case 6:  return style::col::TextDim;
+    case 7:  return style::col::Data;
+    case 8:  return style::col::Danger;
+    case 9:  return style::col::Success;
+    case 15: return style::col::Violet;
+    case 16: return style::col::Teal;
+    case 17: return style::col::Teal;
+    case 35: return style::col::Danger;
+    case 53: return style::col::Violet;
+    default: return style::col::DataDim;
   }
 }
 
@@ -157,34 +159,30 @@ Projected project(const chem::Atom3D& a, float yawRad, float pitchRad, ImVec2 ce
   return Projected{centre.x + x1 * scale * persp, centre.y - y2 * scale * persp, z2, persp};
 }
 
-ImVec4 shadeAtom(ImVec4 base, float fog) {
-  // Distant atoms sink toward the background so depth reads without GL.
-  const ImVec4 bg = style::col::BgDeep;
-  return ImVec4(base.x + (bg.x - base.x) * fog, base.y + (bg.y - base.y) * fog,
-                base.z + (bg.z - base.z) * fog, 1.0f);
+ImU32 shadeAtom(ImVec4 base, float fog) {
+  return style::mix(base, style::col::BgDeep, fog);
 }
 
-void drawSphere(ImDrawList* dl, ImVec2 p, float r, ImVec4 color) {
-  dl->AddCircleFilled(p, r, style::u32(color), 24);
-  // Fake Lambert shading: darker rim at the bottom-right, specular dot at
-  // the top-left. Three draw calls read as a lit sphere at molecule sizes.
-  const ImVec4 dark(color.x * 0.55f, color.y * 0.55f, color.z * 0.55f, 1.0f);
-  dl->AddCircle(p, r, style::u32(dark, 0.75f), 24, std::max(1.0f, r * 0.10f));
-  const ImVec4 hi(color.x + (1.0f - color.x) * 0.55f, color.y + (1.0f - color.y) * 0.55f,
-                  color.z + (1.0f - color.z) * 0.55f, 1.0f);
-  dl->AddCircleFilled(ImVec2(p.x - r * 0.34f, p.y - r * 0.38f), r * 0.34f, style::u32(hi, 0.85f),
-                      16);
+void drawSphere(ImDrawList* dl, ImVec2 p, float r, ImVec4 color, float fog) {
+  dl->AddCircleFilled(p, r, shadeAtom(color, fog), 24);
+  // Contrasting rim and highlight preserve the sphere read without introducing
+  // another reporting colour outside the palette.
+  const float rimMix = fog + (1.0f - fog) * 0.45f;
+  dl->AddCircle(p, r, style::mix(color, style::col::BgDeep, rimMix, 0.75f), 24,
+                std::max(style::metrics().hairline, r * 0.10f));
+  dl->AddCircleFilled(ImVec2(p.x - r * 0.34f, p.y - r * 0.38f), r * 0.34f,
+                      style::mix(color, style::col::Text, 0.55f, 0.85f), 16);
 }
 
-void drawBondSegment(ImDrawList* dl, ImVec2 from, ImVec2 to, float thick, ImVec4 color) {
-  dl->AddLine(from, to, style::u32(color), std::max(1.0f, thick));
+void drawBondSegment(ImDrawList* dl, ImVec2 from, ImVec2 to, float thick, ImU32 color) {
+  dl->AddLine(from, to, color, std::max(style::metrics().hairline, thick));
 }
 
 // Parallel offset lines for multiple bonds. count includes the central one.
-void drawBond(ImDrawList* dl, ImVec2 pa, ImVec2 pb, float thick, ImVec4 colorA, ImVec4 colorB,
+void drawBond(ImDrawList* dl, ImVec2 pa, ImVec2 pb, float thick, ImU32 colorA, ImU32 colorB,
               int order) {
   const ImVec2 mid((pa.x + pb.x) * 0.5f, (pa.y + pb.y) * 0.5f);
-  const auto half = [&](ImVec2 a, ImVec2 b, ImVec4 c, float ox, float oy) {
+  const auto half = [&](ImVec2 a, ImVec2 b, ImU32 c, float ox, float oy) {
     drawBondSegment(dl, ImVec2(a.x + ox, a.y + oy), ImVec2(b.x + ox, b.y + oy), thick, c);
   };
   float px = 0.0f, py = 0.0f;
@@ -229,6 +227,7 @@ void drawBond(ImDrawList* dl, ImVec2 pa, ImVec2 pb, float thick, ImVec4 colorA, 
 void drawSkeleton2D(AppState& st, ImVec2 min, ImVec2 max) {
   Viewer3DState& vs = st.viewer3d;
   ImDrawList* dl = ImGui::GetWindowDrawList();
+  const style::Metrics& metrics = style::metrics();
   const ImVec2 centre((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
   const float fit = std::min(max.x - min.x, max.y - min.y) * 0.42f / vs.sketchRadius;
   const float scale = fit * vs.zoom;
@@ -255,20 +254,20 @@ void drawSkeleton2D(AppState& st, ImVec2 min, ImVec2 max) {
            (pts[static_cast<size_t>(y->a)].depth + pts[static_cast<size_t>(y->b)].depth);
   });
 
-  const float thick = std::max(1.2f, scale * 0.028f);
+  const float thick = std::max(metrics.hairline * 1.2f, scale * 0.028f);
   for (const auto* b : sorted) {
     const Projected& pa = pts[static_cast<size_t>(b->a)];
     const Projected& pb = pts[static_cast<size_t>(b->b)];
     const float fog = std::clamp(
         ((pa.depth + pb.depth) * 0.5f / vs.sketchRadius + 1.0f) * 0.5f * 0.4f, 0.0f, 0.45f);
-    const ImVec4 col = shadeAtom(style::col::Text, fog);
-    drawBond(dl, ImVec2(pa.x, pa.y), ImVec2(pb.x, pb.y), thick, col, col,
+    const ImU32 color = shadeAtom(style::col::Text, fog);
+    drawBond(dl, ImVec2(pa.x, pa.y), ImVec2(pb.x, pb.y), thick, color, color,
              b->order == 4 ? 4 : b->order);
   }
 
   // Heteroatoms keep their symbols; carbons stay implicit vertices.
   const bool mono = style::pushFont(style::fonts::mono());
-  const float labelSize = std::max(9.0f, scale * 0.24f);
+  const float labelSize = std::max(layout::minReadablePx(), scale * 0.24f);
   for (size_t i = 0; i < vs.sketchAtoms.size(); ++i) {
     const auto& a = vs.sketchAtoms[i];
     if (a.z == 6) continue;
@@ -276,9 +275,9 @@ void drawSkeleton2D(AppState& st, ImVec2 min, ImVec2 max) {
     const float fog = std::clamp((p.depth / vs.sketchRadius + 1.0f) * 0.5f * 0.4f, 0.0f, 0.45f);
     const char* symbol = chem::symbolFor(a.z);
     ImFont* font = style::fonts::mono() ? style::fonts::mono() : ImGui::GetFont();
-    const ImVec2 extent = font->CalcTextSizeA(labelSize, 10000.0f, 0.0f, symbol);
+    const ImVec2 extent = font->CalcTextSizeA(labelSize, max.x - min.x, 0.0f, symbol);
     dl->AddText(font, labelSize, ImVec2(p.x - extent.x * 0.5f, p.y - extent.y * 0.5f),
-                style::u32(shadeAtom(elementColor(a.z), fog)), symbol);
+                shadeAtom(elementColor(a.z), fog), symbol);
   }
   style::popFont(mono);
 }
@@ -300,7 +299,7 @@ void drawOrientationOverlay(const Viewer3DState& vs, ImDrawList* dl, ImVec2 min,
                 vs.pitchDeg, vs.zoom);
   const ImVec2 textSize = font->CalcTextSizeA(fontSize, max.x - min.x, 0.0f, readout);
   const ImVec2 textPos(max.x - m.gap - textSize.x, min.y + m.gap);
-  dl->AddText(font, fontSize, textPos, style::u32(style::col::TextFaint), readout);
+  dl->AddText(font, fontSize, textPos, style::u32(style::col::DataDim), readout);
 
   const float yaw = vs.yawDeg * kPi / 180.0f;
   const float pitch = vs.pitchDeg * kPi / 180.0f;
@@ -322,9 +321,9 @@ void drawOrientationOverlay(const Viewer3DState& vs, ImDrawList* dl, ImVec2 min,
                 style::u32(color), label);
   };
 
-  drawAxis(1.0f, 0.0f, 0.0f, "X", style::col::Accent);
-  drawAxis(0.0f, 1.0f, 0.0f, "Y", style::col::Teal);
-  drawAxis(0.0f, 0.0f, 1.0f, "Z", style::col::Violet);
+  drawAxis(1.0f, 0.0f, 0.0f, "X", style::col::DataBright);
+  drawAxis(0.0f, 1.0f, 0.0f, "Y", style::col::Data);
+  drawAxis(0.0f, 0.0f, 1.0f, "Z", style::col::DataDim);
 }
 
 // ---------------------------------------------------------------- drawing
@@ -389,7 +388,8 @@ void drawViewerCanvas(AppState& st, ImVec2 min, ImVec2 max, bool compact = false
       const Projected& pb = pts[static_cast<size_t>(b->b)];
       const float fogA = std::clamp((pa.depth / radius + 1.0f) * 0.5f * 0.4f, 0.0f, 0.45f);
       const float fogB = std::clamp((pb.depth / radius + 1.0f) * 0.5f * 0.4f, 0.0f, 0.45f);
-      const float thick = std::max(1.0f, bondThick * (pa.persp + pb.persp) * 0.5f);
+      const float thick =
+          std::max(m.hairline, bondThick * (pa.persp + pb.persp) * 0.5f);
       drawBond(dl, ImVec2(pa.x, pa.y), ImVec2(pb.x, pb.y), thick,
                shadeAtom(elementColor(model.atoms[static_cast<size_t>(b->a)].atomicNumber), fogA),
                shadeAtom(elementColor(model.atoms[static_cast<size_t>(b->b)].atomicNumber), fogB),
@@ -410,14 +410,14 @@ void drawViewerCanvas(AppState& st, ImVec2 min, ImVec2 max, bool compact = false
     const float baseRadius = spacefill ? vdwRadius(atom.atomicNumber)
                                        : covalentRadius(atom.atomicNumber) *
                                              (licorice ? 0.22f : 0.30f);
-    const float r = std::max(2.0f, baseRadius * scale * p.persp);
+    const float r = std::max(m.hairline * 2.0f, baseRadius * scale * p.persp);
     const float fog = std::clamp((p.depth / radius + 1.0f) * 0.5f * 0.4f, 0.0f, 0.45f);
-    drawSphere(dl, ImVec2(p.x, p.y), r, shadeAtom(elementColor(atom.atomicNumber), fog));
+    drawSphere(dl, ImVec2(p.x, p.y), r, elementColor(atom.atomicNumber), fog);
 
     const ImVec2 mouse = ImGui::GetMousePos();
     const float dist = std::sqrt((mouse.x - p.x) * (mouse.x - p.x) +
                                  (mouse.y - p.y) * (mouse.y - p.y));
-    if (dist < r + 4.0f && dist < hoveredDist) {
+    if (dist < r + m.gap * 0.5f && dist < hoveredDist) {
       hoveredDist = dist;
       hoveredAtom = &atom;
     }
@@ -435,21 +435,13 @@ void drawViewerCanvas(AppState& st, ImVec2 min, ImVec2 max, bool compact = false
                 vs.molWeight, atomCount);
   dl->AddText(style::fonts::mono(), ImGui::GetFontSize() * 0.9f,
               ImVec2(min.x + m.gap, max.y - m.gap - ImGui::GetFontSize()),
-              style::u32(style::col::TextDim), caption);
+              style::u32(style::col::DataDim), caption);
 
   drawOrientationOverlay(vs, dl, min, max);
 }
 
-}  // namespace
-
-void drawViewer3D(AppState& st) {
-  Viewer3DState& vs = st.viewer3d;
-  syncModel(st);
-
-  if (vs.autoRotate) {
-    vs.yawDeg = std::fmod(vs.yawDeg + ImGui::GetIO().DeltaTime * 25.0f, 360.0f);
-  }
-
+void drawMoleculeToolbar(Viewer3DState& vs, const layout::Frame& frame, bool split,
+                         int part) {
   static constexpr icons::Icon kStyleIcons[] = {
       icons::Icon::Molecule,
       icons::Icon::Bond,
@@ -463,65 +455,321 @@ void drawViewer3D(AppState& st) {
       "Skeleton",
   };
 
-  const float frameHeight = ImGui::GetFrameHeight();
-  widgets::beginToolbar("##v3d_toolbar");
-  widgets::segmentedIcons("##v3d_style", kStyleIcons, kStyleTooltips, 4, vs.style,
-                          frameHeight * 4.0f);
-  ImGui::SameLine();
-  widgets::toolbarSeparator();
-  ImGui::SameLine();
-  widgets::toggle("##v3d_auto_rotate", "Auto rotate", vs.autoRotate,
-                  "Continuously orbit the molecule");
-  ImGui::SameLine();
-  widgets::toolbarSeparator();
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(frameHeight * 4.75f);
-  widgets::glyphSlider("##v3d_zoom", icons::Icon::ZoomFit, "Zoom", vs.zoom, 0.25f, 6.0f,
-                       "%.2fx", "Scale relative to fit-to-view");
-  ImGui::SameLine();
-  widgets::toolbarSeparator();
-  ImGui::SameLine();
-  if (widgets::actionButton("##v3d_fit", icons::Icon::Crosshair, "Fit",
-                            ImVec2(frameHeight * 2.4f, frameHeight), false,
-                            "Reframe the molecule and stop auto rotation")) {
-    fitView(vs);
+  const bool drawStyle = !split || part == 0;
+  const bool drawView = !split || part == 1;
+  widgets::beginToolbar(part == 0 ? "##v3d_toolbar_primary" : "##v3d_toolbar_view");
+  if (drawStyle) {
+    widgets::segmentedIcons("##v3d_style", kStyleIcons, kStyleTooltips, 4, vs.style,
+                            frame.control * 4.0f);
+    ImGui::SameLine();
+    widgets::toolbarSeparator();
+    ImGui::SameLine();
+    widgets::toggle("##v3d_auto_rotate", "Auto rotate", vs.autoRotate,
+                    "Continuously orbit the molecule");
   }
-  ImGui::SameLine();
-  widgets::helpMarker(
-      "Drag to orbit. Use the mouse wheel to zoom. Double-click to fit the molecule.");
+  if (drawStyle && drawView) {
+    ImGui::SameLine();
+    widgets::toolbarSeparator();
+    ImGui::SameLine();
+  }
+  if (drawView) {
+    if (widgets::actionButton("##v3d_fit", icons::Icon::Crosshair, "Fit",
+                              ImVec2(frame.control * 2.4f, frame.control), false,
+                              "Reframe the molecule and stop auto rotation")) {
+      fitView(vs);
+    }
+    ImGui::SameLine();
+    widgets::helpMarker(
+        "Drag to orbit. Use the mouse wheel to zoom. Double-click to fit the molecule.");
+    ImGui::SameLine();
+    widgets::toolbarSeparator();
+    ImGui::SameLine();
+    widgets::glyphSlider("##v3d_zoom", icons::Icon::ZoomFit, "Zoom", vs.zoom, 0.25f,
+                         6.0f, "%.2fx", "Scale relative to fit-to-view");
+  }
   widgets::endToolbar();
+}
 
+void normaliseOrbitalQuantumNumbers(Viewer3DState& vs) {
+  vs.orbitalN = std::clamp(vs.orbitalN, 1, 5);
+  // The renderer exposes the named s, p, d and f families.
+  vs.orbitalL = std::clamp(vs.orbitalL, 0, std::min(vs.orbitalN - 1, 3));
+  vs.orbitalM = std::clamp(vs.orbitalM, -vs.orbitalL, vs.orbitalL);
+}
+
+void quantumStrip(const char* caption, const char* id, const char* const* labels,
+                  int count, int& index, float width, const layout::Frame& frame) {
+  ImGui::BeginGroup();
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextColored(style::col::DataDim, "%s", caption);
+  ImGui::SameLine(0.0f, frame.gap);
+  const float labelWidth = ImGui::CalcTextSize(caption).x;
+  const float stripWidth = std::max(width - labelWidth - frame.gap, frame.control);
+  widgets::segmented(id, labels, count, index, stripWidth);
+  ImGui::EndGroup();
+}
+
+void drawQuantumToolbar(Viewer3DState& vs, const layout::Frame& frame, bool stacked,
+                        int part) {
+  static const char* kPrincipalLabels[] = {"1", "2", "3", "4", "5"};
+  static const char* kAzimuthalLabels[] = {"s", "p", "d", "f"};
+  static const char* kMagneticLabels[] = {"-3", "-2", "-1", "0", "+1", "+2", "+3"};
+
+  normaliseOrbitalQuantumNumbers(vs);
+  widgets::beginToolbar(stacked ? (part == 0 ? "##orbital_n"
+                                             : part == 1 ? "##orbital_l" : "##orbital_m")
+                                : "##orbital_quantum");
+  const float available =
+      std::max(frame.size.x - style::metrics().gap, frame.control);
+  layout::Frame controls = frame;
+  controls.size.x = available;
+  const float groupWidth = stacked ? available : layout::columnWidth(controls, 3);
+
+  if (!stacked || part == 0) {
+    int index = vs.orbitalN - 1;
+    const int previous = index;
+    quantumStrip("n", "##orbital_n_value", kPrincipalLabels, 5, index, groupWidth,
+                 frame);
+    if (index != previous) {
+      vs.orbitalN = index + 1;
+      normaliseOrbitalQuantumNumbers(vs);
+    }
+  }
+  if (!stacked) ImGui::SameLine(0.0f, frame.gap);
+
+  if (!stacked || part == 1) {
+    const int count = std::min(vs.orbitalN, 4);
+    int index = vs.orbitalL;
+    quantumStrip("l", "##orbital_l_value", kAzimuthalLabels, count, index, groupWidth,
+                 frame);
+    if (index != vs.orbitalL) {
+      vs.orbitalL = index;
+      normaliseOrbitalQuantumNumbers(vs);
+    }
+  }
+  if (!stacked) ImGui::SameLine(0.0f, frame.gap);
+
+  if (!stacked || part == 2) {
+    const int count = vs.orbitalL * 2 + 1;
+    int index = vs.orbitalM + vs.orbitalL;
+    quantumStrip("m", "##orbital_m_value", kMagneticLabels + (3 - vs.orbitalL),
+                 count, index, groupWidth, frame);
+    if (index != vs.orbitalM + vs.orbitalL) {
+      vs.orbitalM = index - vs.orbitalL;
+    }
+  }
+  normaliseOrbitalQuantumNumbers(vs);
+  widgets::endToolbar();
+}
+
+void drawOrbitalOptionsToolbar(Viewer3DState& vs, const layout::Frame& frame,
+                               bool split, int part) {
+  charts3d::OrbitalStyle& orbitalStyle = vs.orbitalStyle;
+  widgets::beginToolbar(part == 0 ? "##orbital_display" : "##orbital_iso");
+  if (!split || part == 0) {
+    widgets::toggle("##orbital_nodes", "Nodes", orbitalStyle.showNodes,
+                    "Show radial and angular nodes");
+    ImGui::SameLine(0.0f, frame.gap);
+    widgets::toggle("##orbital_cutaway", "Cutaway", orbitalStyle.cutaway,
+                    "Slice the near half to expose radial structure");
+    if (!split) {
+      ImGui::SameLine(0.0f, frame.gap);
+      widgets::toggle("##orbital_axes", "Axes", orbitalStyle.showAxes,
+                      "Show the orbital coordinate axes");
+    }
+  }
+  if (split && part == 1) {
+    widgets::toggle("##orbital_axes", "Axes", orbitalStyle.showAxes,
+                    "Show the orbital coordinate axes");
+  }
+  if (!split || part == 1) {
+    ImGui::SameLine(0.0f, frame.gap);
+    widgets::glyphSlider("##orbital_iso", icons::Icon::Layers, "Iso level",
+                         orbitalStyle.isoLevel, 0.02f, 0.95f, "%.2f",
+                         "Probability-amplitude surface threshold");
+  }
+  widgets::endToolbar();
+}
+
+void drawOrbitalOverlay(const Viewer3DState& vs, ImVec2 min, ImVec2 max) {
+  const style::Metrics& metrics = style::metrics();
+  ImDrawList* drawList = ImGui::GetWindowDrawList();
+  ImFont* font = style::fonts::mono() ? style::fonts::mono() : ImGui::GetFont();
+  const float fontSize = layout::labelFont(ImGui::GetFontSize() * 0.86f);
+  const char* title =
+      charts3d::orbitalName(vs.orbitalN, vs.orbitalL, vs.orbitalM);
+  const float titleSize = layout::labelFont(ImGui::GetFontSize() * 0.82f);
+  const float titleWidth =
+      ImGui::GetFont()->CalcTextSizeA(titleSize, max.x - min.x, 0.0f, title).x;
+
+  char orientation[96];
+  std::snprintf(orientation, sizeof(orientation), "Yaw %.0f  Pitch %.0f  Zoom %.2fx",
+                vs.orbitalOrbit.yawDeg, vs.orbitalOrbit.pitchDeg,
+                vs.orbitalOrbit.zoom);
+  ImVec2 orientationSize =
+      font->CalcTextSizeA(fontSize, max.x - min.x, 0.0f, orientation);
+  if (orientationSize.x + titleWidth + metrics.gap * 3.0f > max.x - min.x) {
+    std::snprintf(orientation, sizeof(orientation), "Y %.0f  P %.0f  Z %.2fx",
+                  vs.orbitalOrbit.yawDeg, vs.orbitalOrbit.pitchDeg,
+                  vs.orbitalOrbit.zoom);
+    orientationSize =
+        font->CalcTextSizeA(fontSize, max.x - min.x, 0.0f, orientation);
+  }
+
+  // Repaint the renderer's built-in name at the same position so the orbital
+  // heading follows the cyan information rule without duplicating the label.
+  drawList->AddText(ImGui::GetFont(), titleSize,
+                    ImVec2(min.x + metrics.gap * 0.45f,
+                           min.y + metrics.gap * 0.35f),
+                    style::u32(style::col::DataBright), title);
+  drawList->AddText(font, fontSize,
+                    ImVec2(max.x - metrics.gap - orientationSize.x,
+                           min.y + metrics.gap),
+                    style::u32(style::col::DataDim), orientation);
+
+  char nodes[96];
+  const int radialNodes = vs.orbitalN - vs.orbitalL - 1;
+  std::snprintf(nodes, sizeof(nodes), "%d radial node%s  |  %d angular node%s",
+                radialNodes, radialNodes == 1 ? "" : "s", vs.orbitalL,
+                vs.orbitalL == 1 ? "" : "s");
+  drawList->AddText(font, fontSize,
+                    ImVec2(min.x + metrics.gap,
+                           max.y - metrics.gap - fontSize),
+                    style::u32(style::col::Data), nodes);
+}
+
+void drawStructureMode(AppState& st, const layout::Frame& frame, ImVec2 origin,
+                       float tabHeight) {
+  Viewer3DState& vs = st.viewer3d;
+  const bool splitToolbar = frame.ems() < 34.0f;
+  const int toolbarRows = splitToolbar ? 2 : 1;
+  const int rowCount = toolbarRows + 2;
+  float weights[4] = {};
+  float minimums[4] = {};
+  float heights[4] = {};
+  minimums[0] = tabHeight;
+  for (int i = 0; i < toolbarRows; ++i) {
+    minimums[i + 1] = frame.control + style::metrics().gap;
+  }
+  minimums[rowCount - 1] = frame.row * 6.0f;
+  weights[rowCount - 1] = 1.0f;
+  layout::distribute(frame.size.y, weights, minimums, rowCount, frame.gap, heights);
+
+  static const char* kModes[] = {"Structure", "Orbitals"};
+  static constexpr icons::Icon kModeIcons[] = {
+      icons::Icon::Molecule,
+      icons::Icon::Atom,
+  };
+  ImGui::SetCursorScreenPos(origin);
+  widgets::subTabs("##viewer3d_modes", kModes, kModeIcons, 2, vs.mode);
+
+  float y = heights[0] + frame.gap;
+  for (int row = 0; row < toolbarRows; ++row) {
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + y));
+    drawMoleculeToolbar(vs, frame, splitToolbar, row);
+    y += heights[row + 1] + frame.gap;
+  }
+
+  ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + y));
+  const ImVec2 viewportSize(frame.size.x, heights[rowCount - 1]);
   if (!vs.hasModel) {
     std::string guidance = "Draw a molecule in the Sketch tab to generate a 3D structure.";
     if (!vs.errorMessage.empty() && vs.errorMessage != "Sketch is empty.") {
       guidance += " ";
       guidance += vs.errorMessage;
     }
+    ImGui::BeginChild("##v3d_empty_viewport", viewportSize, false,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     widgets::emptyState(icons::Icon::Cube, "No 3D structure", guidance.c_str());
+    ImGui::EndChild();
     return;
   }
 
-
-  ImVec2 size = ImGui::GetContentRegionAvail();
-  size.x = std::max(size.x, ImGui::GetFrameHeight() * 2.0f);
-  size.y = std::max(size.y, ImGui::GetTextLineHeightWithSpacing() * 6.0f);
-  ImGui::InvisibleButton("##v3d_canvas", size);
+  ImGui::InvisibleButton("##v3d_canvas", viewportSize);
   const ImVec2 min = ImGui::GetItemRectMin();
   const ImVec2 max = ImGui::GetItemRectMax();
-
   if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
     const ImVec2 delta = ImGui::GetIO().MouseDelta;
     vs.yawDeg = std::fmod(vs.yawDeg + delta.x * 0.45f + 360.0f, 360.0f);
     vs.pitchDeg = std::clamp(vs.pitchDeg + delta.y * 0.45f, -89.0f, 89.0f);
-    vs.autoRotate = false;  // grabbing the model always wins over the spinner
+    vs.autoRotate = false;
   }
   if (ImGui::IsItemHovered()) {
     const float wheel = ImGui::GetIO().MouseWheel;
-    if (wheel != 0.0f) vs.zoom = std::clamp(vs.zoom * (1.0f + wheel * 0.12f), 0.25f, 6.0f);
+    if (wheel != 0.0f) {
+      vs.zoom = std::clamp(vs.zoom * (1.0f + wheel * 0.12f), 0.25f, 6.0f);
+    }
     if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) fitView(vs);
   }
-
   drawViewerCanvas(st, min, max);
+}
+
+void drawOrbitalMode(Viewer3DState& vs, const layout::Frame& frame, ImVec2 origin,
+                     float tabHeight) {
+  normaliseOrbitalQuantumNumbers(vs);
+  const bool stackQuantum = layout::columnsThatFit(frame, 11.0f) < 3;
+  const int quantumRows = stackQuantum ? 3 : 1;
+  const bool splitOptions = frame.ems() < 44.0f;
+  const int optionRows = splitOptions ? 2 : 1;
+  const int rowCount = quantumRows + optionRows + 2;
+  float weights[8] = {};
+  float minimums[8] = {};
+  float heights[8] = {};
+  minimums[0] = tabHeight;
+  for (int i = 0; i < quantumRows + optionRows; ++i) {
+    minimums[i + 1] = frame.control + style::metrics().gap;
+  }
+  minimums[rowCount - 1] = frame.row * 6.0f;
+  weights[rowCount - 1] = 1.0f;
+  layout::distribute(frame.size.y, weights, minimums, rowCount, frame.gap, heights);
+
+  static const char* kModes[] = {"Structure", "Orbitals"};
+  static constexpr icons::Icon kModeIcons[] = {
+      icons::Icon::Molecule,
+      icons::Icon::Atom,
+  };
+  ImGui::SetCursorScreenPos(origin);
+  widgets::subTabs("##viewer3d_modes", kModes, kModeIcons, 2, vs.mode);
+
+  int row = 1;
+  float y = heights[0] + frame.gap;
+  for (int part = 0; part < quantumRows; ++part, ++row) {
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + y));
+    drawQuantumToolbar(vs, frame, stackQuantum, part);
+    y += heights[row] + frame.gap;
+  }
+  for (int part = 0; part < optionRows; ++part, ++row) {
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + y));
+    drawOrbitalOptionsToolbar(vs, frame, splitOptions, part);
+    y += heights[row] + frame.gap;
+  }
+
+  ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + y));
+  charts3d::orbital("##orbital_canvas", vs.orbitalN, vs.orbitalL, vs.orbitalM,
+                    ImVec2(frame.size.x, heights[rowCount - 1]), vs.orbitalOrbit,
+                    vs.orbitalStyle);
+  drawOrbitalOverlay(vs, ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+}
+
+}  // namespace
+
+void drawViewer3D(AppState& st) {
+  Viewer3DState& vs = st.viewer3d;
+  syncModel(st);
+  const layout::Frame frame = layout::measure();
+  const ImVec2 origin = ImGui::GetCursorScreenPos();
+  const float tabHeight = frame.control * 1.25f;
+  vs.mode = std::clamp(vs.mode, 0, 1);
+
+  if (vs.autoRotate) {
+    vs.yawDeg = std::fmod(vs.yawDeg + ImGui::GetIO().DeltaTime * 25.0f, 360.0f);
+  }
+
+  if (vs.mode == 0) {
+    drawStructureMode(st, frame, origin, tabHeight);
+  } else {
+    drawOrbitalMode(vs, frame, origin, tabHeight);
+  }
 }
 
 }  // namespace chemcad::ui

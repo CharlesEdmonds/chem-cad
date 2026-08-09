@@ -25,7 +25,9 @@
 #include "sol/selection.hpp"
 #include "sol/solvent.hpp"
 #include "ui/app_state.hpp"
+#include "ui/charts3d.hpp"
 #include "ui/icons.hpp"
+#include "ui/layout.hpp"
 #include "ui/selection_state.hpp"
 #include "ui/solubility_state.hpp"
 #include "ui/theme.hpp"
@@ -82,17 +84,15 @@ float easeOutCubic(float value) {
 }
 
 ImVec4 scoreColour(double score) {
-  const float value = std::clamp(static_cast<float>(score), 0.0f, 1.0f);
-  const ImVec4& a = value < 0.5f ? style::col::Danger : style::col::Accent;
-  const ImVec4& b = value < 0.5f ? style::col::Accent : style::col::Success;
-  const float t = value < 0.5f ? value * 2.0f : (value - 0.5f) * 2.0f;
-  return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
-                a.z + (b.z - a.z) * t, 1.0f);
+  const double value = std::clamp(score, 0.0, 1.0);
+  if (value < 0.35) return style::col::Danger;
+  if (value > 0.70) return style::col::Success;
+  return style::col::Data;
 }
 
 ImVec4 chem21Colour(const std::string& value) {
   if (value == "recommended") return style::col::Success;
-  if (value == "problematic") return style::col::Accent;
+  if (value == "problematic") return style::col::DataBright;
   if (value == "hazardous" || value == "highly hazardous") return style::col::Danger;
   return style::col::TextDim;
 }
@@ -101,11 +101,11 @@ std::string formatSolubility(double value) {
   char buffer[64];
   const double magnitude = std::fabs(value);
   if (!std::isfinite(value)) return "infinite";
-  if (value == 0.0) return "0 g/mL";
+  if (value == 0.0) return "0";
   if (magnitude < 1e-3 || magnitude >= 1e4) {
-    std::snprintf(buffer, sizeof(buffer), "%.2e g/mL", value);
+    std::snprintf(buffer, sizeof(buffer), "%.2e", value);
   } else {
-    std::snprintf(buffer, sizeof(buffer), "%.4g g/mL", value);
+    std::snprintf(buffer, sizeof(buffer), "%.4g", value);
   }
   return buffer;
 }
@@ -131,10 +131,10 @@ std::string formatBoilingPoint(const sol::SolventCandidate& candidate) {
   if (!candidate.solvent || candidate.solvent->boilingPoint <= 0.0) return "not rated";
   char buffer[64];
   if (candidate.partner && candidate.partner->boilingPoint > 0.0) {
-    std::snprintf(buffer, sizeof(buffer), "%.1f / %.1f C", candidate.solvent->boilingPoint,
+    std::snprintf(buffer, sizeof(buffer), "%.1f / %.1f", candidate.solvent->boilingPoint,
                   candidate.partner->boilingPoint);
   } else {
-    std::snprintf(buffer, sizeof(buffer), "%.1f C", candidate.solvent->boilingPoint);
+    std::snprintf(buffer, sizeof(buffer), "%.1f", candidate.solvent->boilingPoint);
   }
   return buffer;
 }
@@ -427,19 +427,11 @@ void flowBeforeChip(const char* label, float& usedWidth, float availableWidth) {
   usedWidth += width;
 }
 
-bool sliderDouble(const char* visibleLabel, const char* hiddenLabel, double& value,
+bool sliderDouble(icons::Icon icon, const char* label, const char* id, double& value,
                   float minimum, float maximum, const char* format) {
   float temporary = static_cast<float>(value);
-  const float available = ImGui::GetContentRegionAvail().x;
-  const float labelWidth = ImGui::CalcTextSize(visibleLabel).x +
-                           ImGui::GetStyle().ItemInnerSpacing.x;
-  if (available - labelWidth >= ImGui::GetFontSize() * 4.0f) {
-    ImGui::SetNextItemWidth(available - labelWidth);
-    if (!ImGui::SliderFloat(visibleLabel, &temporary, minimum, maximum, format)) return false;
-  } else {
-    ImGui::TextWrapped("%s", visibleLabel);
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (!ImGui::SliderFloat(hiddenLabel, &temporary, minimum, maximum, format)) return false;
+  if (!widgets::glyphSlider(id, icon, label, temporary, minimum, maximum, format)) {
+    return false;
   }
   value = static_cast<double>(temporary);
   return true;
@@ -473,7 +465,7 @@ void drawOperationCard(sol::OperationKind kind, sol::OperationKind& selected, fl
   }
 
   const float padding = metrics.gap;
-  const float textWidth = std::max(width - padding * 2.0f, 1.0f);
+  const float textWidth = std::max(width - padding * 2.0f, metrics.hairline);
   const std::string title = ellipsizeText(sol::operationName(kind), textWidth);
   draw->AddText(ImVec2(minimum.x + padding, minimum.y + padding), style::u32(style::col::Text),
                 title.c_str());
@@ -484,26 +476,19 @@ void drawOperationCard(sol::OperationKind kind, sol::OperationKind& selected, fl
 }
 
 void drawOperationChooser(SelectionState& state) {
-  widgets::sectionHeader("Operation", style::col::Accent);
-  const float available = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
-  const float gap = style::metrics().gap;
-  int columns = 1;
-  if (available >= ImGui::GetFontSize() * 42.0f) {
-    columns = 3;
-  } else if (available >= ImGui::GetFontSize() * 25.0f) {
-    columns = 2;
-  }
-  const float width = std::max((available - gap * static_cast<float>(columns - 1)) /
-                                   static_cast<float>(columns),
-                               1.0f);
+  widgets::sectionHeader("Operation", style::col::Data);
+  const layout::Frame frame = layout::measure();
+  const int columns = std::min(layout::columnsThatFit(frame, 12.0f),
+                               static_cast<int>(kOperationKinds.size()));
+  const float width = layout::columnWidth(frame, columns);
   for (size_t index = 0; index < kOperationKinds.size(); ++index) {
-    if (index % static_cast<size_t>(columns) != 0) ImGui::SameLine(0.0f, gap);
+    if (index % static_cast<size_t>(columns) != 0) ImGui::SameLine(0.0f, frame.gap);
     drawOperationCard(kOperationKinds[index], state.operation.kind, width);
   }
 }
 
 void drawOperationConditions(SelectionState& state) {
-  widgets::sectionHeader("Working conditions", style::col::Violet);
+  widgets::sectionHeader("Working conditions", style::col::Data);
   if (!widgets::beginCard("##operation_conditions", ImVec2(0.0f, 0.0f),
                           style::col::BgSurface)) {
     return;
@@ -521,45 +506,50 @@ void drawOperationConditions(SelectionState& state) {
   ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * std::max(reveal, 0.05f));
   switch (state.operation.kind) {
     case sol::OperationKind::LiquidLiquidExtraction:
-      sliderDouble("Temperature (C)", "##extraction_temperature", state.operation.temperatureC,
-                   -20.0f, 120.0f, "%.1f");
-      sliderDouble("Aqueous volume (mL)", "##aqueous_volume",
-                   state.operation.aqueousVolumeMl, 1.0f, 1000.0f, "%.0f");
-      sliderDouble("Organic volume (mL)", "##organic_volume",
-                   state.operation.organicVolumeMl, 1.0f, 1000.0f, "%.0f");
+      sliderDouble(icons::Icon::Thermometer, "Temperature", "##extraction_temperature",
+                   state.operation.temperatureC, -20.0f, 120.0f, "%.1f C");
+      sliderDouble(icons::Icon::Droplet, "Aqueous volume", "##aqueous_volume",
+                   state.operation.aqueousVolumeMl, 1.0f, 1000.0f, "%.0f mL");
+      sliderDouble(icons::Icon::Droplet, "Organic volume", "##organic_volume",
+                   state.operation.organicVolumeMl, 1.0f, 1000.0f, "%.0f mL");
       if (state.operation.pH == sol::kAutoPH) {
-        if (drawToggleChip("SELF-BUFFERED PH", true)) state.operation.pH = 7.0;
+        if (drawToggleChip("Self-buffered pH", true)) state.operation.pH = 7.0;
         ImGui::TextWrapped("The solute sets its own saturated-solution pH.");
       } else {
-        if (drawToggleChip("FIXED PH", true)) state.operation.pH = sol::kAutoPH;
-        sliderDouble("pH", "##extraction_ph", state.operation.pH, 0.0f, 14.0f, "%.1f");
+        if (drawToggleChip("Fixed pH", true)) state.operation.pH = sol::kAutoPH;
+        sliderDouble(icons::Icon::Ph, "pH", "##extraction_ph", state.operation.pH,
+                     0.0f, 14.0f, "%.1f");
       }
       break;
     case sol::OperationKind::Recrystallisation:
-      sliderDouble("Dissolve hot (C)", "##hot_temperature",
-                   state.operation.hotTemperatureC, 20.0f, 200.0f, "%.1f");
-      sliderDouble("Crystallise cold (C)", "##cold_temperature",
-                   state.operation.coldTemperatureC, -20.0f, 80.0f, "%.1f");
+      sliderDouble(icons::Icon::Flame, "Dissolve hot", "##hot_temperature",
+                   state.operation.hotTemperatureC, 20.0f, 200.0f, "%.1f C");
+      sliderDouble(icons::Icon::Snowflake, "Crystallise cold", "##cold_temperature",
+                   state.operation.coldTemperatureC, -20.0f, 80.0f, "%.1f C");
       break;
     case sol::OperationKind::AntiSolventPrecipitation:
-      sliderDouble("Addition temperature (C)", "##antisolvent_temperature",
-                   state.operation.temperatureC, -20.0f, 120.0f, "%.1f");
+      sliderDouble(icons::Icon::Thermometer, "Addition temperature",
+                   "##antisolvent_temperature", state.operation.temperatureC,
+                   -20.0f, 120.0f, "%.1f C");
       ImGui::TextWrapped("The engine sweeps compatible solvent / anti-solvent partners and reports "
                          "the partner fraction at the best precipitation window.");
       break;
     case sol::OperationKind::Trituration:
-      sliderDouble("Wash temperature (C)", "##trituration_temperature",
-                   state.operation.temperatureC, -20.0f, 120.0f, "%.1f");
+      sliderDouble(icons::Icon::Thermometer, "Wash temperature",
+                   "##trituration_temperature", state.operation.temperatureC,
+                   -20.0f, 120.0f, "%.1f C");
       break;
     case sol::OperationKind::ChromatographyMobilePhase:
-      sliderDouble("Column temperature (C)", "##chromatography_temperature",
-                   state.operation.temperatureC, 0.0f, 80.0f, "%.1f");
-      ImGui::TextWrapped("The polarity and selectivity window is derived from the KEEP and REMOVE "
+      sliderDouble(icons::Icon::Thermometer, "Column temperature",
+                   "##chromatography_temperature", state.operation.temperatureC,
+                   0.0f, 80.0f, "%.1f C");
+      ImGui::TextWrapped("The polarity and selectivity window is derived from the keep and remove "
                          "species; use the boiling-point window below for volatility limits.");
       break;
     case sol::OperationKind::ReactionMedium:
-      sliderDouble("Reaction temperature (C)", "##reaction_temperature",
-                   state.operation.temperatureC, -20.0f, 200.0f, "%.1f");
+      sliderDouble(icons::Icon::Thermometer, "Reaction temperature",
+                   "##reaction_temperature", state.operation.temperatureC,
+                   -20.0f, 200.0f, "%.1f C");
       break;
   }
   ImGui::PopStyleVar();
@@ -607,16 +597,19 @@ bool drawSpeciesRow(SelectionState& state, size_t index) {
     style::popFont(mono);
 
     const float segmentGap = style::metrics().hairline;
-    const float segmentWidth = std::max((ImGui::GetContentRegionAvail().x - segmentGap) * 0.5f, 1.0f);
+    const float segmentWidth = std::max(
+        (ImGui::GetContentRegionAvail().x - segmentGap) * 0.5f,
+        style::metrics().hairline);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(segmentGap, ImGui::GetStyle().ItemSpacing.y));
-    if (drawSegmentButton("KEEP##role", species.keep, ImVec2(segmentWidth, 0.0f))) species.keep = true;
+    if (drawSegmentButton("Keep##role", species.keep, ImVec2(segmentWidth, 0.0f))) species.keep = true;
     ImGui::SameLine(0.0f, segmentGap);
-    if (drawSegmentButton("REMOVE##role", !species.keep, ImVec2(segmentWidth, 0.0f))) species.keep = false;
+    if (drawSegmentButton("Remove##role", !species.keep, ImVec2(segmentWidth, 0.0f))) species.keep = false;
     ImGui::PopStyleVar();
 
-    sliderDouble("Importance", "##species_weight", species.weight, 0.1f, 3.0f, "%.2f x");
-    sliderDouble("Amount (mg, optional)", "##species_amount", species.amountMg, 0.0f, 5000.0f,
-                 "%.0f");
+    sliderDouble(icons::Icon::Balance, "Importance", "##species_weight",
+                 species.weight, 0.1f, 3.0f, "%.2f x");
+    sliderDouble(icons::Icon::Balance, "Amount", "##species_amount",
+                 species.amountMg, 0.0f, 5000.0f, "%.0f mg");
     widgets::endCard();
   }
   ImGui::PopID();
@@ -625,17 +618,17 @@ bool drawSpeciesRow(SelectionState& state, size_t index) {
 
 void drawSpeciesBuilder(AppState& state) {
   SelectionState& selection = state.selection;
-  widgets::sectionHeader("Species", style::col::Teal);
+  widgets::sectionHeader("Species", style::col::Data);
   if (!widgets::beginCard("##species_builder", ImVec2(0.0f, 0.0f), style::col::BgSurface)) return;
 
   const float available = ImGui::GetContentRegionAvail().x;
   float used = 0.0f;
-  flowBeforeChip("FROM SKETCH", used, available);
-  if (drawToggleChip("FROM SKETCH", selection.addMode == 0)) selection.addMode = 0;
+  flowBeforeChip("From sketch", used, available);
+  if (drawToggleChip("From sketch", selection.addMode == 0)) selection.addMode = 0;
   flowBeforeChip("SMILES", used, available);
   if (drawToggleChip("SMILES", selection.addMode == 1)) selection.addMode = 1;
-  flowBeforeChip("CHEMICAL NAME", used, available);
-  if (drawToggleChip("CHEMICAL NAME", selection.addMode == 2)) selection.addMode = 2;
+  flowBeforeChip("Chemical name", used, available);
+  if (drawToggleChip("Chemical name", selection.addMode == 2)) selection.addMode = 2;
 
   ImGui::Spacing();
   if (selection.addMode == 0) {
@@ -657,12 +650,15 @@ void drawSpeciesBuilder(AppState& state) {
     const bool enter = widgets::stringInputWithHint("##species_name", "IUPAC or common name",
                                            selection.nameInput,
                                            ImGuiInputTextFlags_EnterReturnsTrue);
-    if (selection.nameLookupRunning) ImGui::BeginDisabled();
-    if (enter || widgets::primaryButton(selection.nameLookupRunning ? "Resolving..." : "Resolve and add",
-                                        ImVec2(ImGui::GetContentRegionAvail().x, 0.0f))) {
+    if (selection.nameLookupRunning) {
+      widgets::statusDot("Resolving chemical name", true, style::col::Data);
+    }
+    if (widgets::onlyWhen(!selection.nameLookupRunning,
+                          "Chemical name lookup is already in progress.") &&
+        (enter || widgets::primaryButton("Resolve and add",
+                                         ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))) {
       addNameSpecies(state);
     }
-    if (selection.nameLookupRunning) ImGui::EndDisabled();
   }
 
   if (!selection.inputError.empty()) {
@@ -678,24 +674,53 @@ void drawSpeciesBuilder(AppState& state) {
   }
 
   ImGui::Spacing();
-  const float listHeight = ImGui::GetFontSize() * 16.0f;
+  const float listHeight =
+      std::max(layout::pageHeight(), ImGui::GetTextLineHeightWithSpacing());
+  const layout::Frame listFrame =
+      layout::measure(ImVec2(ImGui::GetContentRegionAvail().x, listHeight));
+  const float listWeights[2] = {1.0f, 0.0f};
+  const float listMinimums[2] = {listFrame.row * 7.0f, listFrame.control};
+  float listRows[2] = {};
+  layout::distribute(listHeight, listWeights, listMinimums, 2, listFrame.gap, listRows);
+  static std::unordered_map<const SelectionState*, int> pages;
+  int& page = pages[&selection];
+  const int pageCount =
+      std::max(1, static_cast<int>(selection.operation.species.size()));
+  page = std::clamp(page, 0, pageCount - 1);
+
   ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, style::metrics().radiusMd);
   ImGui::PushStyleColor(ImGuiCol_ChildBg, style::col::BgPanel);
-  if (ImGui::BeginChild("##species_list", ImVec2(0.0f, listHeight), ImGuiChildFlags_Borders)) {
+  if (ImGui::BeginChild("##species_list", ImVec2(0.0f, listRows[0]),
+                        ImGuiChildFlags_Borders,
+                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
     if (selection.operation.species.empty()) {
-      ImGui::TextWrapped("Add every compound that matters. Mark products to isolate as KEEP and "
-                         "impurities to reject as REMOVE.");
-    } else {
-      size_t removeIndex = selection.operation.species.size();
-      for (size_t index = 0; index < selection.operation.species.size(); ++index) {
-        if (drawSpeciesRow(selection, index)) removeIndex = index;
-        if (index + 1 < selection.operation.species.size()) ImGui::Spacing();
-      }
-      if (removeIndex < selection.operation.species.size()) {
-        selection.operation.species.erase(selection.operation.species.begin() +
-                                           static_cast<std::ptrdiff_t>(removeIndex));
-        selection.speciesPresentation.erase(selection.speciesPresentation.begin() +
-                                            static_cast<std::ptrdiff_t>(removeIndex));
+      ImGui::TextWrapped("Add every compound that matters. Mark products to isolate as Keep and "
+                         "impurities to reject as Remove.");
+    } else if (drawSpeciesRow(selection, static_cast<size_t>(page))) {
+      selection.operation.species.erase(selection.operation.species.begin() + page);
+      selection.speciesPresentation.erase(selection.speciesPresentation.begin() + page);
+      page = std::max(page - 1, 0);
+    }
+  }
+  ImGui::EndChild();
+  if (ImGui::BeginChild("##species_pages", ImVec2(0.0f, listRows[1]),
+                        ImGuiChildFlags_None,
+                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    if (page > 0 && widgets::iconButton("##previous_species", icons::Icon::ChevronLeft,
+                                        ImVec2(listFrame.control, listFrame.control), false,
+                                        "Previous species")) {
+      --page;
+    }
+    if (page > 0) ImGui::SameLine(0.0f, listFrame.gap);
+    ImGui::TextColored(style::col::Data, "Species %d of %d",
+                       selection.operation.species.empty() ? 0 : page + 1,
+                       static_cast<int>(selection.operation.species.size()));
+    if (page + 1 < static_cast<int>(selection.operation.species.size())) {
+      ImGui::SameLine(0.0f, listFrame.gap);
+      if (widgets::iconButton("##next_species", icons::Icon::ChevronRight,
+                              ImVec2(listFrame.control, listFrame.control), false,
+                              "Next species")) {
+        ++page;
       }
     }
   }
@@ -710,30 +735,30 @@ void drawConstraintChips(SelectionState& state) {
   const float available = ImGui::GetContentRegionAvail().x;
   float used = 0.0f;
 
-  flowBeforeChip("WATER-IMMISCIBLE", used, available);
-  if (drawToggleChip("WATER-IMMISCIBLE", operation.requireWaterImmiscible)) {
+  flowBeforeChip("Water-immiscible", used, available);
+  if (drawToggleChip("Water-immiscible", operation.requireWaterImmiscible)) {
     operation.requireWaterImmiscible = !operation.requireWaterImmiscible;
     if (operation.requireWaterImmiscible) operation.requireWaterMiscible = false;
   }
-  flowBeforeChip("WATER-MISCIBLE", used, available);
-  if (drawToggleChip("WATER-MISCIBLE", operation.requireWaterMiscible)) {
+  flowBeforeChip("Water-miscible", used, available);
+  if (drawToggleChip("Water-miscible", operation.requireWaterMiscible)) {
     operation.requireWaterMiscible = !operation.requireWaterMiscible;
     if (operation.requireWaterMiscible) operation.requireWaterImmiscible = false;
   }
-  flowBeforeChip("NO PEROXIDE FORMERS", used, available);
-  if (drawToggleChip("NO PEROXIDE FORMERS", operation.avoidPeroxideFormers)) {
+  flowBeforeChip("No peroxide formers", used, available);
+  if (drawToggleChip("No peroxide formers", operation.avoidPeroxideFormers)) {
     operation.avoidPeroxideFormers = !operation.avoidPeroxideFormers;
   }
-  flowBeforeChip("NO CHLORINATED", used, available);
-  if (drawToggleChip("NO CHLORINATED", operation.avoidChlorinated)) {
+  flowBeforeChip("No chlorinated", used, available);
+  if (drawToggleChip("No chlorinated", operation.avoidChlorinated)) {
     operation.avoidChlorinated = !operation.avoidChlorinated;
   }
-  flowBeforeChip("NO AROMATICS", used, available);
-  if (drawToggleChip("NO AROMATICS", operation.avoidAromatics)) {
+  flowBeforeChip("No aromatics", used, available);
+  if (drawToggleChip("No aromatics", operation.avoidAromatics)) {
     operation.avoidAromatics = !operation.avoidAromatics;
   }
-  flowBeforeChip("RATED ONLY", used, available);
-  if (drawToggleChip("RATED ONLY", operation.excludeUnrated)) {
+  flowBeforeChip("Rated only", used, available);
+  if (drawToggleChip("Rated only", operation.excludeUnrated)) {
     operation.excludeUnrated = !operation.excludeUnrated;
   }
 }
@@ -741,7 +766,7 @@ void drawConstraintChips(SelectionState& state) {
 void drawClassSelector(sol::OperationSpec& operation) {
   static constexpr std::array<const char*, 5> kClasses = {
       "", "recommended", "problematic", "hazardous", "highly hazardous"};
-  ImGui::TextColored(style::col::TextDim, "WORST ACCEPTABLE CHEM21 CLASS");
+  ImGui::TextColored(style::col::TextDim, "Worst acceptable CHEM21 class");
   const char* preview = operation.worstAcceptableClass.empty()
                             ? "Any class"
                             : operation.worstAcceptableClass.c_str();
@@ -761,7 +786,7 @@ void drawClassSelector(sol::OperationSpec& operation) {
     ImGui::EndCombo();
   }
   if (operation.worstAcceptableClass.empty()) {
-    widgets::badge("UNRESTRICTED", style::col::TextDim);
+    widgets::badge("Unrestricted", style::col::TextDim);
   } else {
     widgets::badge(operation.worstAcceptableClass.c_str(),
                    chem21Colour(operation.worstAcceptableClass));
@@ -769,14 +794,14 @@ void drawClassSelector(sol::OperationSpec& operation) {
 }
 
 void drawConstraints(SelectionState& state) {
-  widgets::sectionHeader("Constraints", style::col::Accent);
+  widgets::sectionHeader("Constraints", style::col::Data);
   if (!widgets::beginCard("##constraints", ImVec2(0.0f, 0.0f), style::col::BgSurface)) return;
   drawConstraintChips(state);
   ImGui::Spacing();
-  sliderDouble("Minimum boiling point (C)", "##minimum_boiling",
-               state.operation.minBoilingPointC, 0.0f, 250.0f, "%.0f");
-  sliderDouble("Maximum boiling point (C)", "##maximum_boiling",
-               state.operation.maxBoilingPointC, 0.0f, 300.0f, "%.0f");
+  sliderDouble(icons::Icon::Thermometer, "Minimum boiling point", "##minimum_boiling",
+               state.operation.minBoilingPointC, 0.0f, 250.0f, "%.0f C");
+  sliderDouble(icons::Icon::Thermometer, "Maximum boiling point", "##maximum_boiling",
+               state.operation.maxBoilingPointC, 0.0f, 300.0f, "%.0f C");
   ImGui::TextWrapped("A zero bound is unconstrained.");
   if (state.operation.minBoilingPointC > 0.0 &&
       state.operation.maxBoilingPointC > 0.0 &&
@@ -794,19 +819,19 @@ void drawConstraints(SelectionState& state) {
 
 void drawWeightControl(const char* label, const char* id, double& value,
                        const char* explanation) {
-  sliderDouble(label, id, value, 0.0f, 3.0f, "%.2f x");
+  sliderDouble(icons::Icon::Balance, label, id, value, 0.0f, 3.0f, "%.2f x");
   ImGui::PushStyleColor(ImGuiCol_Text, style::col::TextDim);
   ImGui::TextWrapped("%s", explanation);
   ImGui::PopStyleColor();
 }
 
 void drawPriorities(SelectionState& state) {
-  widgets::sectionHeader("Scoring priorities", style::col::Teal);
+  widgets::sectionHeader("Scoring priorities", style::col::Data);
   if (!widgets::beginCard("##priorities", ImVec2(0.0f, 0.0f), style::col::BgSurface)) return;
   drawWeightControl("Selectivity", "##weight_selectivity", state.operation.weightSelectivity,
-                    "Raise this to reward separation between KEEP and REMOVE species.");
+                    "Raise this to reward separation between keep and remove species.");
   drawWeightControl("Recovery", "##weight_recovery", state.operation.weightRecovery,
-                    "Raise this to favour recovering more of every KEEP species.");
+                    "Raise this to favour recovering more of every keep species.");
   drawWeightControl("Greenness", "##weight_greenness", state.operation.weightGreenness,
                     "Raise this to favour better CHEM21 safety, health and environment ratings.");
   drawWeightControl("Practicality", "##weight_practicality", state.operation.weightPracticality,
@@ -815,22 +840,71 @@ void drawPriorities(SelectionState& state) {
 }
 
 void drawBuilder(AppState& state) {
-  drawOperationChooser(state.selection);
-  drawOperationConditions(state.selection);
-  drawSpeciesBuilder(state);
-  drawConstraints(state.selection);
-  drawPriorities(state.selection);
-  if (!state.selection.statusMessage.empty()) {
-    widgets::sectionHeader("Status", style::col::Success);
-    if (widgets::beginCard("##selection_status", ImVec2(0.0f, 0.0f), style::col::BgSurface)) {
-      ImGui::TextWrapped("%s", state.selection.statusMessage.c_str());
-      widgets::endCard();
+  SelectionState& selection = state.selection;
+  static std::unordered_map<const SelectionState*, int> tabs;
+  static std::unordered_map<const SelectionState*, int> conditionViews;
+  int& tab = tabs[&selection];
+  int& conditionView = conditionViews[&selection];
+
+  constexpr std::array<const char*, 3> labels = {"Operation", "Conditions", "Species"};
+  constexpr std::array<icons::Icon, 3> glyphs = {
+      icons::Icon::Reaction, icons::Icon::Thermometer, icons::Icon::Molecule};
+
+  const layout::Frame frame = layout::measure();
+  const bool showStatus = !selection.statusMessage.empty();
+  const float weights[3] = {0.0f, 1.0f, 0.0f};
+  const float minimums[3] = {
+      frame.control, frame.row * 5.0f, showStatus ? frame.row * 2.0f : 0.0f};
+  float heights[3] = {};
+  const int rowCount = showStatus ? 3 : 2;
+  layout::distribute(frame.size.y, weights, minimums, rowCount, frame.gap, heights);
+
+  if (ImGui::BeginChild("##builder_tabs", ImVec2(0.0f, heights[0]),
+                        ImGuiChildFlags_None,
+                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    widgets::subTabs("##selector_tabs", labels.data(), glyphs.data(),
+                     static_cast<int>(labels.size()), tab);
+  }
+  ImGui::EndChild();
+
+  if (ImGui::BeginChild("##builder_content", ImVec2(0.0f, heights[1]),
+                        ImGuiChildFlags_None,
+                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    if (tab == 0) {
+      drawOperationChooser(selection);
+    } else if (tab == 1) {
+      constexpr std::array<icons::Icon, 3> conditionGlyphs = {
+          icons::Icon::Thermometer, icons::Icon::Filter, icons::Icon::Balance};
+      constexpr std::array<const char*, 3> conditionTips = {
+          "Working conditions", "Hard constraints", "Scoring priorities"};
+      widgets::segmentedIcons("##condition_view", conditionGlyphs.data(),
+                              conditionTips.data(), static_cast<int>(conditionGlyphs.size()),
+                              conditionView, ImGui::GetContentRegionAvail().x);
+      if (conditionView == 0) {
+        drawOperationConditions(selection);
+      } else if (conditionView == 1) {
+        drawConstraints(selection);
+      } else {
+        drawPriorities(selection);
+      }
+    } else {
+      drawSpeciesBuilder(state);
     }
+  }
+  ImGui::EndChild();
+
+  if (showStatus) {
+    if (ImGui::BeginChild("##builder_status", ImVec2(0.0f, heights[2]),
+                          ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+      widgets::notice(icons::Icon::Check, selection.statusMessage.c_str(), style::col::Success);
+    }
+    ImGui::EndChild();
   }
 }
 
 void drawBar(const char* id, double value, ImVec4 colour, float height, float reveal = 1.0f) {
-  const float width = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+  const float width = std::max(ImGui::GetContentRegionAvail().x, style::metrics().hairline);
   const ImVec2 minimum = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton(id, ImVec2(width, height));
   const ImVec2 maximum(minimum.x + width, minimum.y + height);
@@ -890,45 +964,8 @@ void drawCriterion(const sol::Criterion& criterion, float reveal) {
   ImGui::PopID();
 }
 
-void drawStatGrid(const sol::SolventCandidate& candidate) {
-  const std::array<std::pair<const char*, std::string>, 5> stats = {{
-      {"TARGET SOLUBILITY", formatSolubility(candidate.targetSolubilityGPerMl)},
-      {"CONTAMINANT SOLUBILITY", formatSolubility(candidate.contaminantSolubilityGPerMl)},
-      {"SELECTIVITY", formatRatio(candidate.selectivity)},
-      {"RECOVERY", formatPercent(candidate.recoveryFraction)},
-      {"BOILING POINT", formatBoilingPoint(candidate)},
-  }};
-  const float available = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
-  int columns = 1;
-  if (available >= ImGui::GetFontSize() * 38.0f) {
-    columns = 3;
-  } else if (available >= ImGui::GetFontSize() * 22.0f) {
-    columns = 2;
-  }
-  const float gap = style::metrics().gap;
-  const float cardWidth = std::max((available - gap * static_cast<float>(columns - 1)) /
-                                       static_cast<float>(columns),
-                                   1.0f);
-  const float cardHeight = ImGui::GetFontSize() * 3.25f;
-  for (size_t index = 0; index < stats.size(); ++index) {
-    if (index % static_cast<size_t>(columns) != 0) ImGui::SameLine(0.0f, gap);
-    widgets::statCard(stats[index].first, stats[index].second.c_str(),
-                      ImVec2(cardWidth, cardHeight));
-  }
-  if (candidate.solvent && !candidate.solvent->chem21Class.empty()) {
-    widgets::badge(candidate.solvent->chem21Class.c_str(),
-                   chem21Colour(candidate.solvent->chem21Class));
-  } else {
-    widgets::badge("CHEM21 UNRATED", style::col::TextDim);
-  }
-}
 
 void drawArithmetic(const sol::SolventCandidate& candidate) {
-  const bool open = ImGui::TreeNodeEx(
-      "Why this ranking", ImGuiTreeNodeFlags_SpanAvailWidth |
-                              ImGuiTreeNodeFlags_NoTreePushOnOpen);
-  if (!open) return;
-  ImGui::Indent();
   double numerator = 0.0;
   double denominator = 0.0;
   for (const sol::Criterion& criterion : candidate.criteria) {
@@ -942,7 +979,6 @@ void drawArithmetic(const sol::SolventCandidate& candidate) {
   ImGui::TextWrapped("Weighted total: %.3f / %.3f = %.3f", numerator, denominator,
                      denominator > 0.0 ? numerator / denominator : 0.0);
   ImGui::TextWrapped("Engine score used for ranking: %.3f", candidate.score);
-  ImGui::Unindent();
 }
 
 void sendToExtraction(AppState& state, const sol::SolventCandidate& candidate) {
@@ -1034,113 +1070,83 @@ void toggleCompared(SelectionState& state, const std::string& key) {
   }
 }
 
-void drawCandidateCard(AppState& state, const sol::SolventCandidate& candidate,
-                       int displayedRank, int engineRank, ResultAnimation& animation) {
+void drawCandidateEvidence(AppState& state, const sol::SolventCandidate& candidate,
+                           int engineRank, ResultAnimation& animation) {
   SelectionState& selection = state.selection;
   const std::string key = candidateKey(candidate);
   const bool pinned = isCompared(selection, key);
   ImGui::PushID(key.c_str());
-  if (!widgets::beginCard("##candidate", ImVec2(0.0f, 0.0f), style::col::BgSurface)) {
+  if (!widgets::beginCard("##candidate_evidence", ImVec2(0.0f, 0.0f),
+                          style::col::BgSurface)) {
     ImGui::PopID();
     return;
   }
 
-  char rank[24];
-  std::snprintf(rank, sizeof(rank), "#%d", displayedRank);
-  widgets::badge(rank, displayedRank == 1 ? style::col::Accent : style::col::TextDim);
+  const bool heading = style::pushFont(style::fonts::semibold());
+  ImGui::TextUnformatted(candidateTitle(candidate).c_str());
+  style::popFont(heading);
   ImGui::SameLine();
-  widgets::badge(candidate.estimated ? "ESTIMATE" : "MEASURED",
+  widgets::badge(candidate.estimated ? "Estimated" : "Measured",
                  candidate.estimated ? style::col::Violet : style::col::Success);
+
   const int delta = priorRankDelta(animation, key, engineRank);
   if (delta != 0 && resultReveal(animation) < 1.0f) {
     char movement[32];
-    std::snprintf(movement, sizeof(movement), "%s%d", delta > 0 ? "UP " : "DOWN ",
+    std::snprintf(movement, sizeof(movement), "%s %d", delta > 0 ? "Up" : "Down",
                   std::abs(delta));
-    const float movementWidth = ImGui::CalcTextSize(movement).x +
-                                ImGui::GetStyle().FramePadding.x * 2.0f;
-    if (ImGui::GetContentRegionAvail().x >= movementWidth) ImGui::SameLine();
     widgets::badge(movement, delta > 0 ? style::col::Success : style::col::Danger);
   }
-  const bool heading = style::pushFont(style::fonts::semibold());
-  const std::string fullTitle = candidateTitle(candidate);
-  ImGui::TextWrapped("%s", fullTitle.c_str());
-  style::popFont(heading);
 
   const float reveal = resultReveal(animation);
-  const bool mono = style::pushFont(style::fonts::mono());
-  ImGui::TextColored(scoreColour(candidate.score), "%.3f", candidate.score);
-  style::popFont(mono);
-  ImGui::SameLine();
-  ImGui::TextColored(style::col::TextDim, "OVERALL SCORE");
-  drawBar("##score_bar", candidate.score, scoreColour(candidate.score),
-          std::max(style::metrics().hairline * 7.0f, ImGui::GetFontSize() * 0.55f), reveal);
-
-  widgets::sectionHeader("Evidence", style::col::Teal);
   for (const sol::Criterion& criterion : candidate.criteria) drawCriterion(criterion, reveal);
-
-  widgets::sectionHeader("Physical readout", style::col::Accent);
-  drawStatGrid(candidate);
-
   if (!candidate.warnings.empty()) {
-    widgets::sectionHeader("Advisories", style::col::Accent);
     for (const std::string& warning : candidate.warnings) {
-      ImGui::PushStyleColor(ImGuiCol_Text, style::col::AccentHover);
-      ImGui::TextWrapped("!  %s", warning.c_str());
-      ImGui::PopStyleColor();
+      widgets::notice(icons::Icon::Warning, warning.c_str(), style::col::Danger);
     }
   }
+  if (widgets::disclosure("##ranking_arithmetic", "Ranking arithmetic", "",
+                          false, icons::Icon::Info, style::col::Accent)) {
+    drawArithmetic(candidate);
+  }
 
-  drawArithmetic(candidate);
-  ImGui::Spacing();
-
-  const float available = ImGui::GetContentRegionAvail().x;
-  const float gap = style::metrics().gap;
-  const bool actionsInline = available >= ImGui::GetFontSize() * 42.0f;
+  const layout::Frame frame = layout::measure();
   const int actionCount = selection.compareMode ? 3 : 2;
-  const float actionWidth = actionsInline
-                                ? std::max((available - gap * static_cast<float>(actionCount - 1)) /
-                                               static_cast<float>(actionCount),
-                                           1.0f)
-                                : available;
-  if (!candidate.partner) ImGui::BeginDisabled();
-  if (widgets::ghostButton("Send to Extraction", ImVec2(actionWidth, 0.0f))) {
+  const int columns = std::min(layout::columnsThatFit(frame, 12.0f), actionCount);
+  const float actionWidth = layout::columnWidth(frame, columns);
+  int actionIndex = 0;
+  auto nextAction = [&] {
+    if (actionIndex > 0 && actionIndex % columns != 0) ImGui::SameLine(0.0f, frame.gap);
+    ++actionIndex;
+  };
+
+  nextAction();
+  if (widgets::onlyWhen(candidate.partner != nullptr,
+                        "Extraction hand-off requires a two-solvent candidate.") &&
+      widgets::actionButton("##send_to_extraction", icons::Icon::SepFunnel,
+                            "Send to Extraction", ImVec2(actionWidth, 0.0f), false,
+                            "Load this pair into the extraction calculator")) {
     sendToExtraction(state, candidate);
   }
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !candidate.partner) {
-    ImGui::SetTooltip("A two-solvent candidate is required for an extraction hand-off");
-  }
-  if (!candidate.partner) ImGui::EndDisabled();
 
-  if (actionsInline) ImGui::SameLine(0.0f, gap);
+  nextAction();
   if (widgets::actionButton("##load_into_predict", icons::Icon::Flask,
                             "Load into Predict", ImVec2(actionWidth, 0.0f), true,
                             "Load this blend into the prediction workspace")) {
     loadIntoSuite(state, candidate);
   }
   if (selection.compareMode) {
-    if (actionsInline) ImGui::SameLine(0.0f, gap);
+    nextAction();
     const bool comparisonFull = selection.comparedCandidates.size() >= 3 && !pinned;
-    if (comparisonFull) ImGui::BeginDisabled();
-    if (widgets::ghostButton(pinned ? "Unpin comparison" : "Pin for comparison",
-                             ImVec2(actionWidth, 0.0f))) {
+    if (widgets::onlyWhen(!comparisonFull,
+                          "The comparison already contains three candidates.") &&
+        widgets::actionButton("##toggle_comparison", icons::Icon::ChartLine,
+                              pinned ? "Unpin comparison" : "Pin for comparison",
+                              ImVec2(actionWidth, 0.0f), false)) {
       toggleCompared(selection, key);
     }
-    if (comparisonFull) ImGui::EndDisabled();
   }
 
   widgets::endCard();
-  const ImVec2 cardMinimum = ImGui::GetItemRectMin();
-  const ImVec2 cardMaximum = ImGui::GetItemRectMax();
-  const bool hovered = ImGui::IsItemHovered();
-  const float hover = widgets::hoverT(ImGui::GetID("card_hover"), hovered || pinned);
-  if (hover > 0.0f) {
-    ImGui::GetWindowDrawList()->AddRect(
-        cardMinimum, cardMaximum,
-        style::mix(style::col::BorderStrong, pinned ? style::col::Accent : style::col::Teal,
-                   hover),
-        style::metrics().radiusMd, 0,
-        style::metrics().hairline * (1.0f + hover));
-  }
   ImGui::PopID();
 }
 
@@ -1158,96 +1164,65 @@ void pruneCompared(SelectionState& state) {
       state.comparedCandidates.end());
 }
 
-void drawComparisonBoard(SelectionState& state, ResultAnimation& animation) {
+void drawComparisonBoard(SelectionState& state) {
   if (!state.compareMode) return;
   pruneCompared(state);
-  widgets::sectionHeader("Pinned comparison", style::col::Violet);
-  if (state.comparedCandidates.empty()) {
-    if (widgets::beginCard("##comparison_empty", ImVec2(0.0f, 0.0f), style::col::BgSurface)) {
-      ImGui::TextWrapped("Pin up to three candidates below to compare their trade-offs here.");
-      widgets::endCard();
-    }
+  widgets::sectionHeader("Pinned comparison", style::col::Data);
+  if (!widgets::onlyWhen(!state.comparedCandidates.empty(),
+                         "Pin up to three candidates from the ranked table to compare them.")) {
     return;
   }
 
-  const float available = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
-  const float gap = style::metrics().gap;
-  const bool sideBySide = available >= ImGui::GetFontSize() * 44.0f;
-  const int columns = sideBySide ? static_cast<int>(state.comparedCandidates.size()) : 1;
-  const float width = std::max((available - gap * static_cast<float>(columns - 1)) /
-                                   static_cast<float>(columns),
-                               1.0f);
+  constexpr std::array<widgets::Column, 6> columns = {{
+      {"Solvent", false, true, nullptr, 10.0f},
+      {"Score", true, false, nullptr, 0.0f},
+      {"Selectivity", true, false, nullptr, 0.0f},
+      {"Recovery", true, false, nullptr, 0.0f},
+      {"Greenness", true, false, nullptr, 0.0f},
+      {"", false, false, nullptr, 0.0f},
+  }};
   std::string removeKey;
-  for (size_t index = 0; index < state.comparedCandidates.size(); ++index) {
-    const std::string& key = state.comparedCandidates[index];
-    const sol::SolventCandidate* candidate = findCandidate(state, key);
-    if (!candidate) continue;
-    if (sideBySide && index > 0) ImGui::SameLine(0.0f, gap);
-    ImGui::PushID(key.c_str());
-    if (widgets::beginCard("##comparison", ImVec2(width, 0.0f), style::col::BgRaised)) {
-      const float square = ImGui::GetFrameHeight();
-      const float titleWidth = std::max(ImGui::GetContentRegionAvail().x - square - gap, 1.0f);
-      const bool heading = style::pushFont(style::fonts::semibold());
-      const std::string title = candidateTitle(*candidate);
-      const std::string fitted = ellipsizeText(title, titleWidth);
-      ImGui::TextUnformatted(fitted.c_str());
-      style::popFont(heading);
-      if (ImGui::IsItemHovered() && title != fitted) ImGui::SetTooltip("%s", title.c_str());
-      ImGui::SameLine(0.0f, gap);
-      if (widgets::iconButton("##unpin", icons::Icon::Close, ImVec2(square, square), false,
+  const layout::Frame frame = layout::measure();
+  if (widgets::beginDataTable("##comparison_table", columns.data(),
+                              static_cast<int>(columns.size()),
+                              ImVec2(frame.size.x, layout::pageHeight()))) {
+    for (const std::string& key : state.comparedCandidates) {
+      const sol::SolventCandidate* candidate = findCandidate(state, key);
+      if (!candidate) continue;
+      widgets::dataRow(style::col::Accent);
+      widgets::dataCell(candidateTitle(*candidate).c_str());
+      widgets::dataCellf("%.3f", candidate->score);
+      widgets::dataCell(formatRatio(candidate->selectivity).c_str());
+      widgets::dataCell(formatPercent(candidate->recoveryFraction).c_str());
+      widgets::dataCellf("%.2f", criterionScore(*candidate, "Greenness"));
+      ImGui::TableNextColumn();
+      ImGui::PushID(key.c_str());
+      if (widgets::iconButton("##unpin", icons::Icon::Close,
+                              ImVec2(frame.control, frame.control), false,
                               "Unpin candidate")) {
         removeKey = key;
       }
-      char score[32];
-      std::snprintf(score, sizeof(score), "%.3f", candidate->score);
-      widgets::statCard("SCORE", score,
-                        ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 3.1f));
-      drawBar("##comparison_score", candidate->score, scoreColour(candidate->score),
-              std::max(style::metrics().hairline * 6.0f, ImGui::GetFontSize() * 0.45f),
-              resultReveal(animation));
-      ImGui::TextWrapped("Selectivity  %s", formatRatio(candidate->selectivity).c_str());
-      ImGui::TextWrapped("Recovery  %s", formatPercent(candidate->recoveryFraction).c_str());
-      ImGui::TextWrapped("Greenness  %.2f", criterionScore(*candidate, "Greenness"));
-      if (candidate->solvent && !candidate->solvent->chem21Class.empty()) {
-        widgets::badge(candidate->solvent->chem21Class.c_str(),
-                       chem21Colour(candidate->solvent->chem21Class));
-      } else {
-        widgets::badge("UNRATED", style::col::TextDim);
-      }
-      widgets::endCard();
+      ImGui::PopID();
     }
-    ImGui::PopID();
+    widgets::endDataTable();
   }
   if (!removeKey.empty()) toggleCompared(state, removeKey);
 }
 
 void drawResultControls(SelectionState& state) {
-  const float available = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
-  const bool inlineControls = available >= ImGui::GetFontSize() * 38.0f;
-  if (inlineControls && ImGui::BeginTable(
-                            "##result_controls", 3,
-                            ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings)) {
-    ImGui::TableSetupColumn("##search_column", ImGuiTableColumnFlags_WidthStretch, 0.52f);
-    ImGui::TableSetupColumn("##sort_column", ImGuiTableColumnFlags_WidthStretch, 0.27f);
-    ImGui::TableSetupColumn("##compare_column", ImGuiTableColumnFlags_WidthStretch, 0.21f);
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    widgets::stringInputWithHint("##solvent_search", "Filter solvent names", state.resultSearch);
-    ImGui::TableNextColumn();
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::Combo("##result_sort", &state.sortMode, kSortLabels.data(),
-                 static_cast<int>(kSortLabels.size()));
-    ImGui::TableNextColumn();
-    if (drawToggleChip("COMPARE", state.compareMode)) state.compareMode = !state.compareMode;
-    ImGui::EndTable();
-  } else {
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    widgets::stringInputWithHint("##solvent_search", "Filter solvent names", state.resultSearch);
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::Combo("##result_sort", &state.sortMode, kSortLabels.data(),
-                 static_cast<int>(kSortLabels.size()));
-    if (drawToggleChip("COMPARE UP TO 3", state.compareMode)) state.compareMode = !state.compareMode;
+  const layout::Frame frame = layout::measure();
+  const int columns = std::min(layout::columnsThatFit(frame, 13.0f), 3);
+  const float width = layout::columnWidth(frame, columns);
+
+  ImGui::SetNextItemWidth(width);
+  widgets::stringInputWithHint("##solvent_search", "Filter solvent names", state.resultSearch);
+  if (columns > 1) ImGui::SameLine(0.0f, frame.gap);
+  ImGui::SetNextItemWidth(width);
+  ImGui::Combo("##result_sort", &state.sortMode, kSortLabels.data(),
+               static_cast<int>(kSortLabels.size()));
+  if (columns > 2) ImGui::SameLine(0.0f, frame.gap);
+  if (drawToggleChip("Compare up to 3", state.compareMode)) {
+    state.compareMode = !state.compareMode;
   }
 }
 
@@ -1286,6 +1261,257 @@ std::vector<const sol::SolventCandidate*> visibleCandidates(const SelectionState
   return result;
 }
 
+const sol::Solute* targetSolute(const SelectionState& state) {
+  for (const sol::SpeciesRole& species : state.operation.species) {
+    if (species.keep) return &species.solute;
+  }
+  return nullptr;
+}
+
+bool hasHansenParameters(const sol::Solute* solute) {
+  return solute && std::isfinite(solute->hansen.dispersion) &&
+         std::isfinite(solute->hansen.polar) &&
+         std::isfinite(solute->hansen.hydrogenBond) &&
+         std::isfinite(solute->interactionRadius) &&
+         solute->hansen.dispersion > 0.0 && solute->interactionRadius > 0.0;
+}
+
+double candidateBoilingPoint(const sol::SolventCandidate& candidate) {
+  if (!candidate.solvent || candidate.solvent->boilingPoint <= 0.0) {
+    return std::numeric_limits<double>::infinity();
+  }
+  return candidate.solvent->boilingPoint;
+}
+
+std::array<double, 3> candidateHansen(const sol::SolventCandidate& candidate) {
+  if (!candidate.solvent) return {};
+  const sol::Hansen& primary = candidate.solvent->hansen;
+  if (!candidate.partner) {
+    return {primary.dispersion, primary.polar, primary.hydrogenBond};
+  }
+  const double partnerFraction = std::clamp(candidate.partnerFraction, 0.0, 1.0);
+  const double primaryFraction = 1.0 - partnerFraction;
+  const sol::Hansen& partner = candidate.partner->hansen;
+  return {
+      primary.dispersion * primaryFraction + partner.dispersion * partnerFraction,
+      primary.polar * primaryFraction + partner.polar * partnerFraction,
+      primary.hydrogenBond * primaryFraction + partner.hydrogenBond * partnerFraction,
+  };
+}
+
+void drawCandidateOverview(const SelectionState& state,
+                           const std::vector<const sol::SolventCandidate*>& candidates,
+                           std::string& selectedKey, float height) {
+  static std::unordered_map<const SelectionState*, int> views;
+  static std::unordered_map<const SelectionState*, charts3d::Orbit> orbits;
+  int& view = views.try_emplace(&state, 1).first->second;
+  charts3d::Orbit& orbit = orbits[&state];
+
+  const layout::Frame frame =
+      layout::measure(ImVec2(ImGui::GetContentRegionAvail().x, height));
+  const float weights[2] = {0.0f, 1.0f};
+  const float minimums[2] = {frame.control, frame.row * 7.0f};
+  float rows[2] = {};
+  layout::distribute(height, weights, minimums, 2, frame.gap, rows);
+
+  const sol::Solute* solute = targetSolute(state);
+  const bool hansenAvailable = hasHansenParameters(solute);
+  if (ImGui::BeginChild("##overview_switch", ImVec2(0.0f, rows[0]),
+                        ImGuiChildFlags_None,
+                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    if (hansenAvailable) {
+      constexpr std::array<icons::Icon, 2> glyphs = {
+          icons::Icon::ChartScatter, icons::Icon::ChartLine};
+      constexpr std::array<const char*, 2> tips = {
+          "Hansen space", "Parallel coordinates"};
+      widgets::segmentedIcons("##candidate_view", glyphs.data(), tips.data(),
+                              static_cast<int>(glyphs.size()), view);
+    } else {
+      view = 1;
+      widgets::onlyWhen(false,
+                        "Hansen space is unavailable because the target has no interaction sphere.");
+    }
+  }
+  ImGui::EndChild();
+
+  if (!ImGui::BeginChild("##overview_chart", ImVec2(0.0f, rows[1]),
+                         ImGuiChildFlags_None,
+                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    ImGui::EndChild();
+    return;
+  }
+
+  std::vector<std::string> labels;
+  labels.reserve(candidates.size());
+  for (const sol::SolventCandidate* candidate : candidates) {
+    labels.push_back(candidateTitle(*candidate));
+  }
+
+  if (view == 0 && hansenAvailable) {
+    std::vector<charts3d::CloudPoint> points;
+    points.reserve(candidates.size());
+    for (size_t index = 0; index < candidates.size(); ++index) {
+      const sol::SolventCandidate& candidate = *candidates[index];
+      const std::array<double, 3> hansen = candidateHansen(candidate);
+      const bool selected = candidateKey(candidate) == selectedKey;
+      points.push_back({hansen[0], hansen[1], hansen[2], labels[index].c_str(),
+                        selected ? style::col::Accent : style::col::Data,
+                        selected ? 1.35f : 1.0f, selected});
+    }
+    charts3d::CloudStyle cloudStyle;
+    cloudStyle.xLabel = "dD";
+    cloudStyle.yLabel = "dP";
+    cloudStyle.zLabel = "dH";
+    cloudStyle.hasSphere = true;
+    cloudStyle.sphereX = solute->hansen.dispersion;
+    cloudStyle.sphereY = solute->hansen.polar;
+    cloudStyle.sphereZ = solute->hansen.hydrogenBond;
+    cloudStyle.sphereRadius = solute->interactionRadius;
+    cloudStyle.sphereColour = style::col::DataBright;
+    const int hovered = charts3d::cloud(
+        "##hansen_cloud", points.data(), static_cast<int>(points.size()),
+        ImVec2(frame.size.x, rows[1]), orbit, cloudStyle);
+    if (hovered >= 0 && hovered < static_cast<int>(candidates.size())) {
+      selectedKey = candidateKey(*candidates[static_cast<size_t>(hovered)]);
+    }
+  } else {
+    std::vector<std::array<double, 5>> values;
+    values.reserve(candidates.size());
+    std::array<double, 5> minimumsByAxis;
+    std::array<double, 5> maximumsByAxis;
+    minimumsByAxis.fill(std::numeric_limits<double>::infinity());
+    maximumsByAxis.fill(-std::numeric_limits<double>::infinity());
+    for (const sol::SolventCandidate* candidate : candidates) {
+      values.push_back({
+          candidate->selectivity,
+          candidate->recoveryFraction * 100.0,
+          candidate->targetSolubilityGPerMl,
+          candidate->contaminantSolubilityGPerMl,
+          candidateBoilingPoint(*candidate),
+      });
+      for (size_t axis = 0; axis < values.back().size(); ++axis) {
+        const double value = values.back()[axis];
+        if (!std::isfinite(value)) continue;
+        minimumsByAxis[axis] = std::min(minimumsByAxis[axis], value);
+        maximumsByAxis[axis] = std::max(maximumsByAxis[axis], value);
+      }
+    }
+    for (size_t axis = 0; axis < minimumsByAxis.size(); ++axis) {
+      if (!std::isfinite(minimumsByAxis[axis])) minimumsByAxis[axis] = 0.0;
+      if (!std::isfinite(maximumsByAxis[axis])) maximumsByAxis[axis] = 1.0;
+    }
+
+    const std::array<charts3d::ParallelAxis, 5> axes = {{
+        {"Selectivity", minimumsByAxis[0], maximumsByAxis[0], true, "x"},
+        {"Recovery", minimumsByAxis[1], maximumsByAxis[1], true, "%"},
+        {"Target sol.", minimumsByAxis[2], maximumsByAxis[2], true, "g/mL"},
+        {"Contam. sol.", minimumsByAxis[3], maximumsByAxis[3], false, "g/mL"},
+        {"Primary bp", minimumsByAxis[4], maximumsByAxis[4], false, "C"},
+    }};
+    std::vector<charts3d::ParallelSeries> series;
+    series.reserve(candidates.size());
+    for (size_t index = 0; index < candidates.size(); ++index) {
+      const bool selected = candidateKey(*candidates[index]) == selectedKey;
+      series.push_back({labels[index].c_str(), values[index].data(),
+                        selected ? style::col::Accent : style::col::DataDim, selected});
+    }
+    const int hovered = charts3d::parallelCoordinates(
+        "##candidate_parallel", axes.data(), static_cast<int>(axes.size()),
+        series.data(), static_cast<int>(series.size()), ImVec2(frame.size.x, rows[1]));
+    if (hovered >= 0 && hovered < static_cast<int>(candidates.size())) {
+      selectedKey = candidateKey(*candidates[static_cast<size_t>(hovered)]);
+    }
+  }
+  ImGui::EndChild();
+}
+
+
+void drawCandidateTable(const SelectionState& state,
+                        const std::vector<const sol::SolventCandidate*>& candidates,
+                        std::string& selectedKey, std::string& detailKey, float height) {
+  const layout::Frame frame =
+      layout::measure(ImVec2(ImGui::GetContentRegionAvail().x, height));
+  const bool compact = frame.density == layout::Density::Compact;
+  const std::array<widgets::Column, 9> columns = {{
+      {compact ? "#" : "Rank", true, false, nullptr, 0.0f},
+      {"Solvent", false, true, nullptr, compact ? 7.0f : 11.0f},
+      {"Score", true, false, nullptr, 0.0f},
+      {compact ? "Sel." : "Selectivity", true, false, nullptr, 0.0f},
+      {compact ? "Rec." : "Recovery", true, false, "%", 0.0f},
+      {compact ? "T sol." : "Target solubility", true, false, "g/mL", 0.0f},
+      {compact ? "C sol." : "Contaminant solubility", true, false, "g/mL", 0.0f},
+      {compact ? "Bp" : "Boiling point", true, false, "C", 0.0f},
+      {compact ? "Detail" : "Evidence", false, false, nullptr, 0.0f},
+  }};
+  static std::unordered_map<const SelectionState*, int> pages;
+  int& page = pages[&state];
+  const float weights[2] = {1.0f, 0.0f};
+  const float minimums[2] = {frame.row * 3.0f, frame.control};
+  float rows[2] = {};
+  layout::distribute(height, weights, minimums, 2, frame.gap, rows);
+  const int rowsPerPage = std::max(
+      1, static_cast<int>(std::floor(rows[0] / std::max(frame.row, frame.em))) - 1);
+  const int pageCount = std::max(
+      1, (static_cast<int>(candidates.size()) + rowsPerPage - 1) / rowsPerPage);
+  page = std::clamp(page, 0, pageCount - 1);
+  const size_t begin = static_cast<size_t>(page * rowsPerPage);
+  const size_t end = std::min(candidates.size(), begin + static_cast<size_t>(rowsPerPage));
+
+  if (widgets::beginDataTable("##ranked_candidates", columns.data(),
+                              static_cast<int>(columns.size()),
+                              ImVec2(frame.size.x, rows[0]))) {
+    for (size_t index = begin; index < end; ++index) {
+      const sol::SolventCandidate& candidate = *candidates[index];
+      const std::string key = candidateKey(candidate);
+      const bool selected = key == selectedKey;
+      widgets::dataRow(selected ? style::col::Accent : style::col::DataDim);
+      widgets::dataCellf("%zu", index + 1);
+      widgets::dataCell(candidateTitle(candidate).c_str());
+      if (ImGui::IsItemClicked()) selectedKey = key;
+      widgets::dataCellf("%.3f", candidate.score);
+      widgets::dataCell(formatRatio(candidate.selectivity).c_str());
+      widgets::dataCellf("%.1f", candidate.recoveryFraction * 100.0);
+      widgets::dataCell(formatSolubility(candidate.targetSolubilityGPerMl).c_str());
+      widgets::dataCell(formatSolubility(candidate.contaminantSolubilityGPerMl).c_str());
+      widgets::dataCell(formatBoilingPoint(candidate).c_str());
+      ImGui::TableNextColumn();
+      ImGui::PushID(key.c_str());
+      const char* summary = candidate.estimated ? "estimated" : "measured";
+      const bool open = widgets::disclosure(
+          "##evidence", "Details", summary, false, icons::Icon::Info, style::col::Accent);
+      if (open) {
+        detailKey = key;
+      } else if (detailKey == key) {
+        detailKey.clear();
+      }
+      ImGui::PopID();
+    }
+    widgets::endDataTable();
+  }
+
+  if (ImGui::BeginChild("##candidate_pages", ImVec2(0.0f, rows[1]),
+                        ImGuiChildFlags_None,
+                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    if (page > 0 && widgets::iconButton(
+                        "##previous_page", icons::Icon::ChevronLeft,
+                        ImVec2(frame.control, frame.control), false,
+                        "Previous candidates")) {
+      --page;
+    }
+    if (page > 0) ImGui::SameLine(0.0f, frame.gap);
+    ImGui::TextColored(style::col::Data, "Page %d of %d", page + 1, pageCount);
+    if (page + 1 < pageCount) {
+      ImGui::SameLine(0.0f, frame.gap);
+      if (widgets::iconButton("##next_page", icons::Icon::ChevronRight,
+                              ImVec2(frame.control, frame.control), false,
+                              "Next candidates")) {
+        ++page;
+      }
+    }
+  }
+  ImGui::EndChild();
+}
+
 std::vector<std::string> bindingConstraints(const sol::OperationSpec& operation) {
   std::vector<std::string> bindings;
   switch (operation.kind) {
@@ -1293,16 +1519,18 @@ std::vector<std::string> bindingConstraints(const sol::OperationSpec& operation)
       bindings.emplace_back("operation requires a distinct water-immiscible organic phase");
       break;
     case sol::OperationKind::Recrystallisation:
-      bindings.emplace_back("solvent must stay liquid from the cold endpoint through the hot endpoint");
+      bindings.emplace_back(
+          "solvent must stay liquid from the cold endpoint through the hot endpoint");
       break;
     case sol::OperationKind::Trituration:
-      bindings.emplace_back("KEEP species must remain while REMOVE species dissolve");
+      bindings.emplace_back("keep species must remain while remove species dissolve");
       break;
     case sol::OperationKind::AntiSolventPrecipitation:
       bindings.emplace_back("primary solvent and anti-solvent must form a miscible pair");
       break;
     case sol::OperationKind::ChromatographyMobilePhase:
-      bindings.emplace_back("KEEP and REMOVE species need a usable polarity separation window");
+      bindings.emplace_back(
+          "keep and remove species need a usable polarity separation window");
       break;
     case sol::OperationKind::ReactionMedium:
       bindings.emplace_back("every entered species must dissolve in the reaction medium");
@@ -1318,12 +1546,14 @@ std::vector<std::string> bindingConstraints(const sol::OperationSpec& operation)
     bindings.emplace_back("CHEM21 class no worse than " + operation.worstAcceptableClass);
   }
   if (operation.minBoilingPointC > 0.0) {
-    bindings.emplace_back("minimum boiling point " +
-                          std::to_string(static_cast<int>(operation.minBoilingPointC)) + " C");
+    bindings.emplace_back(
+        "minimum boiling point " +
+        std::to_string(static_cast<int>(operation.minBoilingPointC)) + " C");
   }
   if (operation.maxBoilingPointC > 0.0) {
-    bindings.emplace_back("maximum boiling point " +
-                          std::to_string(static_cast<int>(operation.maxBoilingPointC)) + " C");
+    bindings.emplace_back(
+        "maximum boiling point " +
+        std::to_string(static_cast<int>(operation.maxBoilingPointC)) + " C");
   }
   return bindings;
 }
@@ -1367,15 +1597,15 @@ std::string relaxMostRestrictive(sol::OperationSpec& operation) {
 
 void drawComputingState() {
   if (!widgets::beginCard("##computing", ImVec2(0.0f, 0.0f), style::col::BgRaised)) return;
-  widgets::badge("COMPUTING", style::col::Violet);
-  ImGui::Spacing();
+  widgets::statusDot("Computing", true, style::col::Data);
   const bool heading = style::pushFont(style::fonts::semibold());
   ImGui::TextUnformatted("Ranking the solvent space");
   style::popFont(heading);
   ImGui::TextWrapped("Evaluating recovery, separation, CHEM21 ratings and practical handling.");
-
-  const float width = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
-  const float height = std::max(style::metrics().hairline * 7.0f, ImGui::GetFontSize() * 0.55f);
+  const float width =
+      std::max(ImGui::GetContentRegionAvail().x, style::metrics().hairline);
+  const float height =
+      std::max(style::metrics().hairline * 7.0f, ImGui::GetFontSize() * 0.55f);
   const ImVec2 minimum = ImGui::GetCursorScreenPos();
   ImGui::Dummy(ImVec2(width, height));
   const ImVec2 maximum(minimum.x + width, minimum.y + height);
@@ -1387,15 +1617,14 @@ void drawComputingState() {
   const float start = minimum.x + (width + segment) * phase - segment;
   draw->PushClipRect(minimum, maximum, true);
   draw->AddRectFilled(ImVec2(start, minimum.y), ImVec2(start + segment, maximum.y),
-                      style::u32(style::col::Violet), style::metrics().radiusSm);
+                      style::u32(style::col::Data), style::metrics().radiusSm);
   draw->PopClipRect();
   widgets::endCard();
 }
 
 void drawNoResultState(SelectionState& state) {
   if (!widgets::beginCard("##no_results", ImVec2(0.0f, 0.0f), style::col::BgRaised)) return;
-  widgets::badge("NO MATCH", style::col::Accent);
-  ImGui::Spacing();
+  widgets::badge("No match", style::col::Danger);
   const bool heading = style::pushFont(style::fonts::semibold());
   ImGui::TextUnformatted("No solvent satisfies every constraint");
   style::popFont(heading);
@@ -1403,7 +1632,7 @@ void drawNoResultState(SelectionState& state) {
                      "candidate for the ranking model.");
   const std::vector<std::string> bindings = bindingConstraints(state.operation);
   if (!bindings.empty()) {
-    widgets::sectionHeader("Binding constraints", style::col::Accent);
+    widgets::sectionHeader("Binding constraints", style::col::Data);
     for (const std::string& binding : bindings) ImGui::TextWrapped("- %s", binding.c_str());
   }
   sol::OperationSpec relaxed = state.operation;
@@ -1419,8 +1648,7 @@ void drawNoResultState(SelectionState& state) {
 
 void drawEmptyState(AppState& state) {
   if (!widgets::beginCard("##selector_empty", ImVec2(0.0f, 0.0f), style::col::BgRaised)) return;
-  widgets::badge("START HERE", style::col::Accent);
-  ImGui::Spacing();
+  widgets::badge("Start here", style::col::Data);
   const bool heading = style::pushFont(style::fonts::semibold());
   ImGui::TextUnformatted("Turn a real separation into a ranked solvent shortlist");
   style::popFont(heading);
@@ -1435,67 +1663,133 @@ void drawEmptyState(AppState& state) {
 
 void drawResults(AppState& state) {
   SelectionState& selection = state.selection;
-  widgets::sectionHeader("Ranked solvents", style::col::Accent);
-
   if (selection.operation.species.empty()) {
+    widgets::sectionHeader("Ranked solvents", style::col::Data);
     drawEmptyState(state);
     return;
   }
   if (!hasTarget(selection)) {
-    if (widgets::beginCard("##needs_target", ImVec2(0.0f, 0.0f), style::col::BgRaised)) {
-      widgets::badge("NEEDS KEEP", style::col::Teal);
-      ImGui::Spacing();
-      ImGui::TextWrapped("At least one species must be marked KEEP before solvents can be ranked.");
-      widgets::endCard();
-    }
+    widgets::sectionHeader("Ranked solvents", style::col::Data);
+    widgets::emptyState(icons::Icon::Molecule, "Target required",
+                        "Mark at least one species as Keep before ranking solvents.");
     return;
   }
   if (selection.computing) {
+    widgets::sectionHeader("Ranked solvents", style::col::Data);
     drawComputingState();
     return;
   }
   if (!selection.rankingError.empty()) {
-    if (widgets::beginCard("##ranking_error", ImVec2(0.0f, 0.0f), style::col::BgSurface)) {
-      widgets::badge("DATABASE ERROR", style::col::Danger);
-      ImGui::Spacing();
-      ImGui::TextWrapped("%s", selection.rankingError.c_str());
-      widgets::endCard();
-    }
+    widgets::notice(icons::Icon::Warning, selection.rankingError.c_str(), style::col::Danger);
     return;
   }
   if (selection.candidates.empty()) {
+    widgets::sectionHeader("Ranked solvents", style::col::Data);
     drawNoResultState(selection);
     return;
   }
 
-  drawResultControls(selection);
   static std::unordered_map<const SelectionState*, ResultAnimation> animations;
+  static std::unordered_map<const SelectionState*, std::string> selectedCandidates;
+  static std::unordered_map<const SelectionState*, std::string> detailCandidates;
   ResultAnimation& animation = animations[&selection];
+  std::string& selectedKey = selectedCandidates[&selection];
+  std::string& detailKey = detailCandidates[&selection];
   syncResultAnimation(selection, animation);
-  drawComparisonBoard(selection, animation);
 
   const std::vector<const sol::SolventCandidate*> visible = visibleCandidates(selection);
-  ImGui::TextColored(style::col::TextDim, "%zu of %zu candidates", visible.size(),
-                     selection.candidates.size());
   if (visible.empty()) {
-    if (widgets::beginCard("##search_empty", ImVec2(0.0f, 0.0f), style::col::BgSurface)) {
-      ImGui::TextWrapped("No solvent name matches this filter.");
-      if (widgets::ghostButton("Clear search")) selection.resultSearch.clear();
-      widgets::endCard();
-    }
+    drawResultControls(selection);
+    widgets::emptyState(icons::Icon::Filter, "No matching solvent",
+                        "Clear or change the name filter to restore candidates.");
+    if (widgets::ghostButton("Clear search")) selection.resultSearch.clear();
     return;
   }
+  const auto selectedVisible = std::find_if(
+      visible.begin(), visible.end(),
+      [&](const sol::SolventCandidate* candidate) {
+        return candidateKey(*candidate) == selectedKey;
+      });
+  if (selectedVisible == visible.end()) selectedKey = candidateKey(*visible.front());
+  const sol::SolventCandidate* detailCandidate =
+      detailKey.empty() ? nullptr : findCandidate(selection, detailKey);
+  if (detailCandidate &&
+      std::find(visible.begin(), visible.end(), detailCandidate) == visible.end()) {
+    detailCandidate = nullptr;
+    detailKey.clear();
+  }
 
-  for (size_t index = 0; index < visible.size(); ++index) {
-    const sol::SolventCandidate& candidate = *visible[index];
+  const layout::Frame frame = layout::measure();
+  float weights[5] = {};
+  float minimums[5] = {};
+  weights[0] = 0.0f;
+  const int controlColumns = std::min(layout::columnsThatFit(frame, 13.0f), 3);
+  minimums[0] = frame.control *
+                (controlColumns == 1 ? 4.8f : (controlColumns == 2 ? 3.4f : 2.4f));
+  weights[1] = 1.15f;
+  minimums[1] = frame.row * 8.0f;
+  weights[2] = 1.0f;
+  minimums[2] = frame.row * 7.0f;
+  int rowCount = 3;
+  int comparisonRow = -1;
+  int detailRow = -1;
+  if (selection.compareMode && !selection.comparedCandidates.empty()) {
+    comparisonRow = rowCount++;
+    weights[comparisonRow] = 0.45f;
+    minimums[comparisonRow] = frame.row * 5.0f;
+  }
+  if (detailCandidate) {
+    detailRow = rowCount++;
+    weights[detailRow] = 0.8f;
+    minimums[detailRow] = frame.row * 12.0f;
+  }
+  float heights[5] = {};
+  layout::distribute(frame.size.y, weights, minimums, rowCount, frame.gap, heights);
+
+  if (ImGui::BeginChild("##result_controls", ImVec2(0.0f, heights[0]),
+                        ImGuiChildFlags_None,
+                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    widgets::sectionHeader("Ranked solvents", style::col::Data);
+    drawResultControls(selection);
+    ImGui::TextColored(style::col::DataDim, "%zu of %zu candidates", visible.size(),
+                       selection.candidates.size());
+  }
+  ImGui::EndChild();
+  if (ImGui::BeginChild("##result_overview", ImVec2(0.0f, heights[1]),
+                        ImGuiChildFlags_None,
+                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    drawCandidateOverview(selection, visible, selectedKey, heights[1]);
+  }
+  ImGui::EndChild();
+  if (ImGui::BeginChild("##result_table", ImVec2(0.0f, heights[2]),
+                        ImGuiChildFlags_None,
+                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    drawCandidateTable(selection, visible, selectedKey, detailKey, heights[2]);
+  }
+  ImGui::EndChild();
+
+  if (comparisonRow >= 0) {
+    if (ImGui::BeginChild("##result_comparison", ImVec2(0.0f, heights[comparisonRow]),
+                          ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+      drawComparisonBoard(selection);
+    }
+    ImGui::EndChild();
+  }
+  if (detailRow >= 0 && detailCandidate) {
     const auto original = std::find_if(
         selection.candidates.begin(), selection.candidates.end(),
-        [&](const sol::SolventCandidate& value) { return &value == &candidate; });
-    const int engineRank = original == selection.candidates.end()
-                               ? static_cast<int>(index) + 1
-                               : static_cast<int>(std::distance(selection.candidates.begin(), original)) + 1;
-    drawCandidateCard(state, candidate, static_cast<int>(index) + 1, engineRank, animation);
-    if (index + 1 < visible.size()) ImGui::Spacing();
+        [&](const sol::SolventCandidate& value) { return &value == detailCandidate; });
+    const int engineRank =
+        original == selection.candidates.end()
+            ? 0
+            : static_cast<int>(std::distance(selection.candidates.begin(), original)) + 1;
+    if (ImGui::BeginChild("##result_detail", ImVec2(0.0f, heights[detailRow]),
+                          ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+      drawCandidateEvidence(state, *detailCandidate, engineRank, animation);
+    }
+    ImGui::EndChild();
   }
 }
 
@@ -1504,47 +1798,29 @@ void drawResults(AppState& state) {
 void drawSolventSelector(AppState& state) {
   requestRankingIfNeeded(state);
 
-  const style::Metrics& metrics = style::metrics();
-  const ImVec2 available = ImGui::GetContentRegionAvail();
-  const bool sideBySide = available.x >= ImGui::GetFontSize() * 58.0f;
-  const float preferredBuilder = ImGui::GetFontSize() * 24.0f;
+  const layout::Frame frame = layout::measure();
+  const int columns = std::clamp(layout::columnsThatFit(frame, 20.0f), 3, 5);
+  const float builderWidth = layout::columnWidth(frame, columns);
+  const float resultsWidth = layout::columnWidth(frame, columns, columns - 1);
 
-  if (sideBySide) {
-    const float builderWidth = std::min(preferredBuilder, available.x * 0.40f);
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, metrics.radiusLg);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, style::col::BgPanel);
-    if (ImGui::BeginChild("##selector_builder", ImVec2(builderWidth, 0.0f),
-                          ImGuiChildFlags_Borders)) {
-      drawBuilder(state);
-    }
-    ImGui::EndChild();
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
-
-    ImGui::SameLine(0.0f, metrics.gap);
-    if (ImGui::BeginChild("##selector_results", ImVec2(0.0f, 0.0f))) drawResults(state);
-    ImGui::EndChild();
-  } else {
-    const float minimumResults = ImGui::GetFontSize() * 12.0f;
-    const float desiredBuilder = ImGui::GetFontSize() * 34.0f;
-    const float builderHeight = std::max(
-        ImGui::GetFontSize() * 14.0f,
-        std::min(desiredBuilder, std::max(available.y - minimumResults - metrics.gap,
-                                         ImGui::GetFontSize() * 14.0f)));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, metrics.radiusLg);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, style::col::BgPanel);
-    if (ImGui::BeginChild("##selector_builder", ImVec2(0.0f, builderHeight),
-                          ImGuiChildFlags_Borders)) {
-      drawBuilder(state);
-    }
-    ImGui::EndChild();
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
-
-    ImGui::Spacing();
-    if (ImGui::BeginChild("##selector_results", ImVec2(0.0f, 0.0f))) drawResults(state);
-    ImGui::EndChild();
+  ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, style::metrics().radiusLg);
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, style::col::BgPanel);
+  if (ImGui::BeginChild("##selector_builder", ImVec2(builderWidth, frame.size.y),
+                        ImGuiChildFlags_Borders,
+                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    drawBuilder(state);
   }
+  ImGui::EndChild();
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar();
+
+  ImGui::SameLine(0.0f, frame.gap);
+  if (ImGui::BeginChild("##selector_results", ImVec2(resultsWidth, frame.size.y),
+                        ImGuiChildFlags_None,
+                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    drawResults(state);
+  }
+  ImGui::EndChild();
 }
 
 }  // namespace chemcad::ui

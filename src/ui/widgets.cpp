@@ -4,10 +4,13 @@
 #include <cctype>
 #include <cfloat>
 #include <cstddef>
+#include <cstdarg>
 #include <cstdio>
+#include <utility>
 #include <vector>
 
 #include "sol/solvent.hpp"
+#include "ui/layout.hpp"
 
 #include "imgui_internal.h"
 
@@ -24,6 +27,14 @@ int resizeStringInput(ImGuiInputTextCallbackData* data) {
 }
 
 std::vector<ImVec2> toolbarStarts;
+
+struct DataTableState {
+  std::vector<Column> columns;
+  int cell = 0;
+  float rowHeight = 0.0f;
+};
+
+std::vector<DataTableState> dataTableStack;
 
 }  // namespace
 
@@ -416,7 +427,14 @@ void endToolbar() {
   toolbarStarts.pop_back();
   const float bottom = min.y + ImGui::GetFrameHeight() + style::metrics().gap;
   const ImVec2 cursor = ImGui::GetCursorScreenPos();
-  ImGui::SetCursorScreenPos(ImVec2(min.x, std::max(cursor.y, bottom)));
+  // Landing the cursor with a bare SetCursorScreenPos leaves ImGui's "position
+  // was set but nothing was submitted" flag armed, and if a toolbar is the last
+  // thing in a child that fires the extend-boundaries error every frame. A
+  // zero-size item clears it; placing it one ItemSpacing short means the item's
+  // own advance lands the cursor exactly where it was going.
+  const float spacing = ImGui::GetStyle().ItemSpacing.y;
+  ImGui::SetCursorScreenPos(ImVec2(min.x, std::max(cursor.y, bottom) - spacing));
+  ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
 void toolbarSeparator() {
@@ -843,6 +861,310 @@ void helpMarker(const char* text) {
     ImGui::SetTooltip("%s", text);
     ImGui::PopTextWrapPos();
   }
+}
+
+bool subTabs(const char* id, const char* const* labels, const icons::Icon* glyphs,
+             int count, int& index) {
+  if (count <= 0) return false;
+
+  const style::Metrics& m = style::metrics();
+  const float fontSize = ImGui::GetFontSize();
+  const ImVec2 min = ImGui::GetCursorScreenPos();
+  const ImVec2 size(ImGui::GetContentRegionAvail().x, ImGui::GetFrameHeight() * 1.25f);
+  ImGui::InvisibleButton(id, size);
+  const ImGuiID itemId = ImGui::GetItemID();
+  const bool hovered = ImGui::IsItemHovered();
+  const float hover = hoverT(itemId, hovered);
+  const float cellWidth = size.x / static_cast<float>(count);
+
+  int hoveredCell = -1;
+  if (hovered) {
+    hoveredCell = std::clamp(
+        static_cast<int>((ImGui::GetIO().MousePos.x - min.x) / cellWidth), 0, count - 1);
+  }
+
+  bool changed = false;
+  if (ImGui::IsItemClicked()) {
+    const int clickedCell = std::clamp(
+        static_cast<int>((ImGui::GetIO().MousePos.x - min.x) / cellWidth), 0, count - 1);
+    if (clickedCell != index) {
+      index = clickedCell;
+      changed = true;
+    }
+  }
+
+  const int selected = std::clamp(index, 0, count - 1);
+  ImGuiStorage* storage = ImGui::GetStateStorage();
+  const ImGuiID animKey = ImHashStr("##sub_tabs_position", 0, itemId);
+  float position = storage->GetFloat(animKey, static_cast<float>(selected));
+  const float blend = std::clamp(m.animSpeed * ImGui::GetIO().DeltaTime, 0.0f, 1.0f);
+  position += (static_cast<float>(selected) - position) * blend;
+  storage->SetFloat(animKey, position);
+
+  const ImVec2 max(min.x + size.x, min.y + size.y);
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->AddLine(ImVec2(min.x, max.y), max, style::u32(style::col::GridLine), m.hairline);
+  const float underlineInset = m.gap * 0.55f;
+  const ImVec2 underlineMin(min.x + cellWidth * position + underlineInset,
+                            max.y - m.hairline * 2.0f);
+  const ImVec2 underlineMax(min.x + cellWidth * (position + 1.0f) - underlineInset,
+                            max.y);
+  dl->AddRectFilled(underlineMin, underlineMax, style::u32(style::col::AccentHover));
+
+  for (int i = 0; i < count; ++i) {
+    const char* label = labels && labels[i] ? labels[i] : "";
+    ImFont* font = i == selected ? style::fonts::semibold() : style::fonts::body();
+    const ImVec2 labelSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label);
+    const bool hasGlyph = glyphs && glyphs[i] != icons::Icon::None;
+    const float glyphSize = fontSize * 0.82f;
+    const float pairGap = hasGlyph ? m.gap * 0.38f : 0.0f;
+    const float pairWidth = (hasGlyph ? glyphSize : 0.0f) + pairGap + labelSize.x;
+    float x = min.x + cellWidth * (static_cast<float>(i) + 0.5f) - pairWidth * 0.5f;
+    const float y = min.y + (size.y - labelSize.y) * 0.5f - m.hairline;
+    const ImU32 color =
+        i == selected
+            ? style::u32(style::col::Text)
+            : style::mix(style::col::TextDim, style::col::Text,
+                         i == hoveredCell ? hover : 0.0f);
+    if (hasGlyph) {
+      icons::draw(dl, glyphs[i],
+                  ImVec2(x + glyphSize * 0.5f, min.y + size.y * 0.5f - m.hairline),
+                  glyphSize, color);
+      x += glyphSize + pairGap;
+    }
+    dl->AddText(font, fontSize, ImVec2(x, y), color, label);
+  }
+  return changed;
+}
+
+void hudFrame(ImVec2 min, ImVec2 max, ImVec4 accent, float alpha) {
+  const style::Metrics& m = style::metrics();
+  const float inset =
+      std::min(ImGui::GetFontSize() * 0.45f,
+               std::max(std::min(max.x - min.x, max.y - min.y) * 0.5f, 0.0f));
+  const ImVec2 points[] = {
+      ImVec2(min.x + inset, min.y), ImVec2(max.x - inset, min.y),
+      ImVec2(max.x, min.y + inset), ImVec2(max.x, max.y - inset),
+      ImVec2(max.x - inset, max.y), ImVec2(min.x + inset, max.y),
+      ImVec2(min.x, max.y - inset), ImVec2(min.x, min.y + inset),
+  };
+
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->AddPolyline(points, IM_ARRAYSIZE(points), style::u32(style::col::GridLine, alpha),
+                  ImDrawFlags_Closed, m.hairline);
+
+  const float centreX = (min.x + max.x) * 0.5f;
+  const float tickHalf = ImGui::GetFontSize() * 0.28f;
+  dl->AddLine(ImVec2(centreX - tickHalf, min.y), ImVec2(centreX + tickHalf, min.y),
+              style::u32(accent, alpha), m.hairline * 2.0f);
+  dl->AddLine(ImVec2(centreX - tickHalf, max.y), ImVec2(centreX + tickHalf, max.y),
+              style::u32(accent, alpha), m.hairline * 2.0f);
+}
+
+void statusDot(const char* label, bool active, ImVec4 accent) {
+  const style::Metrics& m = style::metrics();
+  const float fontSize = ImGui::GetFontSize();
+  const float radius = fontSize * 0.22f;
+  const float haloRadius = radius * 1.75f;
+  const char* text = label ? label : "";
+  const ImVec2 textSize = ImGui::CalcTextSize(text);
+  const float height = ImGui::GetTextLineHeightWithSpacing();
+  const float gap = m.gap * 0.65f;
+  const ImVec2 min = ImGui::GetCursorScreenPos();
+  const ImVec2 size(haloRadius * 2.0f + gap + textSize.x, height);
+  ImGui::Dummy(size);
+
+  const ImVec2 centre(min.x + haloRadius, min.y + height * 0.5f);
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  if (active) {
+    dl->AddCircleFilled(centre, haloRadius, style::u32(accent, 0.14f));
+    dl->AddCircleFilled(centre, radius, style::u32(accent));
+  } else {
+    dl->AddCircle(centre, radius, style::u32(style::col::TextFaint), 0, m.hairline);
+  }
+  dl->AddText(ImVec2(min.x + haloRadius * 2.0f + gap,
+                     min.y + (height - textSize.y) * 0.5f),
+              style::u32(active ? style::col::Text : style::col::TextDim), text);
+}
+
+bool beginDataTable(const char* id, const Column* columns, int count, ImVec2 size) {
+  if (!columns || count <= 0) return false;
+
+  const style::Metrics& m = style::metrics();
+  const float fontSize = ImGui::GetFontSize();
+  const float unitFontSize = layout::labelFont(fontSize * 0.78f);
+  const ImVec2 cellPadding(m.gap * 0.48f, m.gap * 0.16f);
+  std::vector<float> widths(static_cast<std::size_t>(count), 0.0f);
+
+  const bool mono = style::pushFont(style::fonts::mono());
+  const float numericReserve = ImGui::CalcTextSize("0000000").x;
+  style::popFont(mono);
+
+  int stretchColumn = -1;
+  for (int i = 0; i < count; ++i) {
+    if (stretchColumn < 0 && columns[i].stretch && !columns[i].numeric) {
+      stretchColumn = i;
+    }
+  }
+  if (stretchColumn < 0) {
+    for (int i = 0; i < count; ++i) {
+      if (!columns[i].numeric) {
+        stretchColumn = i;
+        break;
+      }
+    }
+  }
+
+  for (int i = 0; i < count; ++i) {
+    const char* label = columns[i].label ? columns[i].label : "";
+    const char* unit = columns[i].unit ? columns[i].unit : "";
+    float headerWidth = ImGui::CalcTextSize(label).x;
+    if (unit[0] != '\0') {
+      headerWidth += m.gap * 0.35f +
+                     ImGui::CalcTextSize(unit).x * (unitFontSize / fontSize);
+    }
+    const float contentFloor = std::max(columns[i].minEm * fontSize,
+                                        columns[i].numeric ? numericReserve : 0.0f);
+    widths[static_cast<std::size_t>(i)] =
+        std::max(headerWidth, contentFloor) + cellPadding.x * 2.0f;
+  }
+
+  constexpr ImGuiTableFlags flags =
+      ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg |
+      ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_BordersInnerV;
+  ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, cellPadding);
+  if (!ImGui::BeginTable(id, count, flags, size)) {
+    ImGui::PopStyleVar();
+    return false;
+  }
+
+  DataTableState state;
+  state.columns.assign(columns, columns + count);
+  state.rowHeight = fontSize + cellPadding.y * 2.0f;
+  dataTableStack.push_back(std::move(state));
+
+  for (int i = 0; i < count; ++i) {
+    const ImGuiTableColumnFlags columnFlags =
+        i == stretchColumn ? ImGuiTableColumnFlags_WidthStretch
+                           : ImGuiTableColumnFlags_WidthFixed;
+    ImGui::TableSetupColumn(columns[i].label ? columns[i].label : "", columnFlags,
+                            widths[static_cast<std::size_t>(i)]);
+  }
+
+  ImGui::PushStyleColor(ImGuiCol_Text, style::u32(style::col::TextFaint));
+  ImGui::TableHeadersRow();
+  ImGui::PopStyleColor();
+
+  ImGuiTable* table = ImGui::GetCurrentTable();
+  if (table) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    for (int i = 0; i < count; ++i) {
+      const char* unit = columns[i].unit ? columns[i].unit : "";
+      if (unit[0] == '\0') continue;
+      const char* label = columns[i].label ? columns[i].label : "";
+      const ImGuiTableColumn& tableColumn = table->Columns[i];
+      const float x =
+          tableColumn.WorkMinX + ImGui::CalcTextSize(label).x + m.gap * 0.35f;
+      const float y =
+          table->RowPosY1 + (table->RowPosY2 - table->RowPosY1 - unitFontSize) * 0.5f;
+      dl->PushClipRect(ImVec2(tableColumn.WorkMinX, table->RowPosY1),
+                       ImVec2(tableColumn.WorkMaxX, table->RowPosY2), true);
+      dl->AddText(nullptr, unitFontSize, ImVec2(x, y),
+                  style::u32(style::col::TextFaint, 0.78f), unit);
+      dl->PopClipRect();
+    }
+  }
+  return true;
+}
+
+void endDataTable() {
+  IM_ASSERT(!dataTableStack.empty());
+  ImGui::EndTable();
+  ImGui::PopStyleVar();
+  dataTableStack.pop_back();
+}
+
+void dataRow(ImVec4 accent) {
+  IM_ASSERT(!dataTableStack.empty());
+  if (dataTableStack.empty()) return;
+
+  DataTableState& state = dataTableStack.back();
+  state.cell = 0;
+  ImGui::TableNextRow();
+  if (accent.w > 0.0f) {
+    ImGuiTable* table = ImGui::GetCurrentTable();
+    if (table) {
+      const float width = style::metrics().hairline * 2.0f;
+      const ImVec2 min(table->OuterRect.Min.x, table->RowPosY1);
+      ImGui::GetWindowDrawList()->AddRectFilled(
+          min, ImVec2(min.x + width, min.y + state.rowHeight), style::u32(accent));
+    }
+  }
+}
+
+void dataCell(const char* text) {
+  IM_ASSERT(!dataTableStack.empty());
+  if (dataTableStack.empty()) return;
+
+  DataTableState& state = dataTableStack.back();
+  const int descriptorIndex = state.cell++;
+  const bool visible = ImGui::TableNextColumn();
+  if (!visible || descriptorIndex < 0 ||
+      descriptorIndex >= static_cast<int>(state.columns.size())) {
+    return;
+  }
+
+  const Column& column = state.columns[static_cast<std::size_t>(descriptorIndex)];
+  const char* value = text ? text : "";
+  const bool pushed =
+      style::pushFont(column.numeric ? style::fonts::mono() : style::fonts::body());
+  const ImVec2 min = ImGui::GetCursorScreenPos();
+  const float width = std::max(ImGui::GetContentRegionAvail().x, 0.0f);
+  const ImVec2 textSize = ImGui::CalcTextSize(value);
+  const float x = column.numeric ? min.x + width - textSize.x : min.x;
+  ImGui::Dummy(ImVec2(width, ImGui::GetFontSize()));
+  const ImVec4 clip(min.x, min.y, min.x + width, min.y + state.rowHeight);
+  ImGui::GetWindowDrawList()->AddText(
+      ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(x, min.y),
+      style::u32(column.numeric ? style::col::Data : style::col::Text), value, nullptr,
+      0.0f, &clip);
+  style::popFont(pushed);
+}
+
+void dataCellf(const char* format, ...) {
+  char buffer[256];
+  buffer[0] = '\0';
+  if (format) {
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+  }
+  dataCell(buffer);
+}
+
+bool onlyWhen(bool when, const char* absentReason) {
+  if (when) return true;
+  if (!absentReason || absentReason[0] == '\0') return false;
+
+  const style::Metrics& m = style::metrics();
+  const float fontSize = layout::labelFont(ImGui::GetFontSize() * 0.86f);
+  const float height = ImGui::GetTextLineHeightWithSpacing();
+  const float glyphSize = fontSize;
+  const float gap = m.gap * 0.55f;
+  const ImVec2 min = ImGui::GetCursorScreenPos();
+  const float width = ImGui::GetContentRegionAvail().x;
+  ImGui::Dummy(ImVec2(width, height));
+
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 glyphCentre(min.x + glyphSize * 0.5f, min.y + height * 0.5f);
+  icons::draw(dl, icons::Icon::Info, glyphCentre, glyphSize,
+              style::u32(style::col::TextFaint, 0.72f));
+  const ImVec2 textPos(min.x + glyphSize + gap, min.y + (height - fontSize) * 0.5f);
+  const ImVec4 clip(min.x, min.y, min.x + width, min.y + height);
+  dl->AddText(nullptr, fontSize, textPos, style::u32(style::col::TextFaint),
+              absentReason, nullptr, 0.0f, &clip);
+  return false;
 }
 
 void emptyState(icons::Icon icon, const char* headline, const char* body) {

@@ -25,6 +25,7 @@
 #include "ui/app_state.hpp"
 #include "ui/charts.hpp"
 #include "ui/icons.hpp"
+#include "ui/layout.hpp"
 #include "ui/solubility_state.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -635,7 +636,8 @@ void drawLiquidSection(ImDrawList* draw, const fluid::Snapshot& snapshot,
 }
 
 void drawCrossSection(const fluid::Snapshot& snapshot, const sol::Simulation& charge,
-                      ImVec2 regionMin, ImVec2 regionSize) {
+                      const std::array<double, 3>& vesselPositionM, ImVec2 regionMin,
+                      ImVec2 regionSize) {
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 regionMax(regionMin.x + regionSize.x, regionMin.y + regionSize.y);
   draw->PushClipRect(regionMin, regionMax, true);
@@ -645,12 +647,14 @@ void drawCrossSection(const fluid::Snapshot& snapshot, const sol::Simulation& ch
   const Transform stationary = buildTransform(geo, regionMin, regionSize);
   // The solver works in vessel coordinates, so a shaken vessel is stationary in
   // its own frame and only the contents appear to move. Offsetting the
-  // transform by the published world displacement puts the glassware back in
-  // the hand: the vessel travels and the liquid lags inside it, which is what a
-  // shaken separatory funnel actually looks like.
+  // transform by the vessel's world displacement puts the glassware back in the
+  // hand: the vessel travels and the liquid lags inside it, which is what a
+  // shaken separatory funnel actually looks like. The caller supplies the
+  // position rather than the snapshot doing so, because the hand-driven part is
+  // live every frame while the snapshot is only as fresh as the last step.
   Transform tf = stationary;
-  tf.origin.x += static_cast<float>(snapshot.pose.position[0]) * tf.scale;
-  tf.origin.y -= static_cast<float>(snapshot.pose.position[2]) * tf.scale;
+  tf.origin.x += static_cast<float>(vesselPositionM[0]) * tf.scale;
+  tf.origin.y -= static_cast<float>(vesselPositionM[2]) * tf.scale;
 
   drawGroundShadow(draw, geo, stationary);
   drawVesselGlass(draw, charge, geo, tf);
@@ -815,28 +819,14 @@ std::string fluidPresetTradeText(const SolubilityState& s,
                                  size_t presetIndex) {
   const size_t preset = std::min(presetIndex, kFluidPresets.size() - 1);
   const uint64_t estimatedParticles = estimatedParticleCount(s, preset);
-  const bool hasComparableRate =
-      s.fluidPresetRealTimeFactorValid[preset] &&
-      s.fluidPresetMeasuredParticles[preset] == estimatedParticles;
-  char text[224];
-  if (hasComparableRate) {
-    std::snprintf(
-        text, sizeof(text),
-        "%s | dx %.0f mm | compression limit %.1f%% | ~%llu particles | last measured %.2fx",
-        kFluidPresets[preset].choiceLabel,
-        kFluidPresets[preset].quality.spacing * 1000.0,
-        kFluidPresets[preset].quality.densityTolerance * 100.0,
-        static_cast<unsigned long long>(estimatedParticles),
-        s.fluidPresetRealTimeFactor[preset]);
-  } else {
-    std::snprintf(
-        text, sizeof(text),
-        "%s | dx %.0f mm | compression limit %.1f%% | ~%llu particles | rate not measured",
-        kFluidPresets[preset].choiceLabel,
-        kFluidPresets[preset].quality.spacing * 1000.0,
-        kFluidPresets[preset].quality.densityTolerance * 100.0,
-        static_cast<unsigned long long>(estimatedParticles));
-  }
+  char text[192];
+  std::snprintf(
+      text, sizeof(text),
+      "%s | dx %.0f mm | compression limit %.1f%% | ~%llu particles",
+      kFluidPresets[preset].choiceLabel,
+      kFluidPresets[preset].quality.spacing * 1000.0,
+      kFluidPresets[preset].quality.densityTolerance * 100.0,
+      static_cast<unsigned long long>(estimatedParticles));
   return text;
 }
 template <typename T>
@@ -1200,54 +1190,27 @@ void sampleFluidDiagnostics(FluidDiagnosticTraces& traces,
   }
 }
 
-void drawFluidMetric(const char* caption, const char* value) {
-  ImGui::TextDisabled("%s", caption);
-  const bool pushed = style::pushFont(style::fonts::mono());
-  ImGui::TextUnformatted(value);
-  style::popFont(pushed);
-}
 
-void drawFluidDiagnostics(SolubilityState& s) {
+void drawFluidDiagnostics(SolubilityState& s, float height) {
   const size_t resolutionIndex = selectedFluidPreset(s);
-
-  ImGui::Spacing();
-  ImGui::Separator();
-  ImGui::TextDisabled("REAL FLUID READOUT");
-
   fluid::Simulation* simulation = availableFluid(s);
   std::shared_ptr<const fluid::Snapshot> snapshot;
   fluid::Solver::Stats stats;
   double realTimeFactor = std::numeric_limits<double>::quiet_NaN();
-  bool stepping = false;
-  std::string status;
   const bool readable =
       simulation &&
       runFluidInteraction(s, [&] {
         snapshot = simulation->snapshot();
         stats = simulation->solverStats();
         realTimeFactor = simulation->realTimeFactor();
-        stepping = simulation->stepping();
-        status = simulation->statusLine();
       });
   if (!readable || !snapshot) {
     const FluidBoundaryState& state = fluidBoundaryState(s);
-    ImGui::TextColored(style::col::Danger, "Physics unavailable");
-    ImGui::TextWrapped("%s", state.reason.empty() ? "Fluid setup did not complete."
-                                                  : state.reason.c_str());
+    widgets::emptyState(
+        icons::Icon::Warning, "Physics unavailable",
+        state.reason.empty() ? "Fluid setup did not complete." : state.reason.c_str());
     return;
   }
-
-  const char* runState = s.funnelRunning ? "RUNNING" : "PAUSED";
-  ImGui::TextColored(s.funnelRunning ? style::col::Success : style::col::TextDim,
-                     "%s%s", runState, stepping ? " - physics step active" : "");
-  ImGui::TextWrapped("%s", status.c_str());
-  ImGui::TextWrapped(
-      "Particle-resolved %s preset (dx %.0f mm, compression limit %.1f%%, ~%llu particles)",
-      kFluidPresets[resolutionIndex].name,
-      selectedFluidSpacing(s) * 1000.0,
-      kFluidPresets[resolutionIndex].quality.densityTolerance * 100.0,
-      static_cast<unsigned long long>(
-          estimatedParticleCount(s, resolutionIndex)));
 
   const bool completedStep = snapshot->elapsedS > 0.0;
   if (completedStep) rememberFluidRate(s, realTimeFactor);
@@ -1262,8 +1225,7 @@ void drawFluidDiagnostics(SolubilityState& s) {
       completedStep && stats.substeps > 0 && std::isfinite(compression);
   const bool deficitAvailable =
       completedStep && stats.substeps > 0 && std::isfinite(deficit);
-  const bool rateAvailable =
-      completedStep && std::isfinite(realTimeFactor);
+  const bool rateAvailable = completedStep && std::isfinite(realTimeFactor);
   const bool dispersedAvailable =
       completedStep && diagnostics.valid &&
       std::isfinite(diagnostics.dispersedFraction);
@@ -1297,57 +1259,55 @@ void drawFluidDiagnostics(SolubilityState& s) {
     std::snprintf(sauterValue, sizeof(sauterValue), "%.0f",
                   diagnostics.sauterDiameterM * 1.0e6);
   else if (sauterAvailable)
-    std::snprintf(sauterValue, sizeof(sauterValue), "No resolved drops");
+    std::snprintf(sauterValue, sizeof(sauterValue), "No drops");
   if (areaAvailable)
     std::snprintf(areaValue, sizeof(areaValue), "%.2f",
                   diagnostics.interfacialAreaM2 * 1.0e4);
 
   charts::SparklineStyle compressionStyle;
-  compressionStyle.accent = style::col::Accent;
+  compressionStyle.accent = style::col::Data;
   compressionStyle.ceilingValue =
       kFluidPresets[resolutionIndex].quality.densityTolerance;
   charts::SparklineStyle deficitStyle;
-  deficitStyle.accent = style::col::Violet;
+  deficitStyle.accent = style::col::DataDim;
   deficitStyle.ceilingValue = 1.0;
   charts::SparklineStyle rateStyle;
-  rateStyle.accent = style::col::Teal;
+  rateStyle.accent = style::col::DataBright;
   charts::SparklineStyle dispersedStyle;
-  dispersedStyle.accent = style::col::AccentHover;
+  dispersedStyle.accent = style::col::DataBright;
   dispersedStyle.ceilingValue = 1.0;
   charts::SparklineStyle sauterStyle;
-  sauterStyle.accent = style::col::Violet;
+  sauterStyle.accent = style::col::DataDim;
   charts::SparklineStyle areaStyle;
-  areaStyle.accent = style::col::Teal;
+  areaStyle.accent = style::col::Data;
 
-  const float fontSize = ImGui::GetFontSize();
-  const float lineHeight = ImGui::GetTextLineHeightWithSpacing();
-  const float availableWidth = ImGui::GetContentRegionAvail().x;
-  const float minTileWidth = fontSize * 11.0f;
-  const float columnGap = ImGui::GetStyle().ItemSpacing.x;
-  // Fit as many tiles as the width allows, then even the rows out: six
-  // instruments in a four-wide grid leaves a row of two beside a gap, where
-  // three-by-two reads as one instrument cluster.
+  const float width = ImGui::GetContentRegionAvail().x;
+  const layout::Frame frame = layout::measure(ImVec2(width, height));
   constexpr int kInstrumentCount = 6;
-  const int fitColumns = std::clamp(
-      static_cast<int>((availableWidth + columnGap) / (minTileWidth + columnGap)),
-      1, kInstrumentCount);
-  const int instrumentRows = (kInstrumentCount + fitColumns - 1) / fitColumns;
   const int instrumentColumns =
-      (kInstrumentCount + instrumentRows - 1) / instrumentRows;
+      std::clamp(layout::columnsThatFit(frame, 10.0f), 1, kInstrumentCount);
+  const int instrumentRows =
+      (kInstrumentCount + instrumentColumns - 1) / instrumentColumns;
+  const float supportHeight = frame.row * 4.35f + frame.gap * 3.0f;
+  const float gridHeight =
+      std::max(height - supportHeight, frame.row);
+  const float meterHeight = frame.em * 0.35f;
+  const float tileHeight = std::max(
+      (gridHeight -
+       static_cast<float>(instrumentRows) * (meterHeight + frame.gap)) /
+          static_cast<float>(instrumentRows),
+      frame.em);
   constexpr ImGuiTableFlags instrumentFlags =
       ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
   if (ImGui::BeginTable("##fluid_instruments", instrumentColumns,
                         instrumentFlags)) {
-    const float tileHeight = lineHeight * 5.0f;
-    const float meterHeight = fontSize * 0.35f;
-
     ImGui::TableNextColumn();
     charts::instrument(
-        "##compression", "WORST COMPRESSION", compressionValue,
+        "##compression", "Worst compression", compressionValue,
         compressionAvailable ? "%" : "Unavailable", traces.compression,
         ImVec2(ImGui::GetContentRegionAvail().x, tileHeight), compressionStyle);
     charts::MeterStyle compressionMeter;
-    compressionMeter.accent = style::col::Accent;
+    compressionMeter.accent = style::col::Data;
     const double compressionLimit =
         kFluidPresets[resolutionIndex].quality.densityTolerance;
     compressionMeter.warnAt = 0.75;
@@ -1362,34 +1322,32 @@ void drawFluidDiagnostics(SolubilityState& s) {
 
     ImGui::TableNextColumn();
     charts::instrument(
-        "##deficit", "FREE-SURFACE DEFICIT", deficitValue,
+        "##deficit", "Free-surface deficit", deficitValue,
         deficitAvailable ? "%" : "Unavailable", traces.deficit,
         ImVec2(ImGui::GetContentRegionAvail().x, tileHeight), deficitStyle);
     charts::MeterStyle deficitMeter;
-    deficitMeter.accent = style::col::Violet;
-    constexpr double kDeficitLimit = 1.0;
+    deficitMeter.accent = style::col::DataDim;
     deficitMeter.warnAt = 0.75;
     deficitMeter.dangerAt = 1.0;
-    charts::meter(
-        "##deficit_headroom",
-        deficitAvailable ? deficit / kDeficitLimit : 0.0,
-        ImVec2(ImGui::GetContentRegionAvail().x, meterHeight), deficitMeter);
+    charts::meter("##deficit_headroom", deficitAvailable ? deficit : 0.0,
+                  ImVec2(ImGui::GetContentRegionAvail().x, meterHeight),
+                  deficitMeter);
 
     ImGui::TableNextColumn();
     charts::instrument(
-        "##real_time_factor", "REAL-TIME FACTOR", rateValue,
+        "##real_time_factor", "Real-time factor", rateValue,
         rateAvailable ? "x" : "Unavailable", traces.realTimeFactor,
         ImVec2(ImGui::GetContentRegionAvail().x, tileHeight), rateStyle);
 
     ImGui::TableNextColumn();
     charts::instrument(
-        "##dispersed", "DISPERSED", dispersedValue,
+        "##dispersed", "Dispersed phase", dispersedValue,
         dispersedAvailable ? "%" : "Unavailable", traces.dispersedFraction,
         ImVec2(ImGui::GetContentRegionAvail().x, tileHeight), dispersedStyle);
 
     ImGui::TableNextColumn();
     charts::instrument(
-        "##sauter", "SAUTER d32", sauterValue,
+        "##sauter", "Sauter d32", sauterValue,
         !sauterAvailable
             ? "Unavailable"
             : (diagnostics.sauterDiameterM > 0.0 ? "um" : nullptr),
@@ -1398,10 +1356,9 @@ void drawFluidDiagnostics(SolubilityState& s) {
 
     ImGui::TableNextColumn();
     charts::instrument(
-        "##interfacial_area", "INTERFACIAL AREA", areaValue,
+        "##interfacial_area", "Interfacial area", areaValue,
         areaAvailable ? "cm^2" : "Unavailable", traces.interfacialArea,
         ImVec2(ImGui::GetContentRegionAvail().x, tileHeight), areaStyle);
-
     ImGui::EndTable();
   }
 
@@ -1412,15 +1369,17 @@ void drawFluidDiagnostics(SolubilityState& s) {
   if (surfaceAvailable)
     std::snprintf(surfaceValue, sizeof(surfaceValue), "%.1f mm",
                   diagnostics.freeSurfaceM * 1000.0);
-  if (ImGui::BeginTable("##fluid_supporting_metrics", 2, instrumentFlags)) {
-    ImGui::TableNextColumn();
-    drawFluidMetric("SUBSTEPS", substepsValue);
-    ImGui::TableNextColumn();
-    drawFluidMetric("FREE SURFACE", surfaceValue);
-    ImGui::EndTable();
+  constexpr widgets::Column supportColumns[] = {
+      {"Substeps", true, false, nullptr, 5.0f},
+      {"Free surface", true, false, nullptr, 7.0f}};
+  if (widgets::beginDataTable("##fluid_support", supportColumns, 2,
+                              ImVec2(0.0f, frame.row * 2.0f))) {
+    widgets::dataRow(style::col::DataDim);
+    widgets::dataCell(substepsValue);
+    widgets::dataCell(surfaceValue);
+    widgets::endDataTable();
   }
 
-  ImGui::TextDisabled("PHASE BULK VOLUMES");
   traces.phaseSegments.clear();
   const size_t phaseCount =
       completedStep && diagnostics.valid
@@ -1428,7 +1387,7 @@ void drawFluidDiagnostics(SolubilityState& s) {
           : 0;
   traces.phaseSegments.reserve(phaseCount);
   for (size_t i = 0; i < phaseCount; ++i) {
-    ImVec4 phaseColour = style::col::Teal;
+    ImVec4 phaseColour = style::col::Data;
     if (i < snapshot->phases.size()) {
       const fluid::PhaseMaterial& phase = snapshot->phases[i];
       phaseColour =
@@ -1446,53 +1405,31 @@ void drawFluidDiagnostics(SolubilityState& s) {
   charts::stackedBar(
       "##phase_bulk_chart", traces.phaseSegments.data(),
       static_cast<int>(traces.phaseSegments.size()),
-      ImVec2(ImGui::GetContentRegionAvail().x, lineHeight * 2.0f));
+      ImVec2(ImGui::GetContentRegionAvail().x, frame.row * 1.35f));
 
-  if (phaseCount == 0) {
-    ImGui::TextUnformatted("Unavailable");
-  } else {
-    const int phaseColumns = std::clamp(
-        static_cast<int>((availableWidth + columnGap) /
-                         (minTileWidth + columnGap)),
-        1, static_cast<int>(phaseCount));
-    if (ImGui::BeginTable("##phase_bulk_values", phaseColumns,
-                          instrumentFlags)) {
-      for (size_t i = 0; i < phaseCount; ++i) {
-        ImGui::TableNextColumn();
-        ImGui::TextDisabled("%s BULK", s.funnel.phases[i].label.c_str());
-        char bulkValue[32] = "Bulk unresolved";
-        if (diagnostics.phases[i].bulkResolved &&
-            std::isfinite(diagnostics.phases[i].bulkMl))
-          std::snprintf(bulkValue, sizeof(bulkValue), "%.1f mL",
-                        diagnostics.phases[i].bulkMl);
-        const bool pushed = style::pushFont(style::fonts::mono());
-        ImGui::TextUnformatted(bulkValue);
-        style::popFont(pushed);
-      }
-      ImGui::EndTable();
-    }
-  }
-
-  ImGui::TextWrapped(
-      "A free-surface density deficit is expected in SPH; pressure controls compression.");
+  const fluid::VesselMotion motion = shakeReportMotion(s);
+  char shakeValue[96];
+  std::snprintf(shakeValue, sizeof(shakeValue), "%.2f m/s peak  |  %.1f W/kg",
+                fluid::shakePeakVelocity(motion),
+                fluid::shakeSpecificPower(motion));
+  widgets::keyValue("Driven shake", shakeValue, style::col::DataBright);
 }
 
 void drawTransportControls(SolubilityState& s) {
   sol::Simulation& charge = s.funnel;
   static const char* kVesselNames[] = {"Separatory funnel", "Decanting flask",
                                        "Graduated cylinder"};
-  // Glassware is recognised by its silhouette long before its name is read, so
-  // the vessel choice is a row of shapes with the names on hover.
   static const icons::Icon kVesselGlyphs[] = {
       icons::Icon::SepFunnel, icons::Icon::Flask, icons::Icon::Beaker};
-  const float width = ImGui::GetContentRegionAvail().x;
-  const int columns = width >= 720.0f ? 4 : (width >= 420.0f ? 2 : 1);
+  const layout::Frame frame = layout::measure();
+  const int columns =
+      std::clamp(layout::columnsThatFit(frame, 13.0f), 1, 4);
   constexpr ImGuiTableFlags flags =
       ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings;
   if (!ImGui::BeginTable("##transport_grid", columns, flags)) return;
 
   ImGui::TableNextColumn();
-  ImGui::TextDisabled("VESSEL");
+  ImGui::TextDisabled("Vessel");
   int vessel = std::clamp(s.funnelVessel, 0, 2);
   if (widgets::segmentedIcons("##vessel", kVesselGlyphs, kVesselNames, 3, vessel)) {
     s.funnelVessel = vessel;
@@ -1503,7 +1440,7 @@ void drawTransportControls(SolubilityState& s) {
   }
 
   ImGui::TableNextColumn();
-  ImGui::TextDisabled("TRANSPORT");
+  ImGui::TextDisabled("Transport");
   const float actionSpacing = ImGui::GetStyle().ItemSpacing.x;
   const float actionWidth =
       std::max((ImGui::GetContentRegionAvail().x - actionSpacing) * 0.5f,
@@ -1527,22 +1464,23 @@ void drawTransportControls(SolubilityState& s) {
     s.fluidTiltAngularVelocityRadS = 0.0f;
     if (recharged) s.statusMessage = "Particle vessel recharged";
   }
-  widgets::badge(s.funnelRunning ? "RUNNING" : "PAUSED",
-                 s.funnelRunning ? style::col::Success : style::col::TextDim);
+  widgets::statusDot(s.funnelRunning ? "Solver running" : "Solver paused",
+                     s.funnelRunning, style::col::Data);
+  if (!s.statusMessage.empty() && ImGui::IsItemHovered())
+    ImGui::SetTooltip("%s", s.statusMessage.c_str());
 
   ImGui::TableNextColumn();
-  ImGui::TextDisabled("SIMULATION SPEED");
-  widgets::glyphSlider("##speed", icons::Icon::Timer, "rate", s.funnelSpeed, 0.1f, 10.0f,
-                       "%.1fx", "Simulated seconds per wall-clock second");
+  ImGui::TextDisabled("Simulation rate");
+  widgets::glyphSlider("##speed", icons::Icon::Timer, "rate", s.funnelSpeed, 0.1f,
+                       10.0f, "%.1fx",
+                       "Simulated seconds per wall-clock second");
 
   ImGui::TableNextColumn();
-  ImGui::TextDisabled("SOLVER QUALITY");
+  ImGui::TextDisabled("Solver quality");
   if (fluid::Simulation* simulation = s.fluid.get()) {
     double measured = std::numeric_limits<double>::quiet_NaN();
-    if (runFluidInteraction(
-            s, [&] { measured = simulation->realTimeFactor(); })) {
+    if (runFluidInteraction(s, [&] { measured = simulation->realTimeFactor(); }))
       rememberFluidRate(s, measured);
-    }
   }
 
   size_t resolution = selectedFluidPreset(s);
@@ -1554,67 +1492,18 @@ void drawTransportControls(SolubilityState& s) {
       if (ImGui::Selectable(choice.c_str(), selected) && !selected) {
         s.fluidResolution = static_cast<FluidResolution>(candidate);
         resolution = candidate;
-        if (rechargeFluid(s)) {
-          char message[176];
-          std::snprintf(
-              message, sizeof(message),
-              "%s preset charged: dx %.0f mm, %.1f%% compression limit, about %llu particles",
-              kFluidPresets[candidate].name,
-              kFluidPresets[candidate].quality.spacing * 1000.0,
-              kFluidPresets[candidate].quality.densityTolerance * 100.0,
-              static_cast<unsigned long long>(
-                  estimatedParticleCount(s, candidate)));
-          s.statusMessage = message;
-        }
+        if (rechargeFluid(s))
+          s.statusMessage =
+              std::string(kFluidPresets[candidate].name) +
+              " solver quality charged";
       }
       if (selected) ImGui::SetItemDefaultFocus();
     }
     ImGui::EndCombo();
   }
-  const std::string trade = fluidPresetTradeText(s, resolution);
-  ImGui::PushStyleColor(ImGuiCol_Text, style::col::TextDim);
-  ImGui::TextWrapped("%s", trade.c_str());
-  ImGui::PopStyleColor();
   ImGui::EndTable();
 }
 
-void drawDerivedReadout(const SolubilityState& s) {
-  const fluid::VesselMotion motion = shakeReportMotion(s);
-  const double peakVelocity = fluid::shakePeakVelocity(motion);
-  const double specificPower = fluid::shakeSpecificPower(motion);
-  char line[144];
-  std::snprintf(line, sizeof(line), "PHYSICS USED   peak velocity %.2f m/s   specific power %.1f W/kg",
-                peakVelocity, specificPower);
-
-  const float width = ImGui::GetContentRegionAvail().x;
-  if (width <= 0.0f) return;
-  const style::Metrics& metrics = style::metrics();
-  const ImVec2 size(width, ImGui::GetTextLineHeight() + metrics.gap * 1.5f);
-  const ImVec2 min = ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##derived_readout", size);
-  const float hover = widgets::hoverT(ImGui::GetItemID(), ImGui::IsItemHovered());
-  const ImVec2 max(min.x + size.x, min.y + size.y);
-  ImDrawList* draw = ImGui::GetWindowDrawList();
-  draw->AddRectFilled(min, max,
-                      style::mix(style::col::BgDeep, style::col::BgRaised, hover, 0.72f),
-                      metrics.radiusSm);
-  draw->AddRect(min, max, style::mix(style::col::Border, style::col::Teal, hover),
-                metrics.radiusSm, 0, metrics.hairline);
-
-  const bool mono = style::pushFont(style::fonts::mono());
-  const std::string fitted =
-      ellipsizeText(line, std::max(width - metrics.gap * 2.0f, 0.0f));
-  draw->AddText(ImVec2(min.x + metrics.gap, min.y + metrics.gap * 0.70f),
-                style::u32(style::col::Teal), fitted.c_str());
-  style::popFont(mono);
-  if (ImGui::IsItemHovered()) {
-    ImGui::BeginTooltip();
-    ImGui::TextUnformatted("u_peak = 2*pi*f*A");
-    ImGui::TextUnformatted("specific power = u_peak^2*f/2");
-    ImGui::TextUnformatted("Computed by fluid::shakePeakVelocity and fluid::shakeSpecificPower.");
-    ImGui::EndTooltip();
-  }
-}
 
 void drawShakeControls(SolubilityState& s) {
   fluid::Simulation* simulation = availableFluid(s);
@@ -1635,13 +1524,14 @@ void drawShakeControls(SolubilityState& s) {
       s.fluidShakeProgressValid = true;
     }
   }
-  const float width = ImGui::GetContentRegionAvail().x;
-  const int columns = width >= 800.0f ? 5 : (width >= 420.0f ? 2 : 1);
+  const layout::Frame frame = layout::measure();
+  const int columns =
+      std::clamp(layout::columnsThatFit(frame, 10.0f), 1, 5);
   constexpr ImGuiTableFlags flags =
       ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
   if (ImGui::BeginTable("##shake_grid", columns, flags)) {
     ImGui::TableNextColumn();
-    ImGui::TextDisabled("ACTION");
+    ImGui::TextDisabled("Action");
     ImGui::BeginDisabled(simulation == nullptr);
     const bool shakeRequested =
         animatedShakeButton(shaking, textButtonSize("Shake"));
@@ -1659,20 +1549,14 @@ void drawShakeControls(SolubilityState& s) {
         s.fluidShakeEndElapsedS =
             elapsedS + static_cast<double>(s.shakeDurationS);
         s.fluidShakeProgressValid = true;
-        const fluid::VesselMotion report = shakeReportMotion(s);
-        char message[176];
-        std::snprintf(
-            message, sizeof(message),
-            "%s shake: %.0f s at %.1f Hz, %.0f cm; u %.2f m/s, power %.1f W/kg",
-            kShakeAxisNames[static_cast<size_t>(s.shakeAxis)], s.shakeDurationS,
-            s.shakeFrequencyHz, s.shakeAmplitudeCm, fluid::shakePeakVelocity(report),
-            fluid::shakeSpecificPower(report));
-        s.statusMessage = message;
+        s.statusMessage =
+            std::string(kShakeAxisNames[static_cast<size_t>(s.shakeAxis)]) +
+            " driven shake started";
       }
     }
 
     ImGui::TableNextColumn();
-    ImGui::TextDisabled("AXIS");
+    ImGui::TextDisabled("Axis");
     int axis = static_cast<int>(s.shakeAxis);
     if (widgets::segmented("##shake_axis", kShakeAxisNames.data(),
                            static_cast<int>(kShakeAxisNames.size()), axis)) {
@@ -1681,41 +1565,31 @@ void drawShakeControls(SolubilityState& s) {
     }
 
     ImGui::TableNextColumn();
-    ImGui::TextDisabled("DURATION");
+    ImGui::TextDisabled("Duration");
     widgets::glyphSlider("##duration", icons::Icon::Timer, "t", s.shakeDurationS, 1.0f,
                          30.0f, "%.0f s", "How long the driven shake runs");
 
     ImGui::TableNextColumn();
-    ImGui::TextDisabled("FREQUENCY");
+    ImGui::TextDisabled("Frequency");
     widgets::glyphSlider("##frequency", icons::Icon::Shake, "f", s.shakeFrequencyHz, 0.5f,
                          6.0f, "%.1f Hz", "Strokes per second; peak speed is 2*pi*f*A");
 
     ImGui::TableNextColumn();
-    ImGui::TextDisabled("AMPLITUDE");
+    ImGui::TextDisabled("Amplitude");
     widgets::glyphSlider("##amplitude", icons::Icon::Ruler, "A", s.shakeAmplitudeCm, 1.0f,
                          15.0f, "%.0f cm", "Half-stroke of the driven oscillation");
     ImGui::EndTable();
   }
-  if (std::isfinite(realTimeFactor)) {
-    if (realTimeFactor < 1.0) {
-      ImGui::TextColored(
-          style::col::Accent,
-          "Physics at %.2fx real time -- the shake will look slow.",
-          realTimeFactor);
-    } else {
-      ImGui::TextDisabled("Physics at %.2fx real time.", realTimeFactor);
-    }
-  } else {
-    ImGui::TextDisabled(
-        "Physics rate will appear after the first completed step.");
-  }
+  if (!std::isfinite(realTimeFactor))
+    ImGui::TextDisabled("Physics rate appears after the first completed step.");
 
-  if (s.fluidShakeProgressValid) {
+  if (widgets::onlyWhen(
+          shaking && s.fluidShakeProgressValid,
+          "Shake progress appears while a driven shake is running")) {
     const double duration =
         std::max(s.fluidShakeEndElapsedS - s.fluidShakeStartElapsedS, 0.0);
-    double remaining =
+    const double remaining =
         std::clamp(s.fluidShakeEndElapsedS - elapsedS, 0.0, duration);
-    if (!shaking) remaining = 0.0;
     const float progress =
         duration > 0.0
             ? static_cast<float>(std::clamp(1.0 - remaining / duration,
@@ -1726,9 +1600,6 @@ void drawShakeControls(SolubilityState& s) {
                   "%.1f simulated s remaining", remaining);
     ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f), progressLabel);
   }
-
-  ImGui::Spacing();
-  drawDerivedReadout(s);
 }
 
 void setTiltTarget(SolubilityState& s, float degrees) {
@@ -1738,157 +1609,180 @@ void setTiltTarget(SolubilityState& s, float degrees) {
 
 void drawTiltControls(SolubilityState& s) {
   ImGui::Separator();
-  ImGui::TextDisabled("TILT / INVERT");
-  const int columns = ImGui::GetContentRegionAvail().x >= 460.0f ? 2 : 1;
+  ImGui::TextDisabled("Tilt and invert");
+  const layout::Frame frame = layout::measure();
+  const int columns = std::min(layout::columnsThatFit(frame, 18.0f), 2);
   constexpr ImGuiTableFlags flags =
       ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
   if (!ImGui::BeginTable("##tilt_grid", columns, flags)) return;
   ImGui::TableNextColumn();
-  if (widgets::glyphSlider("##tilt", icons::Icon::Gauge, "tilt", s.fluidTiltTargetDeg, 0.0f,
-                           180.0f, "%.0f deg",
+  if (widgets::glyphSlider("##tilt", icons::Icon::Gauge, "tilt",
+                           s.fluidTiltTargetDeg, 0.0f, 180.0f, "%.0f deg",
                            "Vessel attitude: 0 upright, 180 fully inverted"))
     s.funnelRunning = true;
 
   ImGui::TableNextColumn();
-  // The chevrons encode the attitude each preset commands, so the row reads as
-  // three positions of one vessel rather than three unrelated words.
   const float spacing = ImGui::GetStyle().ItemSpacing.x;
   const float presetWidth =
       std::max((ImGui::GetContentRegionAvail().x - spacing * 2.0f) / 3.0f,
                ImGui::GetFrameHeight() * 1.8f);
   const ImVec2 presetSize(presetWidth, 0.0f);
-  if (widgets::actionButton("##tilt_upright", icons::Icon::ChevronUp, "Upright", presetSize,
-                            false, "Stand the vessel up (0 deg)"))
+  if (widgets::actionButton("##tilt_upright", icons::Icon::ChevronUp, "Upright",
+                            presetSize, false, "Stand the vessel up (0 deg)"))
     setTiltTarget(s, 0.0f);
   ImGui::SameLine(0.0f, spacing);
-  if (widgets::actionButton("##tilt_vent", icons::Icon::ChevronRight, "Vent", presetSize,
-                            false, "Tip to the venting attitude (135 deg)"))
+  if (widgets::actionButton("##tilt_vent", icons::Icon::ChevronRight, "Vent",
+                            presetSize, false,
+                            "Tip to the venting attitude (135 deg)"))
     setTiltTarget(s, 135.0f);
   ImGui::SameLine(0.0f, spacing);
-  if (widgets::actionButton("##tilt_invert", icons::Icon::ChevronDown, "Invert", presetSize,
-                            false, "Fully invert to drain from the neck (180 deg)"))
+  if (widgets::actionButton("##tilt_invert", icons::Icon::ChevronDown, "Invert",
+                            presetSize, false,
+                            "Fully invert to drain from the neck (180 deg)"))
     setTiltTarget(s, 180.0f);
   ImGui::EndTable();
 }
 
-void drawControls(SolubilityState& s) {
-  if (widgets::beginCard("##transport_card", ImVec2(0.0f, 0.0f),
-                         style::col::BgSurface)) {
-    widgets::sectionHeader("VESSEL & TRANSPORT", style::col::Teal);
+void drawRunTab(SolubilityState& s, float height) {
+  const layout::Frame frame =
+      layout::measure(ImVec2(ImGui::GetContentRegionAvail().x, height));
+  const float weights[] = {0.42f, 0.58f};
+  const float minimums[] = {frame.control * 2.0f, frame.control * 3.0f};
+  float rows[2]{};
+  layout::distribute(height, weights, minimums, 2, frame.gap, rows);
+  const float startY = ImGui::GetCursorPosY();
+
+  if (widgets::beginCard(
+          "##vessel_card", ImVec2(0.0f, rows[0]), style::col::BgSurface,
+          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    widgets::sectionHeader("Vessel", style::col::Data);
     drawTransportControls(s);
-    drawFluidDiagnostics(s);
     widgets::endCard();
   }
-
-  ImGui::Spacing();
-  if (widgets::beginCard("##shake_card", ImVec2(0.0f, 0.0f),
-                         style::col::BgSurface)) {
-    widgets::sectionHeader("SHAKE", style::col::Accent);
+  layout::nextRow(startY + rows[0] + frame.gap);
+  if (widgets::beginCard(
+          "##motion_card", ImVec2(0.0f, rows[1]), style::col::BgSurface,
+          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    widgets::sectionHeader("Shake and tilt", style::col::Data);
     drawShakeControls(s);
-    ImGui::Spacing();
     drawTiltControls(s);
     widgets::endCard();
   }
 }
-
-void drawPhaseTable(SolubilityState& s, bool& changed) {
+void drawPhaseTable(SolubilityState& s, bool& changed, float height) {
   sol::Simulation& sim = s.funnel;
-  constexpr ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                                    ImGuiTableFlags_SizingStretchProp |
-                                    ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_PadOuterX;
-  const float tableWidth = ImGui::GetContentRegionAvail().x;
-  const bool compactHeaders = tableWidth < ImGui::GetFontSize() * 34.0f;
-  if (!ImGui::BeginTable("##phase_table", 8, flags)) return;
-  ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthStretch, 1.80f);
-  ImGui::TableSetupColumn("mL", ImGuiTableColumnFlags_WidthStretch, 0.85f);
-  ImGui::TableSetupColumn(compactHeaders ? "rho" : "g/mL",
-                          ImGuiTableColumnFlags_WidthStretch, 0.90f);
-  ImGui::TableSetupColumn(compactHeaders ? "eta" : "mPa.s",
-                          ImGuiTableColumnFlags_WidthStretch, 0.90f);
-  ImGui::TableSetupColumn(compactHeaders ? "IFT" : "mN/m",
-                          ImGuiTableColumnFlags_WidthStretch, 0.90f);
-  ImGui::TableSetupColumn(compactHeaders ? "Stab" : "Stability",
-                          ImGuiTableColumnFlags_WidthStretch, 1.15f);
-  ImGui::TableSetupColumn(compactHeaders ? "Col" : "Colour",
-                          ImGuiTableColumnFlags_WidthStretch, 0.72f);
-  ImGui::TableSetupColumn("##remove", ImGuiTableColumnFlags_WidthFixed,
-                          ImGui::GetFrameHeight() + ImGui::GetStyle().CellPadding.x * 2.0f);
-  ImGui::TableHeadersRow();
+  constexpr widgets::Column columns[] = {
+      {"Phase", false, true, nullptr, 8.0f},
+      {"Volume", true, false, "mL", 5.0f},
+      {"Density", true, false, "g/mL", 5.0f},
+      {"Viscosity", true, false, "mPa.s", 5.0f},
+      {"Interfacial tension", true, false, "mN/m", 7.0f},
+      {"Stability", true, false, nullptr, 5.0f},
+      {"", false, false, nullptr, 3.0f}};
+  if (!widgets::beginDataTable("##phase_table", columns, 7,
+                               ImVec2(0.0f, height)))
+    return;
+
+  auto cellActivator = [](const char* id) {
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    const ImVec2 restore = ImGui::GetCursorScreenPos();
+    ImGui::SetCursorScreenPos(min);
+    ImGui::InvisibleButton(id, ImVec2(max.x - min.x, max.y - min.y));
+    const bool activated = ImGui::IsItemClicked();
+    if (ImGui::IsItemHovered())
+      ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    ImGui::SetCursorScreenPos(restore);
+    return activated;
+  };
 
   int removeIndex = -1;
   for (size_t i = 0; i < sim.phases.size(); ++i) {
     sol::Phase& phase = sim.phases[i];
     ImGui::PushID(static_cast<int>(i));
-    ImGui::TableNextRow();
+    widgets::dataRow(
+        ImVec4(phase.colour[0], phase.colour[1], phase.colour[2], phase.colour[3]));
 
-    ImGui::TableNextColumn();
-    ImGui::SetNextItemWidth(-1.0f);
-    if (phaseLabelInput("##label", phase.label)) changed = true;
+    widgets::dataCell(phase.label.c_str());
+    if (cellActivator("##edit_phase_name")) ImGui::OpenPopup("##phase_editor");
+    widgets::dataCellf("%.1f", phase.volumeMl);
+    if (cellActivator("##edit_phase_volume")) ImGui::OpenPopup("##phase_editor");
+    widgets::dataCellf("%.3f", phase.density);
+    if (cellActivator("##edit_phase_density")) ImGui::OpenPopup("##phase_editor");
+    widgets::dataCellf("%.2f", phase.viscosity);
+    if (cellActivator("##edit_phase_viscosity")) ImGui::OpenPopup("##phase_editor");
+    widgets::dataCellf("%.1f", phase.interfacialTension);
+    if (cellActivator("##edit_phase_tension")) ImGui::OpenPopup("##phase_editor");
+    widgets::dataCellf("%.2f", phase.emulsionStability);
+    if (cellActivator("##edit_phase_stability")) ImGui::OpenPopup("##phase_editor");
 
-    ImGui::TableNextColumn();
-    ImGui::SetNextItemWidth(-1.0f);
-    {
-      float v = static_cast<float>(phase.volumeMl);
-      if (ImGui::DragFloat("##vol", &v, 1.0f, 0.0f, 5000.0f, "%.1f")) {
-        phase.volumeMl = std::max(v, 0.0f);
-        changed = true;
-      }
-    }
-
-    ImGui::TableNextColumn();
-    ImGui::SetNextItemWidth(-1.0f);
-    {
-      float v = static_cast<float>(phase.density);
-      if (ImGui::DragFloat("##density", &v, 0.005f, 0.10f, 3.50f, "%.3f")) {
-        phase.density = std::max(v, 0.01f);
-        changed = true;
-      }
-    }
-
-    ImGui::TableNextColumn();
-    ImGui::SetNextItemWidth(-1.0f);
-    {
-      float v = static_cast<float>(phase.viscosity);
-      if (ImGui::DragFloat("##visc", &v, 0.01f, 0.05f, 500.0f, "%.2f")) {
-        phase.viscosity = std::max(v, 0.01f);
-        changed = true;
-      }
-    }
-
-    ImGui::TableNextColumn();
-    ImGui::SetNextItemWidth(-1.0f);
-    {
-      float v = static_cast<float>(phase.interfacialTension);
-      if (ImGui::DragFloat("##ift", &v, 0.5f, 0.0f, 100.0f, "%.1f")) {
-        phase.interfacialTension = std::max(v, 0.0f);
-        changed = true;
-      }
-    }
-
-    ImGui::TableNextColumn();
-    ImGui::SetNextItemWidth(-1.0f);
-    {
-      float v = static_cast<float>(phase.emulsionStability);
-      if (ImGui::SliderFloat("##stab", &v, 0.0f, 1.0f, "%.2f")) {
-        phase.emulsionStability = v;
-        changed = true;
-      }
-    }
-
-    ImGui::TableNextColumn();
-    if (ImGui::ColorEdit4("##colour", phase.colour,
-                          ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar)) {
-      changed = true;
-    }
-
-    ImGui::TableNextColumn();
-    const float glyphButtonH = ImGui::GetFrameHeight();
-    if (widgets::ghostButton("x", ImVec2(glyphButtonH, glyphButtonH)))
+    widgets::dataCell("");
+    const ImVec2 cellMin = ImGui::GetItemRectMin();
+    const ImVec2 restore = ImGui::GetCursorScreenPos();
+    const float controlSize = ImGui::GetFontSize();
+    ImGui::SetCursorScreenPos(cellMin);
+    ImGui::InvisibleButton("##phase_swatch", ImVec2(controlSize, controlSize));
+    const ImVec2 swatchMin = ImGui::GetItemRectMin();
+    const ImVec2 swatchMax = ImGui::GetItemRectMax();
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        swatchMin, swatchMax,
+        style::u32(ImVec4(phase.colour[0], phase.colour[1], phase.colour[2],
+                          phase.colour[3])),
+        style::metrics().radiusSm);
+    ImGui::GetWindowDrawList()->AddRect(
+        swatchMin, swatchMax, style::u32(style::col::GridLine),
+        style::metrics().radiusSm, 0, style::metrics().hairline);
+    if (ImGui::IsItemClicked()) ImGui::OpenPopup("##phase_editor");
+    ImGui::SameLine(0.0f, style::metrics().gap * 0.25f);
+    if (widgets::iconButton("##remove_phase", icons::Icon::Trash,
+                            ImVec2(controlSize, controlSize), false,
+                            "Remove phase"))
       removeIndex = static_cast<int>(i);
+    ImGui::SetCursorScreenPos(restore);
 
+    if (ImGui::BeginPopup("##phase_editor")) {
+      ImGui::TextUnformatted("Edit charged phase");
+      ImGui::Separator();
+      ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18.0f);
+      if (phaseLabelInput("Phase", phase.label)) changed = true;
+      float value = static_cast<float>(phase.volumeMl);
+      if (ImGui::DragFloat("Volume (mL)", &value, 1.0f, 0.0f, 5000.0f,
+                           "%.1f")) {
+        phase.volumeMl = std::max(value, 0.0f);
+        changed = true;
+      }
+      value = static_cast<float>(phase.density);
+      if (ImGui::DragFloat("Density (g/mL)", &value, 0.005f, 0.10f, 3.50f,
+                           "%.3f")) {
+        phase.density = std::max(value, 0.01f);
+        changed = true;
+      }
+      value = static_cast<float>(phase.viscosity);
+      if (ImGui::DragFloat("Viscosity (mPa.s)", &value, 0.01f, 0.05f, 500.0f,
+                           "%.2f")) {
+        phase.viscosity = std::max(value, 0.01f);
+        changed = true;
+      }
+      value = static_cast<float>(phase.interfacialTension);
+      if (ImGui::DragFloat("Interfacial tension (mN/m)", &value, 0.5f, 0.0f,
+                           100.0f, "%.1f")) {
+        phase.interfacialTension = std::max(value, 0.0f);
+        changed = true;
+      }
+      value = static_cast<float>(phase.emulsionStability);
+      if (ImGui::SliderFloat("Stability", &value, 0.0f, 1.0f, "%.2f")) {
+        phase.emulsionStability = value;
+        changed = true;
+      }
+      if (ImGui::ColorEdit4(
+              "Colour", phase.colour,
+              ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar))
+        changed = true;
+      ImGui::EndPopup();
+    }
     ImGui::PopID();
   }
-  ImGui::EndTable();
+  widgets::endDataTable();
 
   if (removeIndex >= 0) {
     sim.phases.erase(sim.phases.begin() + removeIndex);
@@ -1896,11 +1790,29 @@ void drawPhaseTable(SolubilityState& s, bool& changed) {
   }
 }
 
-void drawPhaseEditor(SolubilityState& s) {
+void drawPhaseEditor(SolubilityState& s, float height) {
   bool changed = false;
-  drawPhaseTable(s, changed);
+  const layout::Frame frame =
+      layout::measure(ImVec2(ImGui::GetContentRegionAvail().x, height));
+  std::vector<charts::StackSegment> segments;
+  segments.reserve(s.funnel.phases.size());
+  for (const sol::Phase& phase : s.funnel.phases) {
+    segments.push_back(
+        {phase.label.c_str(), phase.volumeMl,
+         ImVec4(phase.colour[0], phase.colour[1], phase.colour[2],
+                phase.colour[3])});
+  }
+  const float barHeight = frame.row * 1.35f;
+  charts::stackedBar("##charge_volume_split", segments.data(),
+                     static_cast<int>(segments.size()),
+                     ImVec2(ImGui::GetContentRegionAvail().x, barHeight));
 
-  if (widgets::ghostButton("+ Add phase", textButtonSize("+ Add phase"))) {
+  const float tableHeight = std::max(
+      height - barHeight - frame.control - frame.gap * 2.0f, frame.row * 2.0f);
+  drawPhaseTable(s, changed, tableHeight);
+
+  if (widgets::actionButton("##add_phase", icons::Icon::Plus, "Add phase",
+                            ImVec2(0.0f, 0.0f), false)) {
     sol::Phase phase;
     phase.label = "Phase " + std::to_string(s.funnel.phases.size() + 1);
     phase.volumeMl = 50.0;
@@ -1908,28 +1820,21 @@ void drawPhaseEditor(SolubilityState& s) {
     phase.viscosity = 1.0;
     phase.interfacialTension = 30.0;
     phase.emulsionStability = 0.3;
-    phase.colour[0] = 0.40f;
-    phase.colour[1] = 0.75f;
-    phase.colour[2] = 0.65f;
-    phase.colour[3] = 0.65f;
+    phase.colour[0] = style::col::Teal.x;
+    phase.colour[1] = style::col::Teal.y;
+    phase.colour[2] = style::col::Teal.z;
+    phase.colour[3] = style::col::Teal.w;
     s.funnel.phases.push_back(phase);
     changed = true;
   }
-  const float noteWidth = ImGui::CalcTextSize("Densest phase settles to the bottom").x;
-  if (ImGui::GetContentRegionAvail().x > noteWidth + style::metrics().gap) {
-    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemSpacing.x);
-  }
-  ImGui::TextWrapped("Densest phase settles to the bottom");
+  ImGui::SameLine(0.0f, frame.gap);
+  ImGui::TextDisabled("Densest phase settles to the bottom");
 
   if (changed) {
     sol::reset(s.funnel);
     const bool recharged = rechargeFluid(s);
     if (recharged) {
-      const double total = sol::totalVolumeMl(s.funnel);
-      char buf[128];
-      std::snprintf(buf, sizeof(buf), "Recharged vessel: %d phase(s), %.0f mL total",
-                    static_cast<int>(s.funnel.phases.size()), total);
-      s.statusMessage = buf;
+      s.statusMessage = "Charged phases updated";
     }
   }
 }
@@ -2090,24 +1995,23 @@ void consumeExtractionImport(SolubilityState& s) {
 // visual.
 void drawSoluteDistribution(const SolubilityState& s) {
   const PartitionContext ctx = partitionContext(s);
-  if (!ctx.valid) {
-    ImGui::TextWrapped("A valid solute and at least two charged phases are required.");
-    return;
-  }
+  if (!ctx.valid) return;
   const sol::Simulation& sim = s.funnel;
   const size_t count = sim.phases.size();
+  const layout::Frame frame = layout::measure();
 
-  ImGui::TextWrapped("%s  |  logP %.2f", s.solute.name.c_str(), s.solute.logP);
-
-  const int controlColumns = ImGui::GetContentRegionAvail().x >= 520.0f ? 2 : 1;
+  const int controlColumns =
+      std::min(layout::columnsThatFit(frame, 18.0f), 2);
   constexpr ImGuiTableFlags controlFlags =
       ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings;
-  if (ImGui::BeginTable("##distribution_controls", controlColumns, controlFlags)) {
+  if (ImGui::BeginTable("##distribution_controls", controlColumns,
+                        controlFlags)) {
     ImGui::TableNextColumn();
     const float aqueousLabelWidth =
-        ImGui::CalcTextSize("Aqueous phase").x + ImGui::GetStyle().ItemInnerSpacing.x;
+        ImGui::CalcTextSize("Aqueous phase").x +
+        ImGui::GetStyle().ItemInnerSpacing.x;
     const float comboWidth =
-        std::max(1.0f, ImGui::GetContentRegionAvail().x - aqueousLabelWidth);
+        std::max(frame.em, ImGui::GetContentRegionAvail().x - aqueousLabelWidth);
     const float previewWidth =
         std::max(comboWidth - ImGui::GetFrameHeight() -
                      ImGui::GetStyle().FramePadding.x * 2.0f,
@@ -2126,190 +2030,141 @@ void drawSoluteDistribution(const SolubilityState& s) {
     }
 
     ImGui::TableNextColumn();
-    const float massLabelWidth =
-        ImGui::CalcTextSize("Solute mass").x + ImGui::GetStyle().ItemInnerSpacing.x;
-    ImGui::SetNextItemWidth(
-        std::max(1.0f, ImGui::GetContentRegionAvail().x - massLabelWidth));
-    ImGui::SliderFloat("Solute mass", &soluteMassMgUi, 1.0f, 1000.0f, "%.0f mg");
+    widgets::glyphSlider("##solute_mass", icons::Icon::Molecule, "solute mass",
+                         soluteMassMgUi, 1.0f, 1000.0f, "%.0f mg");
     ImGui::EndTable();
   }
 
   const sol::Partition p =
-      sol::partition(static_cast<double>(soluteMassMgUi), s.solute.logP, ctx.volAq, ctx.volOrg);
+      sol::partition(static_cast<double>(soluteMassMgUi), s.solute.logP,
+                     ctx.volAq, ctx.volOrg);
+  charts::StackSegment split[] = {
+      {sim.phases[static_cast<size_t>(ctx.aqueousIndex)].label.c_str(),
+       p.mgAqueous, style::col::Teal},
+      {ctx.organicLabel.c_str(), p.mgOrganic, style::col::Data}};
+  charts::stackedBar("##solute_split", split, 2,
+                     ImVec2(ImGui::GetContentRegionAvail().x, frame.row * 1.6f));
 
-  const float avail = ImGui::GetContentRegionAvail().x;
-  if (avail <= 0.0f) return;
-  const float barH = ImGui::GetFontSize() * 1.5f;
-  const ImVec2 min = ImGui::GetCursorScreenPos();
-  ImGui::Dummy(ImVec2(avail, barH));
-  const ImVec2 max(min.x + avail, min.y + barH);
-  const float fracAq = static_cast<float>(p.mgAqueous / std::max(p.mgAqueous + p.mgOrganic, 1e-12));
-  const float splitX = min.x + avail * fracAq;
-  const style::Metrics& m = style::metrics();
-  ImDrawList* dl = ImGui::GetWindowDrawList();
-  dl->AddRectFilled(min, ImVec2(splitX, max.y), style::u32(style::col::Teal, 0.85f), m.radiusSm,
-                    ImDrawFlags_RoundCornersLeft);
-  dl->AddRectFilled(ImVec2(splitX, min.y), max, style::u32(style::col::Accent, 0.85f), m.radiusSm,
-                    ImDrawFlags_RoundCornersRight);
-  dl->AddRect(min, max, style::u32(style::col::BorderStrong), m.radiusSm, 0, m.hairline);
-
-  const ImU32 onBar = style::u32(style::col::OnAccent);
-  char buf[64];
-  std::snprintf(buf, sizeof(buf), "%.3g mg", p.mgAqueous);
-  ImVec2 textSize = ImGui::CalcTextSize(buf);
-  if (fracAq * avail > textSize.x + 8.0f) {
-    dl->AddText(ImVec2(min.x + 6.0f, min.y + (barH - textSize.y) * 0.5f), onBar, buf);
-  }
-  std::snprintf(buf, sizeof(buf), "%.3g mg", p.mgOrganic);
-  textSize = ImGui::CalcTextSize(buf);
-  if ((1.0f - fracAq) * avail > textSize.x + 8.0f) {
-    dl->AddText(ImVec2(max.x - textSize.x - 6.0f, min.y + (barH - textSize.y) * 0.5f), onBar,
-                buf);
-  }
-
-  ImGui::TextWrapped("%.1f%% extracted into %s | Neutral-species logP approximation (no pH "
-                     "correction)",
-                     p.fractionOrganic * 100.0, ctx.organicLabel.c_str());
+  char partitionValue[128];
+  std::snprintf(partitionValue, sizeof(partitionValue),
+                "%.1f%% into %s  |  logP %.2f", p.fractionOrganic * 100.0,
+                ctx.organicLabel.c_str(), s.solute.logP);
+  widgets::keyValue(s.solute.name.c_str(), partitionValue, style::col::DataBright);
+  ImGui::TextDisabled("Neutral-species logP approximation; no pH correction");
 }
 
 // ------------------------------------------------ multi-stage extraction
 // The classic counter-current question: how many washes to strip the solute?
 // Each wash with fresh organic removes the same fraction, so the aqueous
 // remainder after n washes is q^n with q = V_aq / (K V_org + V_aq).
-void drawWashReadiness(const SolubilityState& s, bool fillHeight) {
-  const style::Metrics& m = style::metrics();
-  const float width = ImGui::GetContentRegionAvail().x;
-  if (width <= 0.0f) return;
 
-  char phaseValue[48];
-  char volumeValue[48];
-  std::snprintf(phaseValue, sizeof(phaseValue), "%d charged",
-                static_cast<int>(s.funnel.phases.size()));
-  std::snprintf(volumeValue, sizeof(volumeValue), "%.0f mL total",
-                sol::totalVolumeMl(s.funnel));
-  const std::string soluteValue = s.soluteValid ? s.solute.name : "Not loaded";
-  const char* labels[3] = {"SOLUTE", "PHASES", "CHARGE"};
-  const std::string values[3] = {soluteValue, phaseValue, volumeValue};
-  const float availableHeight =
-      fillHeight ? std::max(ImGui::GetContentRegionAvail().y, ImGui::GetFrameHeight() * 3.0f)
-                 : ImGui::GetFrameHeight() * 3.0f;
-  const float rowHeight = availableHeight / 3.0f;
-  ImDrawList* draw = ImGui::GetWindowDrawList();
-
-  for (int row = 0; row < 3; ++row) {
-    const ImVec2 min = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(width, rowHeight));
-    const ImVec2 max(min.x + width, min.y + rowHeight);
-    if (row > 0)
-      draw->AddLine(min, ImVec2(max.x, min.y), style::u32(style::col::Border, 0.75f),
-                    m.hairline);
-    const ImVec2 labelSize = ImGui::CalcTextSize(labels[row]);
-    const float valueWidth = std::max(width - labelSize.x - m.gap * 2.0f, 0.0f);
-    const std::string value = ellipsizeText(values[row], valueWidth);
-    const ImVec2 valueSize = ImGui::CalcTextSize(value.c_str());
-    const float textY = min.y + (rowHeight - labelSize.y) * 0.5f;
-    draw->AddText(ImVec2(min.x, textY), style::u32(style::col::TextFaint), labels[row]);
-    draw->AddText(ImVec2(max.x - valueSize.x, textY),
-                  style::u32(row == 0 && !s.soluteValid ? style::col::Accent
-                                                       : style::col::Text),
-                  value.c_str());
-  }
-}
-
-void drawMultiStageExtraction(const SolubilityState& s, bool fillHeight) {
+void drawMultiStageExtraction(const SolubilityState& s, float height) {
   const PartitionContext ctx = partitionContext(s);
-  if (!ctx.valid) {
-    ImGui::TextWrapped("Wash planning needs an imported solute and two charged phases.");
-    ImGui::Spacing();
-    drawWashReadiness(s, fillHeight);
-    return;
-  }
-
-  const double q = ctx.volAq / (ctx.K * ctx.volOrg + ctx.volAq);  // stays in aqueous
+  if (!ctx.valid) return;
+  const double q = ctx.volAq / (ctx.K * ctx.volOrg + ctx.volAq);
   const double perWash = 1.0 - q;
+  const layout::Frame frame =
+      layout::measure(ImVec2(ImGui::GetContentRegionAvail().x, height));
 
-  const char* recoveryLabel = "Per-wash recovery E = K*Vorg / (K*Vorg + Vaq)";
-  const float recoveryValueWidth = ImGui::CalcTextSize("100.0%").x;
-  const bool recoveryOnOneLine =
-      ImGui::CalcTextSize(recoveryLabel).x + recoveryValueWidth + style::metrics().gap <=
-      ImGui::GetContentRegionAvail().x;
-  ImGui::TextWrapped("%s", recoveryLabel);
-  if (recoveryOnOneLine) ImGui::SameLine(0.0f, style::metrics().gap);
-  const bool mono = style::pushFont(style::fonts::mono());
-  ImGui::TextColored(style::col::Accent, "%.1f%%", perWash * 100.0);
-  style::popFont(mono);
+  char recoveryValue[32];
+  std::snprintf(recoveryValue, sizeof(recoveryValue), "%.1f%%",
+                perWash * 100.0);
+  widgets::keyValue("Per-wash recovery", recoveryValue,
+                    style::col::DataBright);
 
-  // Cumulative recovery bars for 1..6 washes, eased toward their targets so
-  // the chart animates when volumes or logP change.
   constexpr int kMaxWashes = 6;
-  static double heights[kMaxWashes] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-  const float dt = std::clamp(ImGui::GetIO().DeltaTime, 0.0f, 0.1f);
-  const float blend = 1.0f - std::exp(-dt * 9.0f);
-
-  const float avail = ImGui::GetContentRegionAvail().x;
-  float chartH = ImGui::GetFontSize() * 5.6f;
-  if (fillHeight) {
-    const float resultRoom = ImGui::GetTextLineHeightWithSpacing() * 2.0f + style::metrics().gap;
-    chartH = std::max(chartH, ImGui::GetContentRegionAvail().y - resultRoom);
-  }
-  const ImVec2 chartMin = ImGui::GetCursorScreenPos();
-  ImGui::Dummy(ImVec2(avail, chartH));
-  const ImVec2 chartMax(chartMin.x + avail, chartMin.y + chartH);
-  ImDrawList* dl = ImGui::GetWindowDrawList();
-  const style::Metrics& m = style::metrics();
-  dl->AddRectFilled(chartMin, chartMax, style::u32(style::col::BgDeep, 0.55f), m.radiusSm);
-
-  const float labelH = ImGui::GetFontSize() * 1.1f;
-  const float plotH = chartH - labelH - m.gap * 1.4f;
-  const float barSlot = std::max((avail - m.gap * 2.0f) / kMaxWashes, 1.0f);
-  const float barW = std::max(std::min(barSlot * 0.62f, 54.0f), 1.0f);
-  const float plotBase = chartMin.y + m.gap * 0.7f + plotH;
-
+  charts::BarRow rows[kMaxWashes]{};
+  char labels[kMaxWashes][16]{};
+  char annotations[kMaxWashes][24]{};
   int recommended = 0;
   for (int n = 1; n <= kMaxWashes; ++n) {
     const double recovered = 1.0 - std::pow(q, n);
     if (recommended == 0 && recovered >= 0.99) recommended = n;
-    heights[n - 1] += (recovered - heights[n - 1]) * blend;
-
-    const float x0 = chartMin.x + m.gap + (n - 1) * barSlot + (barSlot - barW) * 0.5f;
-    const float h = static_cast<float>(heights[n - 1]) * plotH;
-    const bool isRecommended = n == recommended;
-    const ImU32 fill = isRecommended
-                           ? style::u32(style::col::Accent, 0.92f)
-                           : style::u32(style::col::Teal, 0.55f + 0.35f * heights[n - 1]);
-    dl->AddRectFilled(ImVec2(x0, plotBase - h), ImVec2(x0 + barW, plotBase), fill,
-                      m.radiusSm, ImDrawFlags_RoundCornersTop);
-    if (isRecommended) {
-      dl->AddRect(ImVec2(x0, plotBase - h), ImVec2(x0 + barW, plotBase),
-                  style::u32(style::col::Accent), m.radiusSm, ImDrawFlags_RoundCornersTop,
-                  m.hairline * 1.5f);
-    }
-
-    char buf[24];
-    std::snprintf(buf, sizeof(buf), "%.0f%%", recovered * 100.0);
-    const ImVec2 pctSize = ImGui::CalcTextSize(buf);
-    const float pctY =
-        std::max(chartMin.y + 2.0f, plotBase - h - pctSize.y - 2.0f);
-    if (pctSize.x + 2.0f <= barSlot) {
-      dl->AddText(ImVec2(x0 + (barW - pctSize.x) * 0.5f, pctY),
-                  style::u32(style::col::TextDim), buf);
-    }
-    std::snprintf(buf, sizeof(buf), "%dx", n);
-    const ImVec2 nSize = ImGui::CalcTextSize(buf);
-    if (nSize.x + 2.0f <= barSlot) {
-      dl->AddText(ImVec2(x0 + (barW - nSize.x) * 0.5f, plotBase + 3.0f),
-                  style::u32(style::col::TextFaint), buf);
-    }
+    std::snprintf(labels[n - 1], sizeof(labels[n - 1]), "%d wash%s", n,
+                  n == 1 ? "" : "es");
+    std::snprintf(annotations[n - 1], sizeof(annotations[n - 1]), "%.1f%%",
+                  recovered * 100.0);
+    rows[n - 1] = {labels[n - 1], recovered, annotations[n - 1],
+                   n == recommended ? style::col::DataBright
+                                    : style::col::Data,
+                   false};
   }
+
+  const float resultHeight = frame.row * 2.0f + frame.gap;
+  const float chartHeight =
+      std::max(height - resultHeight - frame.row, frame.row * 3.0f);
+  charts::rankedBars("##wash_recovery", rows, kMaxWashes,
+                     ImVec2(ImGui::GetContentRegionAvail().x, chartHeight));
 
   if (recommended > 0) {
     ImGui::TextWrapped("%d wash%s with fresh %s recovers >= 99%% of the solute.",
                        recommended, recommended == 1 ? "" : "es",
                        ctx.organicLabel.c_str());
   } else {
-    ImGui::TextWrapped("Even 6 washes leave > 1%% behind (q = %.3f) -- raise the organic "
-                       "volume or pick a better solvent.",
-                       q);
+    ImGui::TextWrapped(
+        "Even 6 washes leave > 1%% behind (q = %.3f); raise the organic "
+        "volume or choose a stronger partitioning solvent.",
+        q);
+  }
+}
+
+void drawChargeTab(SolubilityState& s, float height) {
+  const layout::Frame frame =
+      layout::measure(ImVec2(ImGui::GetContentRegionAvail().x, height));
+  const float weights[] = {0.62f, 0.38f};
+  const float minimums[] = {frame.control * 4.0f, frame.control * 3.0f};
+  float rows[2]{};
+  layout::distribute(height, weights, minimums, 2, frame.gap, rows);
+  const float startY = ImGui::GetCursorPosY();
+
+  if (widgets::beginCard(
+          "##charge_card", ImVec2(0.0f, rows[0]), style::col::BgSurface,
+          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    widgets::sectionHeader("Charge", style::col::Data);
+    drawPhaseEditor(s, layout::pageHeight());
+    widgets::endCard();
+  }
+  layout::nextRow(startY + rows[0] + frame.gap);
+  if (widgets::beginCard(
+          "##partition_card", ImVec2(0.0f, rows[1]), style::col::BgSurface,
+          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    widgets::sectionHeader("Partitioning", style::col::Teal);
+    const PartitionContext ctx = partitionContext(s);
+    if (widgets::onlyWhen(
+            ctx.valid,
+            "Partitioning needs a valid solute and two charged phases"))
+      drawSoluteDistribution(s);
+    widgets::endCard();
+  }
+}
+
+void drawAnalyseTab(SolubilityState& s, float height) {
+  const layout::Frame frame =
+      layout::measure(ImVec2(ImGui::GetContentRegionAvail().x, height));
+  const float weights[] = {0.66f, 0.34f};
+  const float minimums[] = {frame.control * 6.0f, frame.control * 4.0f};
+  float rows[2]{};
+  layout::distribute(height, weights, minimums, 2, frame.gap, rows);
+  const float startY = ImGui::GetCursorPosY();
+
+  if (widgets::beginCard(
+          "##physics_card", ImVec2(0.0f, rows[0]), style::col::BgSurface,
+          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    widgets::sectionHeader("Live physics", style::col::Data);
+    drawFluidDiagnostics(s, layout::pageHeight());
+    widgets::endCard();
+  }
+  layout::nextRow(startY + rows[0] + frame.gap);
+  if (widgets::beginCard(
+          "##wash_card", ImVec2(0.0f, rows[1]), style::col::BgSurface,
+          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    widgets::sectionHeader("Wash planning", style::col::Data);
+    const PartitionContext ctx = partitionContext(s);
+    if (widgets::onlyWhen(
+            ctx.valid,
+            "Wash planning needs a valid solute and two charged phases"))
+      drawMultiStageExtraction(s, layout::pageHeight());
+    widgets::endCard();
   }
 }
 
@@ -2482,10 +2337,18 @@ void drawFluidStage(AppState& st, SolubilityState& s) {
     } else {
       // Construction is merely deferred, so nothing is wrong and the user's
       // render-mode preference must survive: drawPhysicsUnavailableState would
-      // force the 2D schematic on and silently lose it.
+      // force the 2D schematic on and silently lose it. Draw the analytic
+      // vessel meanwhile rather than a grey line of text -- the charge, the
+      // layers and the emulsion are all known without the particle solver, so
+      // there is no reason to show the user an empty box while it builds.
       stage.requested = false;
       stage.snapshot.reset();
-      ImGui::TextDisabled("Preparing the vessel physics...");
+      const ImVec2 canvasSize = ImGui::GetContentRegionAvail();
+      if (canvasSize.x > 0.0f && canvasSize.y > 0.0f) {
+        const ImVec2 rectMin = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(canvasSize);
+        drawAnalyticFallback(s.funnel, rectMin, canvasSize);
+      }
     }
     return;
   }
@@ -2523,14 +2386,64 @@ void drawFluidStage(AppState& st, SolubilityState& s) {
     return;
   }
 
+  // The stage rect is where the vessel LIVES; the overlay rect is where it is
+  // allowed to travel. While the vessel is in hand -- and until it has settled
+  // back afterwards -- the render target grows to the whole application window
+  // and its texture is drawn on the foreground draw list, so the funnel passes
+  // over the neighbouring panels instead of being clipped at its dock edge.
+  const ImVec2 stageMinPx = ImGui::GetCursorScreenPos();
+  const ImGuiViewport* viewport = ImGui::GetMainViewport();
+  const bool overlay = wants3D && (s.fluidGrabActive || !s.fluidHand.atRest());
+  const ImVec2 targetMin = overlay ? viewport->Pos : stageMinPx;
+  const ImVec2 targetSize = overlay ? viewport->Size : canvasSize;
+  s.fluidOverlayActive = overlay;
+
+  // A resized stage must re-fit, not crop: shrinking the window should zoom the
+  // apparatus out until it fits again, which is what the eye expects from a
+  // viewport and what keeps the vessel usable on a small display. Only a real
+  // change counts, so a one-pixel dock jitter does not fight the user's zoom.
+  if (wants3D && !s.fluidGrabActive) {
+    const float widthChange = std::fabs(canvasSize.x - s.fluidStageSizePx[0]);
+    const float heightChange = std::fabs(canvasSize.y - s.fluidStageSizePx[1]);
+    const float threshold = std::max(2.0f, ImGui::GetFontSize() * 0.25f);
+    if (widthChange > threshold || heightChange > threshold) {
+      stage.camera.frame(snapshot->vesselHeightM, snapshot->maxRadiusM,
+                         canvasSize.x / std::max(canvasSize.y, 1.0f));
+      s.fluidStageSizePx = {canvasSize.x, canvasSize.y};
+    }
+  }
+
   if (wants3D) {
     const ImVec2 framebufferScale = ImGui::GetIO().DisplayFramebufferScale;
     stage.requested = true;
     stage.width = std::max(
-        1, static_cast<int>(std::lround(canvasSize.x * framebufferScale.x)));
+        1, static_cast<int>(std::lround(targetSize.x * framebufferScale.x)));
     stage.height = std::max(
-        1, static_cast<int>(std::lround(canvasSize.y * framebufferScale.y)));
+        1, static_cast<int>(std::lround(targetSize.y * framebufferScale.y)));
     stage.snapshot = snapshot;
+
+    // Growing the target must not resize the apparatus, so the vertical field
+    // of view narrows by exactly the height ratio -- that holds pixels-per-metre
+    // constant -- and the principal point shifts so the vessel's rest position
+    // stays over the dock rect rather than jumping to the middle of the screen.
+    if (overlay && canvasSize.y > 1.0f) {
+      constexpr double kPi = 3.14159265358979323846;
+      const double half = 0.5 * static_cast<double>(s.fluidStageFovDeg) * kPi / 180.0;
+      const double scaled =
+          std::tan(half) * static_cast<double>(canvasSize.y / targetSize.y);
+      stage.camera.fovDeg =
+          static_cast<float>(2.0 * std::atan(scaled) * 180.0 / kPi);
+      const ImVec2 stageCentre(stageMinPx.x + canvasSize.x * 0.5f,
+                               stageMinPx.y + canvasSize.y * 0.5f);
+      stage.camera.shiftX =
+          2.0f * (stageCentre.x - targetMin.x) / std::max(targetSize.x, 1.0f) - 1.0f;
+      stage.camera.shiftY =
+          1.0f - 2.0f * (stageCentre.y - targetMin.y) / std::max(targetSize.y, 1.0f);
+    } else {
+      stage.camera.fovDeg = s.fluidStageFovDeg;
+      stage.camera.shiftX = 0.0f;
+      stage.camera.shiftY = 0.0f;
+    }
   } else {
     stage.requested = false;
     stage.snapshot.reset();
@@ -2560,18 +2473,53 @@ void drawFluidStage(AppState& st, SolubilityState& s) {
     advanceVesselShake(s, *simulation, handDelta, dt);
   }
 
+  // Input has just moved the hand, so the vessel's rigid translation is known
+  // now, this frame. The driven shake stays physics-timed and comes from the
+  // snapshot; only the hand is substituted. Both stages use the same value, so
+  // the 3D and schematic views agree on where the glassware is.
+  fluid::Pose livePose = snapshot->pose;
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    livePose.position[axis] = snapshot->shakeOffset[axis] + s.fluidHand.position[axis];
+  }
+  stage.pose = livePose;
+
   if (fluidBoundaryState(s).unavailable) {
     stage.requested = false;
     stage.snapshot.reset();
+    s.fluidPresentedValid = false;
     drawAnalyticFallback(s.funnel, rectMin, canvasSize);
   } else if (wants3D && rendererReady) {
-    // The behaviour item is submitted first and owns all input; Image is then
-    // placed over exactly the same rectangle using the previous FBO frame.
-    ImGui::SetCursorPos(cursor);
-    ImGui::Image(ImTextureRef(static_cast<ImTextureID>(stage.texture)), canvasSize,
-                 ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+    // The texture on hand was rendered for LAST frame's target, so it is drawn
+    // into last frame's rect. Blitting it into this frame's rect would stretch
+    // the image for one frame every time the overlay engages or releases, which
+    // is exactly when the eye is on it.
+    if (s.fluidPresentedValid) {
+      const ImVec2 presentedMin(s.fluidPresentedRectPx[0], s.fluidPresentedRectPx[1]);
+      const ImVec2 presentedMax(s.fluidPresentedRectPx[2], s.fluidPresentedRectPx[3]);
+      const bool presentedOverlay =
+          presentedMin.x < stageMinPx.x - 0.5f || presentedMin.y < stageMinPx.y - 0.5f;
+      if (presentedOverlay) {
+        // Over the whole application: the funnel has left its dock, so it is
+        // drawn on the foreground list, above every other panel, with a scrim
+        // that makes clear the bench is being held rather than operated.
+        ImDrawList* front = ImGui::GetForegroundDrawList();
+        front->AddRectFilled(presentedMin, presentedMax,
+                             style::u32(style::col::BgDeep, 0.55f));
+        front->AddImage(ImTextureRef(static_cast<ImTextureID>(stage.texture)),
+                        presentedMin, presentedMax, ImVec2(0.0f, 1.0f),
+                        ImVec2(1.0f, 0.0f));
+      } else {
+        ImGui::SetCursorPos(cursor);
+        ImGui::Image(ImTextureRef(static_cast<ImTextureID>(stage.texture)), canvasSize,
+                     ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+      }
+    }
+    s.fluidPresentedRectPx = {targetMin.x, targetMin.y, targetMin.x + targetSize.x,
+                              targetMin.y + targetSize.y};
+    s.fluidPresentedValid = true;
   } else {
-    drawCrossSection(*snapshot, s.funnel, rectMin, canvasSize);
+    s.fluidPresentedValid = false;
+    drawCrossSection(*snapshot, s.funnel, livePose.position, rectMin, canvasSize);
   }
 }
 }  // namespace
@@ -2580,96 +2528,82 @@ void drawExtractionLab(AppState& st) {
   SolubilityState& s = st.solubility;
   s.fluidTasks = &st.tasks;
   // ImGui submits every docked panel on the frame the dock layout is built,
-  // before it knows which tab is on top, and reports that panel as focused.
-  // From the next frame Begin() hides unselected tabs correctly, so being drawn
-  // on two consecutive frames is the first trustworthy evidence that the user
-  // is on this workspace. The particle simulation is far too expensive to build
-  // on a guess: it used to be the entire cost of the application's first frame.
-  const int frame = ImGui::GetFrameCount();
-  const bool drawnLastFrame = s.extractionLastDrawnFrame == frame - 1;
-  s.extractionLastDrawnFrame = frame;
-  s.fluidConstructionAllowed = drawnLastFrame && st.tab == MainTab::Extraction;
+  // before it knows which tab is on top. Two consecutive draws are the first
+  // trustworthy evidence that this expensive workspace is actually visible.
+  const int frameCount = ImGui::GetFrameCount();
+  const bool drawnLastFrame =
+      s.extractionLastDrawnFrame == frameCount - 1;
+  s.extractionLastDrawnFrame = frameCount;
+  s.fluidConstructionAllowed =
+      drawnLastFrame && st.tab == MainTab::Extraction;
   consumeExtractionImport(s);
   seedDefaultPhases(s.funnel);
   availableFluid(s);
   st.fluidStage.requested = false;
 
-  if (!s.statusMessage.empty()) {
-    const bool physicsUnavailable = fluidBoundaryState(s).unavailable;
-    ImGui::PushStyleColor(
-        ImGuiCol_Text,
-        physicsUnavailable ? style::col::Danger : style::col::TextDim);
-    ImGui::TextWrapped("%s", s.statusMessage.c_str());
-    ImGui::PopStyleColor();
-    ImGui::Spacing();
-  }
+  const layout::Frame frame = layout::measure();
+  int& selectedTab = s.extractionTab;
+  static const char* tabLabels[] = {"Run", "Charge", "Analyse"};
+  static const icons::Icon tabGlyphs[] = {
+      icons::Icon::SepFunnel, icons::Icon::Droplet, icons::Icon::ChartBars};
 
-  // Wide panels reserve a persistent stage column; narrow panels stack a
-  // minimum-height stage into the parent scroll region rather than clipping it
-  // below the calculator cards.
-  const float totalWidth = ImGui::GetContentRegionAvail().x;
-  const bool twoColumns = totalWidth >= 860.0f;
-  if (twoColumns) {
-    ImGui::BeginChild("##ext_controls", ImVec2(totalWidth * 0.58f, 0.0f),
-                      ImGuiChildFlags_None);
-  }
-
-  drawControls(s);
-  ImGui::Spacing();
-
-  if (widgets::beginCard("##phases_card", ImVec2(0.0f, 0.0f),
-                         style::col::BgSurface)) {
-    widgets::sectionHeader("CHARGED PHASES", style::col::Violet);
-    drawPhaseEditor(s);
-    widgets::endCard();
-  }
-  ImGui::Spacing();
-
-  if (widgets::beginCard("##distribution_card", ImVec2(0.0f, 0.0f),
-                         style::col::BgSurface)) {
-    widgets::sectionHeader("SOLUTE DISTRIBUTION", style::col::Teal);
-    drawSoluteDistribution(s);
-    widgets::endCard();
-  }
-  ImGui::Spacing();
-
-  const float multiStageHeight =
-      twoColumns
-          ? std::max(ImGui::GetContentRegionAvail().y -
-                         ImGui::GetStyle().ItemSpacing.y,
-                     1.0f)
-          : 0.0f;
-  if (widgets::beginCard("##multi_stage_card", ImVec2(0.0f, multiStageHeight),
-                         style::col::BgSurface)) {
-    widgets::sectionHeader("MULTI-STAGE EXTRACTION", style::col::Violet);
-    drawMultiStageExtraction(s, twoColumns);
-    widgets::endCard();
-  }
-  if (!twoColumns) ImGui::Spacing();
-
-  // Exactly one advance is submitted per visible panel frame. Stage input from
-  // the prior frame is already filtered into Simulation::setManualAcceleration.
-  stepSimulation(s);
-
-  if (twoColumns) {
+  auto drawConsole = [&](ImVec2 size) {
+    const bool visible = ImGui::BeginChild(
+        "##extraction_console", size, ImGuiChildFlags_None,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    if (visible) {
+      widgets::subTabs("##extraction_tabs", tabLabels, tabGlyphs, 3,
+                       selectedTab);
+      const float contentHeight = layout::pageHeight();
+      switch (std::clamp(selectedTab, 0, 2)) {
+        case 0:
+          drawRunTab(s, contentHeight);
+          break;
+        case 1:
+          drawChargeTab(s, contentHeight);
+          break;
+        default:
+          drawAnalyseTab(s, contentHeight);
+          break;
+      }
+    }
     ImGui::EndChild();
-    ImGui::SameLine(0.0f, style::metrics().gap);
+  };
+
+  auto drawStage = [&](ImVec2 size) {
+    if (widgets::beginCard(
+            "##fluid_stage_card", size, style::col::BgSurface,
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+      widgets::sectionHeader("Vessel stage", style::col::Data);
+      drawFluidStage(st, s);
+      widgets::endCard();
+    }
+  };
+
+  const bool stageBeside = frame.wide && !frame.tall;
+  if (stageBeside) {
+    const float weights[] = {0.44f, 0.56f};
+    const float minimums[] = {frame.em * 32.0f, frame.em * 30.0f};
+    float columns[2]{};
+    layout::distribute(frame.size.x, weights, minimums, 2, frame.gap,
+                       columns);
+    drawConsole(ImVec2(columns[0], frame.size.y));
+    ImGui::SameLine(0.0f, frame.gap);
+    stepSimulation(s);
+    drawStage(ImVec2(columns[1], frame.size.y));
+  } else {
+    const float weights[] = {0.48f, 0.52f};
+    const float minimums[] = {frame.control * 8.0f, frame.control * 9.0f};
+    float rows[2]{};
+    layout::distribute(frame.size.y, weights, minimums, 2, frame.gap, rows);
+    const float startY = ImGui::GetCursorPosY();
+    layout::nextRow(startY + rows[0] + frame.gap);
+    drawConsole(ImVec2(frame.size.x, rows[1]));
+    stepSimulation(s);
+    ImGui::SetCursorPosY(startY);
+    drawStage(ImVec2(frame.size.x, rows[0]));
   }
 
-  const ImVec2 remaining = ImGui::GetContentRegionAvail();
-  if (remaining.x <= 0.0f) return;
-  const float minimumStageHeight = ImGui::GetFrameHeight() * 18.0f;
-  const float stageHeight =
-      twoColumns ? std::max(remaining.y, ImGui::GetFrameHeight() * 6.0f)
-                 : std::max(remaining.y, minimumStageHeight);
-  if (widgets::beginCard(
-          "##fluid_stage_card", ImVec2(remaining.x, stageHeight),
-          style::col::BgSurface,
-          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
-    widgets::sectionHeader("VESSEL STAGE", style::col::Accent);
-    drawFluidStage(st, s);
-    widgets::endCard();
-  }
 }
 
 // Called once at startup so the first visit to the workspace finds the

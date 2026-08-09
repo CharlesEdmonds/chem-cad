@@ -70,8 +70,14 @@ class FluidRenderer {
   // Renders one frame of `snapshot` seen through `camera` into an internal
   // target of `width` x `height` pixels, reallocating it when the size
   // changes. Returns the colour texture, or 0 when not ready.
-  std::uint32_t render(const fluid::Snapshot&, const Camera3D&, int width, int height,
-                       const FluidRenderSettings&);
+  //
+  // `pose` is where to DRAW the vessel, and is supplied by the caller rather
+  // than read from the snapshot: the snapshot's pose is only as fresh as the
+  // last completed physics step, whereas the panel knows the hand-driven part
+  // of the vessel's motion every frame. Both the glass and the particles are
+  // placed by this one matrix, so they always move as one rigid body.
+  std::uint32_t render(const fluid::Snapshot&, const fluid::Pose& pose, const Camera3D&,
+                       int width, int height, const FluidRenderSettings&);
 
   // Texture of the most recent successful render, 0 when there is none.
   std::uint32_t colourTexture() const;

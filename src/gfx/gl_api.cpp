@@ -78,8 +78,24 @@ namespace chemcad::gfx {
   X(glDrawArraysInstanced)                        \
   X(glDrawElements)
 
+#define CHEMCAD_GL_COMPUTE_PROCS(X)               \
+  X(glGetIntegeri_v)                               \
+  X(glGetInteger64v)                               \
+  X(glBufferSubData)                               \
+  X(glGetBufferSubData)                            \
+  X(glBindBufferBase)                              \
+  X(glMapBufferRange)                              \
+  X(glUnmapBuffer)                                 \
+  X(glClearBufferData)                             \
+  X(glUniform1ui)                                  \
+  X(glUniform3i)                                   \
+  X(glDispatchCompute)                             \
+  X(glMemoryBarrier)                               \
+  X(glShaderStorageBlockBinding)
+
 #define CHEMCAD_DEFINE_PROC(name) decltype(name) name = nullptr;
 CHEMCAD_GL_PROCS(CHEMCAD_DEFINE_PROC)
+CHEMCAD_GL_COMPUTE_PROCS(CHEMCAD_DEFINE_PROC)
 #undef CHEMCAD_DEFINE_PROC
 
 namespace {
@@ -91,6 +107,7 @@ std::string rendererString;
 void clearProcs() {
 #define CHEMCAD_CLEAR_PROC(name) name = nullptr;
   CHEMCAD_GL_PROCS(CHEMCAD_CLEAR_PROC)
+  CHEMCAD_GL_COMPUTE_PROCS(CHEMCAD_CLEAR_PROC)
 #undef CHEMCAD_CLEAR_PROC
   loaded = false;
   versionString.clear();
@@ -100,6 +117,7 @@ void clearProcs() {
 struct ProcTable {
 #define CHEMCAD_TABLE_PROC(name) decltype(::chemcad::gfx::name) name = nullptr;
   CHEMCAD_GL_PROCS(CHEMCAD_TABLE_PROC)
+  CHEMCAD_GL_COMPUTE_PROCS(CHEMCAD_TABLE_PROC)
 #undef CHEMCAD_TABLE_PROC
 };
 
@@ -121,10 +139,18 @@ bool loadGl(GlProcLoader loader) {
   CHEMCAD_GL_PROCS(CHEMCAD_LOAD_PROC)
 #undef CHEMCAD_LOAD_PROC
 
+  // Compute support is optional. Loading a 3.3 rendering context must still
+  // succeed so the caller can retain the CPU fluid path.
+#define CHEMCAD_LOAD_OPTIONAL_PROC(name) \
+  table.name = reinterpret_cast<decltype(table.name)>(loader(#name));
+  CHEMCAD_GL_COMPUTE_PROCS(CHEMCAD_LOAD_OPTIONAL_PROC)
+#undef CHEMCAD_LOAD_OPTIONAL_PROC
+
   if (!complete) return false;
 
 #define CHEMCAD_ASSIGN_PROC(name) name = table.name;
   CHEMCAD_GL_PROCS(CHEMCAD_ASSIGN_PROC)
+  CHEMCAD_GL_COMPUTE_PROCS(CHEMCAD_ASSIGN_PROC)
 #undef CHEMCAD_ASSIGN_PROC
 
   const GLubyte* version = glGetString(GL_VERSION);
@@ -144,5 +170,6 @@ const char* glRendererString() {
 }
 
 #undef CHEMCAD_GL_PROCS
+#undef CHEMCAD_GL_COMPUTE_PROCS
 
 }  // namespace chemcad::gfx

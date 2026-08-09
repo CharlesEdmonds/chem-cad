@@ -35,6 +35,14 @@ struct Snapshot {
   std::vector<PhaseMaterial> phases;
   Diagnostics diagnostics;
   Pose pose;                    // vessel attitude, for the glass and the camera
+  // The driven-shake component of `pose.position`, on its own. The hand-driven
+  // component is known to the UI every frame, but a Snapshot is only published
+  // when the solver completes a step -- at a real-time factor below 1 that is
+  // many frames apart, which made a vessel dragged with the mouse look nailed
+  // to the bench while its contents sloshed. Splitting the two lets the panel
+  // draw the physics-timed shake exactly as computed and substitute its own
+  // live value for the hand.
+  std::array<double, 3> shakeOffset{0.0, 0.0, 0.0};
   double vesselHeightM = 0.19;
   double maxRadiusM = 0.045;
   // Solver lattice spacing (dx). The primary quantity: everything else that

@@ -1,16 +1,26 @@
 #pragma once
-// UI state for the 3D molecule viewer (src/ui/viewer3d_view.cpp). Kept
-// separate from AppState like the other panel states so the panel stays
-// self-contained.
+// UI state for the molecule and atomic-orbital views. Kept separate from
+// AppState so both cameras and their controls survive mode changes.
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "chem/embed3d.hpp"
+#include "ui/charts3d.hpp"
 
 namespace chemcad::ui {
 
 struct Viewer3DState {
+  int mode = 0;
+
+  int orbitalN = 3;
+  int orbitalL = 2;
+  int orbitalM = 0;
+  charts3d::OrbitalStyle orbitalStyle{
+      style::col::DataBright, style::col::DataDim, true, true, false, 0.30f};
+  charts3d::Orbit orbitalOrbit;
+
   float yawDeg = 35.0f;
   float pitchDeg = -18.0f;
   float zoom = 1.0f;      // multiplies the fit-to-view scale

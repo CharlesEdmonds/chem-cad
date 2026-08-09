@@ -33,6 +33,11 @@ struct FluidStage {
   Camera3D camera;
   FluidRenderSettings settings;
   std::shared_ptr<const fluid::Snapshot> snapshot;  // state to draw
+  // Where to draw the vessel this frame. The snapshot's own pose is only as
+  // fresh as the last completed physics step; the panel knows the hand-driven
+  // part of the motion every frame and writes the combined result here, so a
+  // dragged vessel tracks the pointer instead of the solver's publish rate.
+  fluid::Pose pose;
 
   // ---- written by the app render seam --------------------------------
   std::uint32_t texture = 0;   // colour texture of the last completed render

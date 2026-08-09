@@ -1268,10 +1268,11 @@ struct FluidRenderer::Impl {
     glUniform1f(uniforms.radius, radius);
   }
 
-  GLuint drawFrame(const fluid::Snapshot& snapshot, const Camera3D& camera, int width, int height,
+  GLuint drawFrame(const fluid::Snapshot& snapshot, const fluid::Pose& pose,
+                   const Camera3D& camera, int width, int height,
                    const FluidRenderSettings& settings) {
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
-    const Mat4 model = poseMatrix(snapshot.pose);
+    const Mat4 model = poseMatrix(pose);
     const Mat4 view = camera.view();
     const Mat4 projection = camera.projection(aspect);
     const Mat4 inverseProjection = inverse(projection);
@@ -1515,8 +1516,8 @@ const std::string& FluidRenderer::error() const { return impl_->failure; }
 
 void FluidRenderer::shutdown() { impl_->release(); }
 
-std::uint32_t FluidRenderer::render(const fluid::Snapshot& snapshot, const Camera3D& camera,
-                                    int width, int height,
+std::uint32_t FluidRenderer::render(const fluid::Snapshot& snapshot, const fluid::Pose& pose,
+                                    const Camera3D& camera, int width, int height,
                                     const FluidRenderSettings& settings) {
   if (!impl_->valid || width <= 0 || height <= 0) return 0;
   const auto started = std::chrono::steady_clock::now();
@@ -1534,7 +1535,8 @@ std::uint32_t FluidRenderer::render(const fluid::Snapshot& snapshot, const Camer
 
     impl_->uploadInstances(snapshot);
     impl_->rebuildGlass(snapshot);
-    const GLuint texture = impl_->drawFrame(snapshot, camera, width, height, settings);
+    const GLuint texture =
+        impl_->drawFrame(snapshot, pose, camera, width, height, settings);
     const GLenum errorCode = glGetError();
     if (errorCode != GL_NO_ERROR) {
       impl_->setFailure("Fluid rendering failed: " + glErrorMessage(errorCode));

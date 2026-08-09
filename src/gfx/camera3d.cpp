@@ -117,6 +117,10 @@ Mat4 Camera3D::projection(float aspect) const {
   Mat4 result{};
   result[0] = cotangent / safeAspect;
   result[5] = cotangent;
+  // w_clip is -z, so a positive matrix term moves the image the other way;
+  // negating here makes a positive shift move the target right and up.
+  result[8] = -shiftX;
+  result[9] = -shiftY;
   result[10] = (farPlane + nearPlane) / (nearPlane - farPlane);
   result[11] = -1.0f;
   result[14] = (2.0f * farPlane * nearPlane) / (nearPlane - farPlane);

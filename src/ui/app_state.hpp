@@ -144,6 +144,10 @@ struct AppState {
   MainTab tab = MainTab::Sketch;
   bool tabChangeRequested = false;  // set with `tab` to force the tab bar
 
+  // The profiler is a developer surface, not part of the bench, so it is a
+  // floating window the View menu toggles rather than a docked workspace tab.
+  bool showProfiler = false;
+
   // Screen-space rect of the menu-bar stretch that acts as the window's drag
   // handle (between the menus and the caption buttons). Set by drawMenuBar.
   struct DragZone {

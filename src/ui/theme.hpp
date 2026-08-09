@@ -36,6 +36,15 @@ inline constexpr ImVec4 Violet{0.608f, 0.482f, 0.910f, 1.00f};  // AI results
 inline constexpr ImVec4 Danger{0.898f, 0.337f, 0.306f, 1.00f};
 inline constexpr ImVec4 Success{0.341f, 0.729f, 0.420f, 1.00f};
 
+// Amber acts, cyan informs. Anything the user can press or that is selected
+// wears the Bunsen amber above; anything that REPORTS -- traces, gauges, axes,
+// numeric readouts, instrument frames -- wears cyan. Keeping the two families
+// disjoint is what stops a dense instrument panel reading as noise: colour then
+// tells you whether a thing is a control or a measurement before you read it.
+inline constexpr ImVec4 Data{0.302f, 0.816f, 0.945f, 1.00f};       // primary data accent
+inline constexpr ImVec4 DataDim{0.204f, 0.549f, 0.647f, 1.00f};    // secondary series, axes
+inline constexpr ImVec4 DataBright{0.541f, 0.914f, 1.000f, 1.00f}; // hover, peak markers
+inline constexpr ImVec4 GridLine{0.145f, 0.196f, 0.255f, 1.00f};   // chart grid, HUD rules
 }  // namespace col
 
 ImU32 u32(ImVec4 c, float alphaMul = 1.0f);

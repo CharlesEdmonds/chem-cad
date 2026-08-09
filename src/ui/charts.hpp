@@ -12,6 +12,30 @@
 
 namespace chemcad::ui::charts {
 
+// One axis algorithm for the whole application. Every chart -- and every panel
+// that draws its own -- derives ticks from this, so two charts side by side can
+// never disagree about what a decade looks like, and no chart invents a range
+// that clips its own data or collapses to a flat line.
+//
+// `min`/`max` always CONTAIN the requested span. `step` is a 1/2/5 x 10^n
+// value, `decimals` the digits needed to print a tick without repeats.
+// Degenerate input (equal bounds, non-finite, empty data) yields a usable unit
+// range rather than a division by zero.
+struct Axis {
+  double min = 0.0;
+  double max = 1.0;
+  double step = 0.25;
+  int decimals = 2;
+  int ticks = 5;
+  double normalise(double value) const;  // to 0..1 across [min, max]
+};
+Axis niceAxis(double low, double high, int targetTicks = 5);
+// Decade ticks for a log plot. Non-positive bounds are lifted to the smallest
+// positive sample the caller passes as `fallbackLow`.
+Axis niceLogAxis(double low, double high, double fallbackLow = 1.0e-9);
+// Convenience: the axis covering a sample array, ignoring non-finite values.
+Axis axisFor(const double* values, int count, bool includeZero = false);
+
 // Fixed-capacity ring of recent samples for a live instrument trace.
 class Trace {
  public:

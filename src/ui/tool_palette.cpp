@@ -1,6 +1,6 @@
-// Professional structure-tool rail: responsive labelled commands, clear active
-// state, and side-opening galleries for compound controls. The rail is one
-// column by design, so it remains usable in narrow dock layouts and at high DPI.
+// Responsive structure-tool rail with labelled commands when room permits and
+// glyph-only controls when it does not. Compound controls retain side-opening
+// galleries, so the dock never needs to scroll at narrow widths or high DPI.
 
 #include <algorithm>
 #include <array>
@@ -11,6 +11,7 @@
 
 #include "chem/bridge.hpp"
 #include "ui/icons.hpp"
+#include "ui/layout.hpp"
 #include "ui/element_data.hpp"
 #include "ui/theme.hpp"
 #include "ui/ui.hpp"
@@ -213,7 +214,9 @@ void galleryHeader(TileGlyph glyph, const char* title, const char* subtitle) {
   ImGui::Spacing();
 }
 
-void gallerySection(const char* label) { widgets::sectionHeader(label); }
+void gallerySection(const char* label) {
+  widgets::sectionHeader(label, style::col::Data);
+}
 
 template <typename T, size_t N, typename GlyphOf, typename NameOf, typename SelectedOf>
 int drawTileGrid(const char* idPrefix, const std::array<T, N>& entries, int columns,
@@ -280,7 +283,7 @@ int drawTileGrid(const char* idPrefix, const std::array<T, N>& entries, int colu
 void drawRingGallery(AppState& st) {
   const RingEntry& active = ringEntry(st.currentRing);
   galleryHeader({active.icon, nullptr}, "Ring templates", "Choose the structure to stamp");
-  gallerySection("CARBOCYCLES & AROMATICS");
+  gallerySection("Carbocycles and aromatics");
   const int hit = drawTileGrid(
       "##rings", kRings, 3, [](const RingEntry& entry) { return TileGlyph{entry.icon, nullptr}; },
       [](const RingEntry& entry) { return entry.name; },
@@ -312,7 +315,8 @@ void drawBondGallery(AppState& st) {
   for (size_t i = 0; i < kOrders.size(); ++i) {
     if (kOrders[i].order == st.currentOrder) orderIndex = static_cast<int>(i);
   }
-  widgets::cardHeader(icons::Icon::Bond, "Bond order", "Mutually exclusive bond order");
+  widgets::cardHeader(icons::Icon::Bond, "Bond order", "Mutually exclusive bond order",
+                      style::col::Data);
   if (widgets::segmentedIcons("##bond_order", orderGlyphs.data(), orderTips.data(),
                               static_cast<int>(orderGlyphs.size()), orderIndex)) {
     st.currentOrder = kOrders[static_cast<size_t>(orderIndex)].order;
@@ -339,7 +343,7 @@ void drawBondGallery(AppState& st) {
   }
   ImGui::Spacing();
   widgets::cardHeader(icons::Icon::StereoWedge, "Stereochemistry",
-                      "Directional display for the active bond");
+                      "Directional display for the active bond", style::col::Data);
   if (widgets::segmentedIcons("##bond_stereo", stereoGlyphs.data(), stereoTips.data(),
                               static_cast<int>(stereoGlyphs.size()), stereoIndex)) {
     st.currentStereo = kStereos[static_cast<size_t>(stereoIndex)].stereo;
@@ -354,7 +358,7 @@ void drawBondGallery(AppState& st) {
 void drawAtomGallery(AppState& st) {
   galleryHeader({icons::Icon::Atom, chem::symbolFor(st.currentElement)}, "Element quick pick",
                 "Common elements for structure drawing");
-  gallerySection("COMMON ELEMENTS");
+  gallerySection("Common elements");
   const int hit = drawTileGrid(
       "##elements", kQuickElements, 4,
       [](const QuickElement& entry) {
@@ -375,19 +379,42 @@ void drawAtomGallery(AppState& st) {
 // ------------------------------------------------------------- rail structure
 
 template <size_t N>
-void drawToolGrid(AppState& st, const std::array<Tool, N>& tools) {
+void drawToolGrid(AppState& st, const std::array<Tool, N>& tools,
+                  const layout::Frame& frame) {
   const style::Metrics& m = style::metrics();
-  const float spacing = ImGui::GetStyle().ItemSpacing.x;
-  const float available = std::max(ImGui::GetContentRegionAvail().x, ImGui::GetFrameHeight());
-  const float preferred = std::max(ImGui::GetFrameHeight() * 1.85f, ImGui::GetFontSize() * 3.2f);
+  float labelledMinWidth = 0.0f;
+  for (const Tool tool : tools) {
+    const ToolEntry& entry = toolEntry(tool);
+    labelledMinWidth =
+        std::max(labelledMinWidth, widgets::actionButtonWidth(toolGlyph(st, tool).icon,
+                                                              entry.name, st.tool == tool));
+  }
+
+  const float labelledMinEms =
+      frame.em > 0.0f ? labelledMinWidth / frame.em : labelledMinWidth;
+  const int labelledColumns =
+      std::clamp(layout::columnsThatFit(frame, labelledMinEms), 1, static_cast<int>(N));
+  const int labelledRows =
+      (static_cast<int>(N) + labelledColumns - 1) / labelledColumns;
+  const float labelledHeight =
+      static_cast<float>(labelledRows) * frame.control +
+      static_cast<float>(labelledRows - 1) * frame.gap;
+  const bool showLabels = labelledHeight <= frame.size.y;
+
+  const float glyphMinEms = frame.em > 0.0f ? frame.control / frame.em : frame.control;
   const int columns =
-      std::max(1, static_cast<int>((available + spacing) / (preferred + spacing)));
-  const float tile = std::max(
-      ImGui::GetFrameHeight(),
-      (available - spacing * static_cast<float>(columns - 1)) / static_cast<float>(columns));
+      showLabels
+          ? labelledColumns
+          : std::clamp(layout::columnsThatFit(frame, glyphMinEms), 1, static_cast<int>(N));
+  const int rows = (static_cast<int>(N) + columns - 1) / columns;
+  const float availableRows =
+      std::max(frame.size.y - static_cast<float>(rows - 1) * frame.gap, 0.0f);
+  const float rowHeight =
+      std::min(frame.control, availableRows / static_cast<float>(rows));
+  const float tileWidth = layout::columnWidth(frame, columns);
 
   for (size_t i = 0; i < tools.size(); ++i) {
-    if (static_cast<int>(i) % columns != 0) ImGui::SameLine(0.0f, spacing);
+    if (static_cast<int>(i) % columns != 0) ImGui::SameLine(0.0f, frame.gap);
     const ToolEntry& entry = toolEntry(tools[i]);
     ImGui::PushID(static_cast<int>(entry.tool));
 
@@ -400,8 +427,13 @@ void drawToolGrid(AppState& st, const std::array<Tool, N>& tools) {
     }
 
     const TileGlyph glyph = toolGlyph(st, entry.tool);
-    const bool clicked = widgets::iconButton("##tool", glyph.icon, ImVec2(tile, tile),
-                                             st.tool == entry.tool, tooltip);
+    const ImVec2 tileSize(tileWidth, rowHeight);
+    const bool selected = st.tool == entry.tool;
+    const bool clicked =
+        showLabels
+            ? widgets::actionButton("##tool", glyph.icon, entry.name, tileSize, selected,
+                                    tooltip)
+            : widgets::iconButton("##tool", glyph.icon, tileSize, selected, tooltip);
     if (clicked) {
       st.tool = entry.tool;
       st.statusMessage = std::string(entry.name) + " tool";
@@ -438,29 +470,32 @@ void drawToolGrid(AppState& st, const std::array<Tool, N>& tools) {
 }  // namespace
 
 void drawToolPalette(AppState& st) {
+  const layout::Frame frame = layout::measure();
+  const style::Metrics& m = style::metrics();
+  const float headerMinimum = std::max(frame.em, m.iconSize) + m.gap * 0.35f;
+  const float weights[]{0.0f, 1.0f};
+  const float minimums[]{headerMinimum, 0.0f};
+  float heights[2]{};
+  layout::distribute(frame.size.y, weights, minimums, 2, frame.gap, heights);
+
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(frame.gap, frame.gap));
+  ImGui::BeginChild("##active_tool", ImVec2(frame.size.x, heights[0]), false,
+                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
   const std::string activeSummary = "Active tool · " + toolDetail(st, st.tool);
   widgets::cardHeader(toolGlyph(st, st.tool).icon, toolEntry(st.tool).name,
                       activeSummary.c_str(), style::col::Accent);
+  ImGui::EndChild();
 
-  widgets::cardHeader(icons::Icon::Select, "Navigate", "Select, inspect, or remove");
-  drawToolGrid(st, std::array{Tool::Select, Tool::Eraser});
-
-  ImGui::Spacing();
-  widgets::cardHeader(icons::Icon::Bond, "Build", "Bonds, chains, rings, and atoms");
-  drawToolGrid(st, std::array{Tool::Bond, Tool::Chain, Tool::RingTemplate, Tool::Atom});
-
-  ImGui::Spacing();
-  if (widgets::disclosure("##charge_tools", "Formal charge", "2 tools", false,
-                          icons::Icon::ChargePlus, style::col::Teal)) {
-    widgets::cardHeader(icons::Icon::ChargePlus, "Charge tools",
-                        "Increase or decrease formal charge", style::col::Teal);
-    drawToolGrid(st, std::array{Tool::ChargePlus, Tool::ChargeMinus});
-  }
-
-  ImGui::Spacing();
-  widgets::notice(icons::Icon::Info,
-                  "Keyboard shortcuts stay active while the sketch canvas is focused.",
-                  style::col::TextDim);
+  ImGui::BeginChild("##tool_grid", ImVec2(frame.size.x, heights[1]), false,
+                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+  layout::Frame gridFrame = frame;
+  gridFrame.size = ImGui::GetContentRegionAvail();
+  drawToolGrid(st, std::array{Tool::Select, Tool::Eraser, Tool::Bond, Tool::Chain,
+                              Tool::RingTemplate, Tool::Atom, Tool::ChargePlus,
+                              Tool::ChargeMinus},
+               gridFrame);
+  ImGui::EndChild();
+  ImGui::PopStyleVar();
 }
 
 }  // namespace chemcad::ui

@@ -167,7 +167,7 @@ std::string projectFilename(const AppState& st) {
   return ec ? std::string{} : name.string();
 }
 
-bool iconMenuItem(icons::Icon icon, const char* label, const char* shortcut = nullptr,
+bool iconMenuItem(icons::Icon icon, const char* label, const char* shortcut,
                   bool selected = false, bool enabled = true, bool danger = false) {
   const style::Metrics& m = style::metrics();
   std::string padded = "   ";
@@ -192,11 +192,12 @@ bool iconMenuItem(icons::Icon icon, const char* label, const char* shortcut = nu
   return activated;
 }
 
-bool iconToggleMenuItem(icons::Icon icon, const char* label, bool* selected) {
+bool iconToggleMenuItem(icons::Icon icon, const char* label, const char* shortcut,
+                        bool* selected) {
   const style::Metrics& m = style::metrics();
   std::string padded = "   ";
   padded += label;
-  const bool activated = ImGui::MenuItem(padded.c_str(), nullptr, selected);
+  const bool activated = ImGui::MenuItem(padded.c_str(), shortcut, selected);
   const ImVec2 min = ImGui::GetItemRectMin();
   const ImVec2 max = ImGui::GetItemRectMax();
   const float iconSize = ImGui::GetFontSize() * 0.72f;
@@ -211,10 +212,10 @@ void openDialog(FileDialog& dialog, DialogAction& action, DialogAction requested
   action = requested;
   switch (requested) {
     case DialogAction::OpenProject:
-      dialog.open("Open Project", FileDialogMode::Open, {".chemcad"});
+      dialog.open("Open project", FileDialogMode::Open, {".chemcad"});
       break;
     case DialogAction::SaveProject:
-      dialog.open("Save Project", FileDialogMode::Save, {".chemcad"}, ".chemcad",
+      dialog.open("Save project", FileDialogMode::Save, {".chemcad"}, ".chemcad",
                   projectFilename(st));
       break;
     case DialogAction::ImportMol:
@@ -276,14 +277,14 @@ void drawMenuBar(AppState& st) {
       const ImVec2 min = ImGui::GetItemRectMin();
       ImDrawList* dl = ImGui::GetWindowDrawList();
       icons::draw(dl, icons::Icon::Logo, ImVec2(min.x + h * 0.5f, min.y + h * 0.52f),
-                  h * 0.68f, style::u32(style::col::Accent), m.hairline * 1.6f);
+                  h * 0.68f, style::u32(style::col::Text), m.hairline * 1.6f);
       const bool pushed = style::pushFont(style::fonts::semibold());
       dl->AddText(ImVec2(min.x + h + m.gap * 0.75f, min.y + (h - textSize.y) * 0.5f),
                   style::u32(style::col::Text), "ChemCAD");
       style::popFont(pushed);
     }
     if (ImGui::BeginMenu("File")) {
-      if (iconMenuItem(icons::Icon::Plus, "New", "Ctrl+N", false, true, true))
+      if (iconMenuItem(icons::Icon::Plus, "New", "Ctrl+N"))
         newDocument(st);
       if (iconMenuItem(icons::Icon::Folder, "Open...", "Ctrl+O")) {
         openDialog(dialog, dialogAction, DialogAction::OpenProject, st);
@@ -295,22 +296,22 @@ void drawMenuBar(AppState& st) {
           openDialog(dialog, dialogAction, DialogAction::SaveProject, st);
         }
       }
-      if (iconMenuItem(icons::Icon::Save, "Save As...", "Ctrl+Shift+S")) {
+      if (iconMenuItem(icons::Icon::Save, "Save as...", "Ctrl+Shift+S")) {
         openDialog(dialog, dialogAction, DialogAction::SaveProject, st);
       }
       ImGui::Separator();
-      if (iconMenuItem(icons::Icon::Folder, "Import MOL...")) {
+      if (iconMenuItem(icons::Icon::ArrowLeft, "Import MOL...", "Ctrl+I")) {
         openDialog(dialog, dialogAction, DialogAction::ImportMol, st);
       }
-      if (iconMenuItem(icons::Icon::ArrowRight, "Export MOL...", nullptr, false,
+      if (iconMenuItem(icons::Icon::ArrowRight, "Export MOL...", "Ctrl+Shift+M", false,
                        !st.doc.empty())) {
         openDialog(dialog, dialogAction, DialogAction::ExportMol, st);
       }
-      if (iconMenuItem(icons::Icon::ArrowRight, "Export SVG...", nullptr, false,
+      if (iconMenuItem(icons::Icon::ArrowRight, "Export SVG...", "Ctrl+Shift+G", false,
                        !st.doc.empty())) {
         openDialog(dialog, dialogAction, DialogAction::ExportSvg, st);
       }
-      if (iconMenuItem(icons::Icon::ArrowRight, "Export PNG...", nullptr, false,
+      if (iconMenuItem(icons::Icon::ArrowRight, "Export PNG...", "Ctrl+Shift+P", false,
                        !st.doc.empty())) {
         openDialog(dialog, dialogAction, DialogAction::ExportPng, st);
       }
@@ -335,19 +336,20 @@ void drawMenuBar(AppState& st) {
         copySmiles(st);
       if (iconMenuItem(icons::Icon::Link, "Paste SMILES", "Ctrl+V")) pasteSmiles(st);
       ImGui::Separator();
-      if (iconMenuItem(icons::Icon::Trash, "Delete Selection", "Del", false,
+      if (iconMenuItem(icons::Icon::Trash, "Delete selection", "Del", false,
                        !st.sel.empty(), true))
         deleteSelected(st);
       ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("Structure")) {
-      if (iconMenuItem(icons::Icon::Sparkle, "Clean Up Structure", nullptr, false,
+      if (iconMenuItem(icons::Icon::Sparkle, "Clean up structure", "Ctrl+L", false,
                        !st.doc.empty()))
         cleanUp(st);
-      iconToggleMenuItem(icons::Icon::Book, "Auto-name", &st.props.autoName);
+      iconToggleMenuItem(icons::Icon::Book, "Auto-name", "Ctrl+Shift+A",
+                         &st.props.autoName);
       ImGui::Separator();
-      if (iconMenuItem(icons::Icon::Trash, "Clear Structure", nullptr, false,
+      if (iconMenuItem(icons::Icon::Trash, "Clear structure", "Ctrl+Shift+Del", false,
                        !st.doc.empty(), true))
         clearStructure(st);
       ImGui::EndMenu();
@@ -358,11 +360,14 @@ void drawMenuBar(AppState& st) {
         st.cam.fit(st.doc, st.canvasSize);
       if (iconMenuItem(icons::Icon::Crosshair, "Reset zoom", "Ctrl+0"))
         st.cam.zoom = 1.0f;
+      ImGui::Separator();
+      if (iconMenuItem(icons::Icon::Gauge, "Performance", "F2", st.showProfiler))
+        st.showProfiler = !st.showProfiler;
       ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("Help")) {
-      if (iconMenuItem(icons::Icon::Info, "About ChemCAD"))
+      if (iconMenuItem(icons::Icon::Info, "About ChemCAD", "F1"))
         ImGui::OpenPopup("About ChemCAD");
       ImGui::EndMenu();
     }
@@ -440,7 +445,7 @@ void drawMenuBar(AppState& st) {
       const ImVec2 min = ImGui::GetItemRectMin();
       icons::draw(ImGui::GetWindowDrawList(), icons::Icon::Logo,
                   ImVec2(min.x + logo * 0.5f, min.y + logo * 0.5f), logo * 0.9f,
-                  style::u32(style::col::Accent), style::metrics().hairline * 2.0f);
+                  style::u32(style::col::Text), style::metrics().hairline * 2.0f);
     }
     const bool pushed = style::pushFont(style::fonts::semibold());
     ImGui::TextUnformatted("ChemCAD");
@@ -459,12 +464,30 @@ void drawMenuBar(AppState& st) {
       newDocument(st);
     } else if (ImGui::IsKeyPressed(ImGuiKey_O, false)) {
       openDialog(dialog, dialogAction, DialogAction::OpenProject, st);
+    } else if (ImGui::IsKeyPressed(ImGuiKey_I, false)) {
+      openDialog(dialog, dialogAction, DialogAction::ImportMol, st);
     } else if (ImGui::IsKeyPressed(ImGuiKey_S, false)) {
       if (io.KeyShift || st.projectPath.empty() || !st.saveProject) {
         openDialog(dialog, dialogAction, DialogAction::SaveProject, st);
       } else {
         st.saveProject(st.projectPath);
       }
+    } else if (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_M, false) &&
+               !st.doc.empty()) {
+      openDialog(dialog, dialogAction, DialogAction::ExportMol, st);
+    } else if (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_G, false) &&
+               !st.doc.empty()) {
+      openDialog(dialog, dialogAction, DialogAction::ExportSvg, st);
+    } else if (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_P, false) &&
+               !st.doc.empty()) {
+      openDialog(dialog, dialogAction, DialogAction::ExportPng, st);
+    } else if (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
+      st.props.autoName = !st.props.autoName;
+    } else if (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Delete, false) &&
+               !st.doc.empty()) {
+      clearStructure(st);
+    } else if (ImGui::IsKeyPressed(ImGuiKey_L, false) && !st.doc.empty()) {
+      cleanUp(st);
     } else if (ImGui::IsKeyPressed(ImGuiKey_Q, false)) {
       if (GLFWwindow* window = glfwGetCurrentContext()) {
         glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -474,6 +497,8 @@ void drawMenuBar(AppState& st) {
     } else if (ImGui::IsKeyPressed(ImGuiKey_F, false)) {
       st.cam.fit(st.doc, st.canvasSize);
     }
+  } else if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+    ImGui::OpenPopup("About ChemCAD");
   }
 }
 
