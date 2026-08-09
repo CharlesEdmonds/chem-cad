@@ -534,6 +534,41 @@ void appendSurface(std::vector<ImVec2>& points, const sol::Simulation& sim,
   }
 }
 
+// Volume-weighted colour of everything currently dispersed: the milky mixture
+// an emulsion actually looks like, rather than whichever phase happened to be
+// the top carrier.
+ImVec4 emulsionColour(const sol::Simulation& sim, float alpha) {
+  double weight = 0.0;
+  double r = 0.0, g = 0.0, b = 0.0;
+  for (const sol::Droplet& droplet : sim.droplets) {
+    if (droplet.phase < 0 || static_cast<size_t>(droplet.phase) >= sim.phases.size()) continue;
+    const double volume = std::max(static_cast<double>(droplet.parcelMl), 0.0);
+    const sol::Phase& phase = sim.phases[static_cast<size_t>(droplet.phase)];
+    weight += volume;
+    r += volume * phase.colour[0];
+    g += volume * phase.colour[1];
+    b += volume * phase.colour[2];
+  }
+  if (weight <= 1e-12) {
+    for (const sol::Phase& phase : sim.phases) {
+      weight += 1.0;
+      r += phase.colour[0];
+      g += phase.colour[1];
+      b += phase.colour[2];
+    }
+  }
+  if (weight <= 0.0) return ImVec4(0.6f, 0.6f, 0.6f, alpha);
+  return ImVec4(static_cast<float>(r / weight), static_cast<float>(g / weight),
+                static_cast<float>(b / weight), alpha);
+}
+
+ImU32 shadeColour(const ImVec4& colour, float xFrac) {
+  const float s = glassShade(xFrac);
+  return ImGui::ColorConvertFloat4ToU32(ImVec4(std::min(colour.x * s, 1.0f),
+                                               std::min(colour.y * s, 1.0f),
+                                               std::min(colour.z * s, 1.0f), colour.w));
+}
+
 void drawLayers(ImDrawList* draw, const sol::Simulation& sim, const VesselGeometry& geo,
                 const Transform& tf, bool shaded) {
   static thread_local std::vector<ImVec2> polygon;
@@ -543,31 +578,20 @@ void drawLayers(ImDrawList* draw, const sol::Simulation& sim, const VesselGeomet
   boundaries.assign(n + 1, 0.0);
 
   double cursorMl = 0.0;
-  size_t topCarrier = n;
   for (size_t i = 0; i < n; ++i) {
-    const double settled = std::max(sim.settledMl[i], 0.0);
-    cursorMl += settled;
+    cursorMl += std::max(sim.settledMl[i], 0.0);
     boundaries[i + 1] =
         heightFractionForVolume(geo, cursorMl) * static_cast<double>(geo.heightMetres);
-    if (settled > 1e-9) topCarrier = i;
-  }
-  // Dispersion changes composition, not the free-surface volume. Let the
-  // upper continuous band occupy the parcel volume; haze/clouds tint that
-  // volume as emulsion while the top remains at the charged-volume height.
-  if (n > 0) {
-    if (topCarrier == n) topCarrier = n - 1;
-    const double liquidTop =
-        heightFractionForVolume(geo, sol::totalVolumeMl(sim)) * geo.heightMetres;
-    boundaries[topCarrier + 1] = std::max(boundaries[topCarrier + 1], liquidTop);
-    for (size_t i = topCarrier + 2; i < boundaries.size(); ++i)
-      boundaries[i] = boundaries[topCarrier + 1];
   }
 
   constexpr int kSurfaceSamples = 48;
   constexpr int kShadeSlices = 36;
+
+  // Every band a settled bulk phase actually occupies.
   for (size_t i = 0; i < n; ++i) {
     if (boundaries[i + 1] <= boundaries[i] + 1e-9) continue;
     const sol::Phase& phase = sim.phases[i];
+    const ImVec4 colour(phase.colour[0], phase.colour[1], phase.colour[2], phase.colour[3]);
     const double loClear = boundaryClearance(boundaries, i, geo.heightMetres);
     const double hiClear = boundaryClearance(boundaries, i + 1, geo.heightMetres);
 
@@ -575,10 +599,8 @@ void drawLayers(ImDrawList* draw, const sol::Simulation& sim, const VesselGeomet
       polygon.clear();
       appendSurface(polygon, sim, geo, tf, boundaries[i + 1], hiClear, kSurfaceSamples, false);
       appendSurface(polygon, sim, geo, tf, boundaries[i], loClear, kSurfaceSamples, true);
-      draw->AddConcavePolyFilled(
-          polygon.data(), static_cast<int>(polygon.size()),
-          ImGui::ColorConvertFloat4ToU32(
-              ImVec4(phase.colour[0], phase.colour[1], phase.colour[2], phase.colour[3])));
+      draw->AddConcavePolyFilled(polygon.data(), static_cast<int>(polygon.size()),
+                                 ImGui::ColorConvertFloat4ToU32(colour));
     } else {
       for (int slice = 0; slice < kShadeSlices; ++slice) {
         const double f0 = -1.0 + 2.0 * static_cast<double>(slice) / kShadeSlices;
@@ -589,7 +611,7 @@ void drawLayers(ImDrawList* draw, const sol::Simulation& sim, const VesselGeomet
             surfacePoint(sim, geo, tf, boundaries[i + 1], hiClear, f1),
             surfacePoint(sim, geo, tf, boundaries[i + 1], hiClear, f0),
         };
-        draw->AddConvexPolyFilled(quad, 4, phaseShade(phase, static_cast<float>((f0 + f1) * 0.5)));
+        draw->AddConvexPolyFilled(quad, 4, shadeColour(colour, static_cast<float>((f0 + f1) * 0.5)));
       }
     }
 
@@ -598,6 +620,46 @@ void drawLayers(ImDrawList* draw, const sol::Simulation& sim, const VesselGeomet
     draw->AddPolyline(surface.data(), static_cast<int>(surface.size()),
                       style::u32(style::col::Text, shaded ? 0.36f : 0.62f),
                       ImDrawFlags_None, shaded ? 1.1f : 1.5f);
+  }
+
+  // The emulsion zone: everything between the settled stack and the free
+  // surface. Dispersion moves volume out of the bands, not out of the vessel,
+  // so this zone is exactly the dispersed volume -- and it is drawn as the
+  // volume-weighted mixture, translucent, so the parcels and the composition
+  // haze read through it. Painting it in the top phase's own colour (the old
+  // behaviour) made a fully shaken funnel look like a flat wash of one phase.
+  const double settledTop = boundaries[n];
+  const double liquidTop =
+      heightFractionForVolume(geo, sol::totalVolumeMl(sim)) * geo.heightMetres;
+  if (liquidTop > settledTop + 1e-9) {
+    const ImVec4 mixed = emulsionColour(sim, 0.40f);
+    const double loClear = boundaryClearance(boundaries, n, geo.heightMetres);
+    const double topClear = std::max(0.0, std::min((liquidTop - settledTop) * 0.24,
+                                                   (geo.heightMetres - liquidTop) * 0.80));
+    if (!shaded) {
+      polygon.clear();
+      appendSurface(polygon, sim, geo, tf, liquidTop, topClear, kSurfaceSamples, false);
+      appendSurface(polygon, sim, geo, tf, settledTop, loClear, kSurfaceSamples, true);
+      draw->AddConcavePolyFilled(polygon.data(), static_cast<int>(polygon.size()),
+                                 ImGui::ColorConvertFloat4ToU32(mixed));
+    } else {
+      for (int slice = 0; slice < kShadeSlices; ++slice) {
+        const double f0 = -1.0 + 2.0 * static_cast<double>(slice) / kShadeSlices;
+        const double f1 = -1.0 + 2.0 * static_cast<double>(slice + 1) / kShadeSlices;
+        ImVec2 quad[4] = {
+            surfacePoint(sim, geo, tf, settledTop, loClear, f0),
+            surfacePoint(sim, geo, tf, settledTop, loClear, f1),
+            surfacePoint(sim, geo, tf, liquidTop, topClear, f1),
+            surfacePoint(sim, geo, tf, liquidTop, topClear, f0),
+        };
+        draw->AddConvexPolyFilled(quad, 4, shadeColour(mixed, static_cast<float>((f0 + f1) * 0.5)));
+      }
+    }
+    surface.clear();
+    appendSurface(surface, sim, geo, tf, liquidTop, topClear, kSurfaceSamples, false);
+    draw->AddPolyline(surface.data(), static_cast<int>(surface.size()),
+                      style::u32(style::col::Text, shaded ? 0.40f : 0.66f), ImDrawFlags_None,
+                      shaded ? 1.1f : 1.5f);
   }
 }
 
@@ -654,10 +716,18 @@ void drawEmulsionHaze(ImDrawList* draw, const sol::Simulation& sim,
   }
 }
 
+// Each parcel is drawn as ONE droplet-sized dot rather than a stack of
+// translucent shells. 900 shells at 0.1-0.3 alpha composite into a flat wash
+// -- the emulsion loses all texture and looks like tinted glass. A dot at
+// roughly 40% of the parcel's sphere-equivalent radius covers about half the
+// column area, so the dispersion reads as a turbid, grainy fluid with visible
+// churn, and the composition haze underneath fills the gaps.
 void drawParcelClouds(ImDrawList* draw, const sol::Simulation& sim,
                       const VesselGeometry& geo, const Transform& tf, bool shaded) {
   const int phaseCount = static_cast<int>(sim.phases.size());
+  uint32_t index = 0;
   for (const sol::Droplet& droplet : sim.droplets) {
+    ++index;
     if (droplet.phase < 0 || droplet.phase >= phaseCount || droplet.parcelMl <= 0.0f) continue;
     const double x = droplet.position.x;
     const double y = droplet.position.y;
@@ -668,37 +738,34 @@ void drawParcelClouds(ImDrawList* draw, const sol::Simulation& sim,
 
     double radiusM = std::cbrt(3.0 * static_cast<double>(droplet.parcelMl) * 1e-6 /
                                (4.0 * kPi));
+    // Size jitter from a cheap integer hash of the parcel index: a real
+    // dispersion is polydisperse, and a field of identical circles looks like
+    // a pattern, not a fluid.
+    const uint32_t hash = index * 2654435761u;
+    const float jitter = 0.78f + 0.52f * static_cast<float>(hash >> 24) / 255.0f;
+    radiusM *= 0.42 * jitter;
     radiusM = std::min(radiusM, 0.90 * std::min(y, static_cast<double>(geo.heightMetres) - y));
-    for (int pass = 0; pass < 3 && radiusM > 0.0; ++pass) {
-      const double lowerWidth = halfWidthAtHeight(sim, geo, y - radiusM);
-      const double upperWidth = halfWidthAtHeight(sim, geo, y + radiusM);
-      const double sideRoom = std::min(lowerWidth, upperWidth) - std::fabs(x);
-      radiusM = std::min(radiusM, std::max(0.0, sideRoom * 0.88));
-    }
+    const double sideRoom = halfWidthAtHeight(sim, geo, y) - std::fabs(x);
+    radiusM = std::min(radiusM, std::max(0.0, sideRoom * 0.9));
     const float radiusPx = static_cast<float>(radiusM) * tf.scale;
-    if (radiusPx < 0.6f) continue;
+    if (radiusPx < 0.5f) continue;
 
     const ImVec2 center = toScreen(tf, x, y);
     const sol::Phase& phase = sim.phases[static_cast<size_t>(droplet.phase)];
-    const auto cloudColour = [&phase](float alphaScale) {
+    const auto dropColour = [&phase](float alpha) {
       return ImGui::ColorConvertFloat4ToU32(
-          ImVec4(phase.colour[0], phase.colour[1], phase.colour[2],
-                 std::clamp(phase.colour[3] * alphaScale, 0.0f, 1.0f)));
+          ImVec4(phase.colour[0], phase.colour[1], phase.colour[2], std::clamp(alpha, 0.0f, 1.0f)));
     };
-    draw->AddCircleFilled(center, radiusPx, cloudColour(0.10f), 0);
-    draw->AddCircleFilled(center, radiusPx * 0.72f, cloudColour(0.18f), 0);
-    draw->AddCircleFilled(center, radiusPx * 0.43f, cloudColour(0.30f), 0);
-
-    // Physical droplet radius controls only the fine texture within a parcel
-    // cloud; the parcel's bulk volume controls the visible cloud envelope.
-    const float textureRadius =
-        std::clamp(droplet.radius * tf.scale, 0.55f, std::max(radiusPx * 0.14f, 0.55f));
-    draw->AddCircleFilled(ImVec2(center.x + radiusPx * 0.16f, center.y + radiusPx * 0.08f),
-                          textureRadius, cloudColour(0.34f), 24);
-    if (shaded && radiusPx >= 6.0f) {
-      const ImVec2 fleck(center.x - radiusPx * 0.31f, center.y - radiusPx * 0.29f);
-      draw->AddCircleFilled(fleck, std::max(textureRadius * 0.55f, 0.6f),
-                            IM_COL32(255, 255, 255, 76), 24);
+    const int segments = radiusPx < 3.0f ? 8 : 0;  // 0 = ImGui picks by radius
+    draw->AddCircleFilled(center, radiusPx, dropColour(0.55f), segments);
+    if (radiusPx >= 2.5f) {
+      // Bright meniscus edge and a small specular: what a droplet under
+      // side-light actually shows, and what separates one droplet from the
+      // next when they crowd.
+      draw->AddCircle(center, radiusPx, dropColour(0.85f), segments, radiusPx * 0.22f);
+      draw->AddCircleFilled(ImVec2(center.x - radiusPx * 0.3f, center.y - radiusPx * 0.3f),
+                            std::max(radiusPx * 0.24f, 0.6f),
+                            IM_COL32(255, 255, 255, shaded ? 96 : 64), 6);
     }
   }
 }
