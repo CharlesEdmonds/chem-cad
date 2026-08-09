@@ -14,6 +14,28 @@ namespace {
 
 constexpr double kTiny = 1e-12;
 constexpr double kReferenceSolubility = 0.01;  // g/mL; 10 mg/mL is the UI's practical-solubility reference.
+constexpr double kWorkableRecovery = 0.05;
+constexpr double kUsefulChromatographySpacing = 0.10;
+
+bool isSeparationOperation(OperationKind kind) {
+  return kind != OperationKind::ReactionMedium;
+}
+
+double separationGate(double selectivity) {
+  // A ratio is naturally judged by orders of magnitude, not by linear distance.
+  // This logistic in log10(ratio) is 0.13 at the failure boundary (1x), 0.98
+  // at 10x, and approaches a 0.02 floor for strongly reversed separations.
+  if (std::isinf(selectivity) && selectivity > 0.0) return 1.0;
+  const double logRatio =
+      std::log10(std::max(std::isfinite(selectivity) ? selectivity : 0.0, kTiny));
+  return std::clamp(0.02 + 0.98 / (1.0 + std::exp(-6.0 * (logRatio - 0.35))),
+                    0.0, 1.0);
+}
+
+int separationTier(const SolventCandidate& candidate) {
+  if (!(candidate.selectivity >= 1.0)) return 0;
+  return candidate.recoveryFraction >= kWorkableRecovery ? 2 : 1;
+}
 
 struct Roles {
   std::vector<const SpeciesRole*> targets;
@@ -284,11 +306,16 @@ CommonScores pairCommonScores(const Solvent& primary, const Solvent& partner,
 void finishCandidate(SolventCandidate& candidate, const OperationSpec& spec,
                      double selectivityScore, std::string selectivityDetail,
                      double recoveryScore, std::string recoveryDetail,
-                     const CommonScores& common) {
+                     const CommonScores& common, bool applySeparationGate) {
   const double selectivityWeight = positiveWeight(spec.weightSelectivity);
   const double recoveryWeight = positiveWeight(spec.weightRecovery);
   const double greenWeight = positiveWeight(spec.weightGreenness);
   const double practicalWeight = positiveWeight(spec.weightPracticality);
+  if (applySeparationGate && isSeparationOperation(spec.kind)) {
+    selectivityDetail += " Multiplicative separation gate " +
+                         number(separationGate(candidate.selectivity), 3) +
+                         " from the selectivity ratio.";
+  }
 
   candidate.criteria = {
       Criterion{"Selectivity", unit(selectivityScore), selectivityWeight,
@@ -299,18 +326,24 @@ void finishCandidate(SolventCandidate& candidate, const OperationSpec& spec,
                 common.practicalDetail},
   };
 
-  // A weighted arithmetic mean divided by the sum of active weights is the
-  // normalization that keeps the result in [0,1]; a zero weight contributes exactly zero.
+  // The weighted mean remains the user's preference score. Separation operations
+  // then multiply it by a log-ratio gate, so safety or convenience cannot erase
+  // a chemically reversed separation.
   const double totalWeight = selectivityWeight + recoveryWeight + greenWeight + practicalWeight;
   if (totalWeight <= 0.0) {
     candidate.score = 0.0;
     return;
   }
-  candidate.score = unit((selectivityWeight * unit(selectivityScore) +
-                          recoveryWeight * unit(recoveryScore) +
-                          greenWeight * unit(common.greenness) +
-                          practicalWeight * unit(common.practicality)) /
-                         totalWeight);
+  const double weightedScore =
+      unit((selectivityWeight * unit(selectivityScore) +
+            recoveryWeight * unit(recoveryScore) +
+            greenWeight * unit(common.greenness) +
+            practicalWeight * unit(common.practicality)) /
+           totalWeight);
+  candidate.score =
+      applySeparationGate && isSeparationOperation(spec.kind)
+          ? unit(weightedScore * separationGate(candidate.selectivity))
+          : weightedScore;
 }
 
 void appendEvidence(SolventCandidate& candidate, const Evidence& evidence) {
@@ -429,17 +462,25 @@ std::vector<SolventCandidate> rankExtraction(const OperationSpec& spec, const Ro
     candidate.recoveryFraction = recovery;
     candidate.targetSolubilityGPerMl = weightedMean(roles.targets, targetOrganic);
     candidate.contaminantSolubilityGPerMl = worstContaminantS;
-    const std::string selectDetail = "Target D " + number(representativeD, 2) +
-                                     "; worst contaminant " + worstName + " D " +
-                                     number(worstContaminantD, 2) + ", selectivity " +
-                                     number(ratio, 2) + "x.";
+    std::string selectDetail = "Target D " + number(representativeD, 2) +
+                               "; worst contaminant " + worstName + " D " +
+                               number(worstContaminantD, 2) + ", selectivity " +
+                               number(ratio, 2) + "x.";
+    if (!roles.contaminants.empty() && ratio < 1.0) {
+      const std::string failure =
+          "Separation direction fails: " + worstName +
+          " is preferentially extracted into the solvent by " +
+          number(1.0 / std::max(ratio, kTiny), 2) + "x over the target.";
+      selectDetail += " " + failure;
+      addWarning(candidate.warnings, failure);
+    }
     const std::string recoveryDetail =
         number(100.0 * recovery, 1) + "% target in the organic phase after one contact; " +
         (contacts > 0 ? std::to_string(contacts) + " contact(s) predicted for 99%."
                       : "99% is not reachable with the entered phase volumes.");
     CommonScores common = commonScores(solvent, spec.temperatureC, candidate.warnings);
-    finishCandidate(candidate, spec, selectivityScore, selectDetail, recovery, recoveryDetail,
-                    common);
+    finishCandidate(candidate, spec, selectivityScore, selectDetail, recovery,
+                    recoveryDetail, common, !roles.contaminants.empty());
     appendEvidence(candidate, evidence);
     result.push_back(std::move(candidate));
   }
@@ -519,17 +560,31 @@ std::vector<SolventCandidate> rankRecrystallisation(
     candidate.targetSolubilityGPerMl = meanTargetHot;
     candidate.contaminantSolubilityGPerMl =
         weightedMean(roles.contaminants, contaminantCold);
-    const std::string selectDetail =
+    const double targetHotCold =
+        meanTargetHot / std::max(meanTargetCold, kTiny);
+    std::string selectDetail =
         roles.contaminants.empty()
-            ? "No contaminants specified; purity is not penalised."
-            : "Impurity rejection " + number(100.0 * purity, 1) +
-                  "%: contaminants either remain soluble cold or never dissolve hot.";
+            ? "No contaminants specified; target hot/cold solubility ratio " +
+                  number(targetHotCold, 2) + "x."
+            : "Target hot/cold solubility ratio " + number(targetHotCold, 2) +
+                  "x; contaminant cold solubility " +
+                  number(candidate.contaminantSolubilityGPerMl, 4) +
+                  " g/mL gives impurity rejection " + number(100.0 * purity, 1) + "%.";
+    if (!roles.contaminants.empty() && purityOdds < 1.0) {
+      const std::string failure =
+          "Separation direction fails: the contaminant is preferentially crystallised by " +
+          number(1.0 / std::max(purityOdds, kTiny), 2) +
+          "x instead of remaining in the mother liquor.";
+      selectDetail += " " + failure;
+      addWarning(candidate.warnings, failure);
+    }
     const std::string recoveryDetail =
         "Target S_hot " + number(meanTargetHot, 4) + " g/mL, S_cold " +
         number(meanTargetCold, 4) + " g/mL; ideal cooling yield " +
         number(100.0 * yield, 1) + "%.";
     CommonScores common = commonScores(solvent, spec.temperatureC, candidate.warnings);
-    finishCandidate(candidate, spec, purity, selectDetail, yield, recoveryDetail, common);
+    finishCandidate(candidate, spec, purity, selectDetail, yield, recoveryDetail, common,
+                    !roles.contaminants.empty());
     appendEvidence(candidate, evidence);
     result.push_back(std::move(candidate));
   }
@@ -586,9 +641,17 @@ std::vector<SolventCandidate> rankTrituration(const OperationSpec& spec, const R
     candidate.recoveryFraction = recovery;
     candidate.targetSolubilityGPerMl = targetS;
     candidate.contaminantSolubilityGPerMl = contaminantS;
-    const std::string selectDetail =
+    std::string selectDetail =
         "Contaminant/target solubility ratio " + number(ratio, 2) + "x (target " +
         number(targetS, 4) + ", contaminants " + number(contaminantS, 4) + " g/mL).";
+    if (!roles.contaminants.empty() && ratio < 1.0) {
+      const std::string failure =
+          "Separation direction fails: the target is preferentially dissolved by " +
+          number(1.0 / std::max(ratio, kTiny), 2) +
+          "x over the contaminant, so the wash would remove product.";
+      selectDetail += " " + failure;
+      addWarning(candidate.warnings, failure);
+    }
     const std::string recoveryDetail =
         "Predicted target loss in one " + number(washVolume, 1) + " mL wash: " +
         number(100.0 * loss, 1) +
@@ -597,12 +660,33 @@ std::vector<SolventCandidate> rankTrituration(const OperationSpec& spec, const R
              ? "% (10 mg/mL reference used where charge was unspecified)."
              : "% from entered charges.");
     CommonScores common = commonScores(solvent, spec.temperatureC, candidate.warnings);
-    finishCandidate(candidate, spec, selectivityScore, selectDetail, recovery, recoveryDetail,
-                    common);
+    finishCandidate(candidate, spec, selectivityScore, selectDetail, recovery,
+                    recoveryDetail, common, !roles.contaminants.empty());
     appendEvidence(candidate, evidence);
     result.push_back(std::move(candidate));
   }
   return result;
+}
+bool candidateRanksAhead(const SolventCandidate& a, const SolventCandidate& b,
+                         OperationKind kind, bool applySeparationGate) {
+  if (applySeparationGate && isSeparationOperation(kind)) {
+    const int aTier = separationTier(a);
+    const int bTier = separationTier(b);
+    if (aTier != bTier) return aTier > bTier;
+    // If every candidate reverses the separation, closeness to the 1x boundary
+    // is more useful than a falsely reassuring green or handling score.
+    if (aTier == 0 && a.selectivity != b.selectivity) {
+      return a.selectivity > b.selectivity;
+    }
+  }
+  if (a.score != b.score) return a.score > b.score;
+  const std::string aName = a.solvent ? a.solvent->name : std::string();
+  const std::string bName = b.solvent ? b.solvent->name : std::string();
+  if (aName != bName) return aName < bName;
+  const std::string aPartner = a.partner ? a.partner->name : std::string();
+  const std::string bPartner = b.partner ? b.partner->name : std::string();
+  if (aPartner != bPartner) return aPartner < bPartner;
+  return a.partnerFraction < b.partnerFraction;
 }
 
 std::vector<SolventCandidate> rankAntiSolvent(const OperationSpec& spec, const Roles& roles,
@@ -613,7 +697,9 @@ std::vector<SolventCandidate> rankAntiSolvent(const OperationSpec& spec, const R
   struct PureRow {
     size_t eligibleIndex = 0;
     std::vector<Prediction> targetPredictions;
+    std::vector<Prediction> contaminantPredictions;
     double targetSolubility = 0.0;
+    double contaminantSolubility = 0.0;
   };
   std::vector<PureRow> pure;
   pure.reserve(eligible.size());
@@ -627,6 +713,14 @@ std::vector<SolventCandidate> rankAntiSolvent(const OperationSpec& spec, const R
       values.push_back(predictionValue(row.targetPredictions.back()));
     }
     row.targetSolubility = weightedMean(roles.targets, values);
+    std::vector<double> contaminantValues;
+    for (const SpeciesRole* role : roles.contaminants) {
+      row.contaminantPredictions.push_back(
+          safePredict(*role, {{eligible[i].solvent, 1.0}}, spec.temperatureC, spec.pH));
+      contaminantValues.push_back(predictionValue(row.contaminantPredictions.back()));
+    }
+    row.contaminantSolubility =
+        weightedMean(roles.contaminants, contaminantValues);
     pure.push_back(std::move(row));
   }
 
@@ -667,7 +761,6 @@ std::vector<SolventCandidate> rankAntiSolvent(const OperationSpec& spec, const R
 
     bool found = false;
     SolventCandidate best;
-    double bestScore = -1.0;
     for (size_t partnerRowIndex : partnerOrder) {
       const EligibleSolvent& partnerEntry = eligible[pure[partnerRowIndex].eligibleIndex];
       const Solvent& partner = *partnerEntry.solvent;
@@ -690,11 +783,13 @@ std::vector<SolventCandidate> rankAntiSolvent(const OperationSpec& spec, const R
           targetRecovery.push_back(unit(1.0 - mixed / std::max(good, kTiny)));
         }
         std::vector<double> contaminantBlend;
-        for (const SpeciesRole* role : roles.contaminants) {
+        for (size_t i = 0; i < roles.contaminants.size(); ++i) {
+          const SpeciesRole& role = *roles.contaminants[i];
+          evidence.observe(role, primaryRow.contaminantPredictions[i]);
           const Prediction prediction =
-              safePredict(*role, {{&primary, 1.0 - fraction}, {&partner, fraction}},
+              safePredict(role, {{&primary, 1.0 - fraction}, {&partner, fraction}},
                           spec.temperatureC, spec.pH, &evidence.warnings);
-          evidence.observe(*role, prediction);
+          evidence.observe(role, prediction);
           contaminantBlend.push_back(predictionValue(prediction));
         }
 
@@ -704,12 +799,20 @@ std::vector<SolventCandidate> rankAntiSolvent(const OperationSpec& spec, const R
         const double recovery = weightedMean(roles.targets, targetRecovery);
         const double supersaturation =
             primaryRow.targetSolubility / std::max(mixedTarget, kTiny);
-        // A contaminant that remains more soluble than the target stays in the
-        // mother liquor; c/(c+t) is 0.5 at equal carry-over and approaches 1 cleanly.
-        const double carryover = roles.contaminants.empty()
-                                     ? supersaturation / (1.0 + supersaturation)
-                                     : mixedContaminant /
-                                           std::max(mixedContaminant + mixedTarget, kTiny);
+        // Selectivity compares the desired target collapse with unwanted
+        // contaminant collapse. A ratio below one therefore precipitates impurity
+        // preferentially, while complete contaminant carry-over gives a large ratio.
+        const double contaminantCarryover =
+            roles.contaminants.empty()
+                ? 1.0
+                : unit(mixedContaminant /
+                       std::max(primaryRow.contaminantSolubility, kTiny));
+        const double contaminantCollapse = unit(1.0 - contaminantCarryover);
+        const double directionRatio =
+            roles.contaminants.empty()
+                ? supersaturation
+                : recovery / std::max(contaminantCollapse, kTiny);
+        const double selectivityScore = directionRatio / (1.0 + directionRatio);
 
         SolventCandidate candidate;
         candidate.solvent = &primary;
@@ -719,28 +822,37 @@ std::vector<SolventCandidate> rankAntiSolvent(const OperationSpec& spec, const R
         for (const std::string& warning : partnerEntry.warnings) {
           addWarning(candidate.warnings, "Anti-solvent: " + warning);
         }
-        candidate.selectivity = roles.contaminants.empty()
-                                    ? supersaturation
-                                    : mixedContaminant / std::max(mixedTarget, kTiny);
+        candidate.selectivity = directionRatio;
         candidate.recoveryFraction = recovery;
         candidate.targetSolubilityGPerMl = mixedTarget;
         candidate.contaminantSolubilityGPerMl = mixedContaminant;
-        const std::string selectDetail =
+        std::string selectDetail =
             "At " + number(100.0 * fraction, 0) + "% " + partner.name +
-            ", target supersaturation is " + number(supersaturation, 2) +
-            "x and contaminant carry-over score is " + number(carryover, 2) + ".";
+            ", target collapse is " + number(100.0 * recovery, 1) +
+            "% and contaminant carry-over is " +
+            number(100.0 * contaminantCarryover, 1) +
+            "%; precipitation selectivity " + number(directionRatio, 2) + "x.";
+        if (!roles.contaminants.empty() && directionRatio < 1.0) {
+          const std::string failure =
+              "Separation direction fails: the contaminant is preferentially precipitated by " +
+              number(1.0 / std::max(directionRatio, kTiny), 2) +
+              "x over the target.";
+          selectDetail += " " + failure;
+          addWarning(candidate.warnings, failure);
+        }
         const std::string recoveryDetail =
             "Solubility falls from " + number(primaryRow.targetSolubility, 4) + " to " +
             number(mixedTarget, 4) + " g/mL; ideal precipitated fraction " +
             number(100.0 * recovery, 1) + "%.";
         CommonScores common =
             pairCommonScores(primary, partner, spec.temperatureC, candidate.warnings);
-        finishCandidate(candidate, spec, carryover, selectDetail, recovery, recoveryDetail,
-                        common);
+        finishCandidate(candidate, spec, selectivityScore, selectDetail, recovery,
+                        recoveryDetail, common, !roles.contaminants.empty());
         appendEvidence(candidate, evidence);
-        if (!found || candidate.score > bestScore ||
-            (candidate.score == bestScore && partner.name < best.partner->name)) {
-          bestScore = candidate.score;
+        if (!found ||
+            candidateRanksAhead(candidate, best,
+                                OperationKind::AntiSolventPrecipitation,
+                                !roles.contaminants.empty())) {
           best = std::move(candidate);
           found = true;
         }
@@ -795,28 +907,40 @@ std::vector<SolventCandidate> rankChromatography(
     // The useful target window is centred at 0.5. Linear distance to either end
     // gives an elution-window score of 1 at centre and 0 at affinity 0 or 1.
     const double targetWindow = unit(1.0 - std::abs(target - 0.5) / 0.5);
-    // Crossing opposite sides of the window earns the upper half of the score;
-    // same-side spacing remains visible but cannot exceed 0.5.
-    const double selectivityScore = roles.contaminants.empty()
-                                        ? targetWindow
-                                        : opposite ? 0.5 + 0.5 * separation
-                                                   : 0.5 * separation;
+    // A 0.10 index gap is the minimum useful heuristic window. Expressing the
+    // observed gap as a ratio makes <1 an explicit chromatography failure,
+    // instead of allowing a same-window pair to win on solvent convenience.
+    const double retentionRatio =
+        roles.contaminants.empty()
+            ? targetWindow / 0.5
+            : separation / kUsefulChromatographySpacing;
+    const double selectivityScore = retentionRatio / (1.0 + retentionRatio);
 
-    candidate.selectivity = separation;
+    candidate.selectivity = retentionRatio;
     candidate.recoveryFraction = targetWindow;
     candidate.targetSolubilityGPerMl = weightedMean(roles.targets, targetSolubility);
     candidate.contaminantSolubilityGPerMl =
         weightedMean(roles.contaminants, contaminantSolubility);
-    const std::string selectDetail =
+    std::string selectDetail =
         "Polarity heuristic only, not a retention-factor prediction: target index " +
         number(target) + ", contaminants " + number(contaminant) +
-        (opposite ? ", on opposite sides of the 0.50 window." : ", not on opposite sides.");
+        ", index gap " + number(separation) + " (" + number(retentionRatio, 2) +
+        "x the 0.10 minimum useful retention window)" +
+        (opposite ? ", on opposite sides of the 0.50 window." : ", on the same side.");
+    if (!roles.contaminants.empty() && retentionRatio < 1.0) {
+      const std::string failure =
+          "Separation direction fails: the target and contaminant co-elute within the same "
+          "retention window; the gap is only " +
+          number(retentionRatio, 2) + "x the minimum useful spacing.";
+      selectDetail += " " + failure;
+      addWarning(candidate.warnings, failure);
+    }
     const std::string recoveryDetail =
         "Target mobile-phase affinity window score " + number(targetWindow) +
         " from Hansen RED and dielectric polarity.";
     CommonScores common = commonScores(solvent, spec.temperatureC, candidate.warnings);
     finishCandidate(candidate, spec, selectivityScore, selectDetail, targetWindow,
-                    recoveryDetail, common);
+                    recoveryDetail, common, !roles.contaminants.empty());
     appendEvidence(candidate, evidence);
     result.push_back(std::move(candidate));
   }
@@ -895,25 +1019,21 @@ std::vector<SolventCandidate> rankReactionMedium(
         "% at the entered charge/volume; unspecified charges use the 10 mg/mL reference.";
     CommonScores common = commonScores(solvent, spec.temperatureC, candidate.warnings);
     finishCandidate(candidate, spec, consistency, selectDetail, minimumDissolved,
-                    recoveryDetail, common);
+                    recoveryDetail, common, false);
     appendEvidence(candidate, evidence);
     result.push_back(std::move(candidate));
   }
   return result;
 }
 
-void rankDeterministically(std::vector<SolventCandidate>& candidates) {
-  std::stable_sort(candidates.begin(), candidates.end(), [](const SolventCandidate& a,
-                                                            const SolventCandidate& b) {
-    if (a.score != b.score) return a.score > b.score;
-    const std::string& aName = a.solvent ? a.solvent->name : std::string();
-    const std::string& bName = b.solvent ? b.solvent->name : std::string();
-    if (aName != bName) return aName < bName;
-    const std::string& aPartner = a.partner ? a.partner->name : std::string();
-    const std::string& bPartner = b.partner ? b.partner->name : std::string();
-    if (aPartner != bPartner) return aPartner < bPartner;
-    return a.partnerFraction < b.partnerFraction;
-  });
+void rankDeterministically(std::vector<SolventCandidate>& candidates,
+                           OperationKind kind, bool applySeparationGate) {
+  std::stable_sort(
+      candidates.begin(), candidates.end(),
+      [kind, applySeparationGate](const SolventCandidate& a,
+                                  const SolventCandidate& b) {
+        return candidateRanksAhead(a, b, kind, applySeparationGate);
+      });
 }
 
 }  // namespace
@@ -947,7 +1067,7 @@ std::vector<SolventCandidate> rankSolvents(const OperationSpec& spec) {
       result = rankReactionMedium(spec, roles, eligible);
       break;
   }
-  rankDeterministically(result);
+  rankDeterministically(result, spec.kind, !roles.contaminants.empty());
   return result;
 }
 

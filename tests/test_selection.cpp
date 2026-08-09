@@ -48,6 +48,45 @@ size_t positionOf(const std::vector<sol::SolventCandidate>& rows, const std::str
   }
   return rows.size();
 }
+bool warningContains(const sol::SolventCandidate& row, const std::string& text) {
+  return std::any_of(row.warnings.begin(), row.warnings.end(),
+                     [&](const std::string& warning) {
+                       return warning.find(text) != std::string::npos;
+                     });
+}
+
+const sol::SolventCandidate* firstDirectionFailure(
+    const std::vector<sol::SolventCandidate>& rows) {
+  for (const sol::SolventCandidate& row : rows) {
+    if (row.selectivity < 1.0) return &row;
+  }
+  return nullptr;
+}
+
+void checkWorkingCandidatesPrecedeFailures(
+    const std::vector<sol::SolventCandidate>& rows) {
+  bool sawWorking = false;
+  bool sawFailure = false;
+  size_t lastWorking = 0;
+  size_t firstFailure = rows.size();
+  double minimumWorkingScore = 1.0;
+  double maximumFailureScore = 0.0;
+  for (size_t i = 0; i < rows.size(); ++i) {
+    if (rows[i].selectivity >= 1.0) {
+      sawWorking = true;
+      lastWorking = i;
+      minimumWorkingScore = std::min(minimumWorkingScore, rows[i].score);
+    } else {
+      sawFailure = true;
+      firstFailure = std::min(firstFailure, i);
+      maximumFailureScore = std::max(maximumFailureScore, rows[i].score);
+    }
+  }
+  REQUIRE(sawWorking);
+  REQUIRE(sawFailure);
+  CHECK(lastWorking < firstFailure);
+  CHECK(minimumWorkingScore > maximumFailureScore);
+}
 
 sol::OperationSpec extractionSpec() {
   sol::OperationSpec spec;
@@ -132,6 +171,153 @@ TEST_CASE("a better-extracted contaminant lowers selectivity and ranking") {
   const sol::Criterion* explanation = criterionFor(*worst, "Selectivity");
   REQUIRE(explanation != nullptr);
   CHECK(explanation->detail.find("worst contaminant") != std::string::npos);
+}
+
+TEST_CASE("extraction direction gate demotes preferential contaminant extraction") {
+  sol::OperationSpec spec;
+  spec.kind = sol::OperationKind::LiquidLiquidExtraction;
+  spec.requireWaterImmiscible = true;
+  spec.species = {
+      role("CC(=O)Nc1ccc(O)cc1", "paracetamol"),
+      role("Oc1ccccc1", "phenol contaminant", false),
+  };
+
+  const std::vector<sol::SolventCandidate> rows = sol::rankSolvents(spec);
+  REQUIRE(!rows.empty());
+  checkWorkingCandidatesPrecedeFailures(rows);
+
+  const sol::SolventCandidate* failure = firstDirectionFailure(rows);
+  REQUIRE(failure != nullptr);
+  const sol::Criterion* evidence = criterionFor(*failure, "Selectivity");
+  REQUIRE(evidence != nullptr);
+  CHECK(evidence->detail.find("preferentially extracted") != std::string::npos);
+  CHECK(evidence->detail.find("x over the target") != std::string::npos);
+  CHECK(evidence->detail.find("Multiplicative separation gate") !=
+        std::string::npos);
+  CHECK(warningContains(*failure, "Separation direction fails"));
+}
+
+TEST_CASE("greenness cannot promote a reversed separation over a working solvent") {
+  sol::OperationSpec spec;
+  spec.kind = sol::OperationKind::LiquidLiquidExtraction;
+  spec.requireWaterImmiscible = true;
+  spec.species = {
+      role("CC(=O)Nc1ccc(O)cc1", "paracetamol"),
+      role("Oc1ccccc1", "phenol contaminant", false),
+  };
+  spec.weightSelectivity = 0.001;
+  spec.weightRecovery = 0.001;
+  spec.weightGreenness = 1000000.0;
+  spec.weightPracticality = 1.0;
+
+  const std::vector<sol::SolventCandidate> rows = sol::rankSolvents(spec);
+  REQUIRE(!rows.empty());
+  checkWorkingCandidatesPrecedeFailures(rows);
+}
+
+TEST_CASE("every separation operation explains its failed direction") {
+  auto checkFailure = [](sol::OperationSpec spec,
+                         const std::string& operationWording) {
+    const std::vector<sol::SolventCandidate> rows = sol::rankSolvents(spec);
+    REQUIRE(!rows.empty());
+    const sol::SolventCandidate* failure = firstDirectionFailure(rows);
+    REQUIRE(failure != nullptr);
+    const sol::Criterion* evidence = criterionFor(*failure, "Selectivity");
+    REQUIRE(evidence != nullptr);
+    CHECK(evidence->detail.find(operationWording) != std::string::npos);
+    CHECK(evidence->detail.find("Multiplicative separation gate") !=
+          std::string::npos);
+    CHECK(warningContains(*failure, "Separation direction fails"));
+  };
+
+  SUBCASE("liquid-liquid extraction") {
+    sol::OperationSpec spec = extractionSpec();
+    spec.species.push_back(
+        role("c1ccc2ccccc2c1", "naphthalene contaminant", false));
+    checkFailure(spec, "preferentially extracted");
+  }
+
+  SUBCASE("trituration") {
+    sol::OperationSpec spec;
+    spec.kind = sol::OperationKind::Trituration;
+    spec.species = {
+        role("Cn1c(=O)c2c(ncn2C)n(C)c1=O", "caffeine"),
+        role("c1ccc2ccccc2c1", "naphthalene contaminant", false),
+    };
+    checkFailure(spec, "preferentially dissolved");
+  }
+
+  SUBCASE("recrystallisation") {
+    sol::OperationSpec spec;
+    spec.kind = sol::OperationKind::Recrystallisation;
+    spec.coldTemperatureC = 5.0;
+    spec.hotTemperatureC = 70.0;
+    spec.species = {
+        role("c1ccc2ccccc2c1", "naphthalene"),
+        role("OC(=O)c1ccccc1", "benzoic acid contaminant", false),
+    };
+    checkFailure(spec, "preferentially crystallised");
+  }
+
+  SUBCASE("anti-solvent precipitation") {
+    sol::OperationSpec spec;
+    spec.kind = sol::OperationKind::AntiSolventPrecipitation;
+    spec.species = {
+        role("Oc1ccccc1", "phenol"),
+        role("c1ccc2ccccc2c1", "naphthalene contaminant", false),
+    };
+    checkFailure(spec, "preferentially precipitated");
+  }
+
+  SUBCASE("chromatography") {
+    sol::OperationSpec spec;
+    spec.kind = sol::OperationKind::ChromatographyMobilePhase;
+    spec.species = {
+        role("Cn1c(=O)c2c(ncn2C)n(C)c1=O", "caffeine"),
+        role("Cn1c(=O)c2c(ncn2C)n(C)c1=O", "caffeine contaminant", false),
+    };
+    checkFailure(spec, "co-elute");
+  }
+}
+
+TEST_CASE("reaction medium explicitly does not request a separation direction") {
+  sol::OperationSpec spec;
+  spec.kind = sol::OperationKind::ReactionMedium;
+  spec.species = {
+      role("Cn1c(=O)c2c(ncn2C)n(C)c1=O", "caffeine"),
+      role("OC(=O)c1ccccc1", "benzoic acid reagent", false),
+  };
+
+  const std::vector<sol::SolventCandidate> rows = sol::rankSolvents(spec);
+  REQUIRE(!rows.empty());
+  for (const sol::SolventCandidate& row : rows) {
+    const sol::Criterion* selectivity = criterionFor(row, "Selectivity");
+    REQUIRE(selectivity != nullptr);
+    CHECK(selectivity->detail.find("selectivity is not desired") !=
+          std::string::npos);
+    CHECK(selectivity->detail.find("Multiplicative separation gate") ==
+          std::string::npos);
+    CHECK(!warningContains(row, "Separation direction fails"));
+  }
+}
+
+TEST_CASE("all failed separations remain returned closest-first and fully warned") {
+  sol::OperationSpec spec = extractionSpec();
+  spec.requireWaterImmiscible = true;
+  spec.species = {
+      role("Cn1c(=O)c2c(ncn2C)n(C)c1=O", "caffeine"),
+      role("OC(=O)c1ccccc1", "benzoic acid contaminant", false),
+  };
+
+  const std::vector<sol::SolventCandidate> rows = sol::rankSolvents(spec);
+  REQUIRE(rows.size() >= 2);
+  for (size_t i = 0; i < rows.size(); ++i) {
+    CHECK(rows[i].selectivity < 1.0);
+    CHECK(warningContains(rows[i], "Separation direction fails"));
+    if (i > 0) {
+      CHECK(rows[i - 1].selectivity >= rows[i].selectivity);
+    }
+  }
 }
 
 TEST_CASE("hard solvent constraints remove every violation") {
