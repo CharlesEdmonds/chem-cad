@@ -613,13 +613,13 @@ void seedDefaultPhases(sol::Simulation& sim) {
 struct FluidResolutionPreset {
   const char* name;
   const char* choiceLabel;
-  double spacingM;
+  fluid::QualityProfile quality;
 };
 
 constexpr std::array<FluidResolutionPreset, 3> kFluidPresets{{
-    {"Interactive", "Interactive", 8.0e-3},
-    {"Balanced", "Balanced", 6.0e-3},
-    {"Quality", "Quality - slower than real time", 4.0e-3},
+    {"Interactive", "Interactive preview", fluid::QualityProfile::interactive()},
+    {"Balanced", "Balanced", fluid::QualityProfile::balanced()},
+    {"Quality", "Quality - slower than real time", fluid::QualityProfile::quality()},
 }};
 
 size_t selectedFluidPreset(const SolubilityState& s) {
@@ -628,13 +628,13 @@ size_t selectedFluidPreset(const SolubilityState& s) {
 }
 
 double selectedFluidSpacing(const SolubilityState& s) {
-  return kFluidPresets[selectedFluidPreset(s)].spacingM;
+  return kFluidPresets[selectedFluidPreset(s)].quality.spacing;
 }
 
 uint64_t estimatedParticleCount(const SolubilityState& s, size_t presetIndex) {
   const double volumeM3 = std::max(sol::totalVolumeMl(s.funnel), 0.0) * 1.0e-6;
   const double spacing =
-      kFluidPresets[std::min(presetIndex, kFluidPresets.size() - 1)].spacingM;
+      kFluidPresets[std::min(presetIndex, kFluidPresets.size() - 1)].quality.spacing;
   return static_cast<uint64_t>(
       std::llround(volumeM3 / (spacing * spacing * spacing)));
 }
@@ -655,20 +655,24 @@ std::string fluidPresetTradeText(const SolubilityState& s,
   const bool hasComparableRate =
       s.fluidPresetRealTimeFactorValid[preset] &&
       s.fluidPresetMeasuredParticles[preset] == estimatedParticles;
-  char text[192];
+  char text[224];
   if (hasComparableRate) {
-    std::snprintf(text, sizeof(text),
-                  "%s | dx %.0f mm | ~%llu particles | last measured %.2fx",
-                  kFluidPresets[preset].choiceLabel,
-                  kFluidPresets[preset].spacingM * 1000.0,
-                  static_cast<unsigned long long>(estimatedParticles),
-                  s.fluidPresetRealTimeFactor[preset]);
+    std::snprintf(
+        text, sizeof(text),
+        "%s | dx %.0f mm | compression limit %.1f%% | ~%llu particles | last measured %.2fx",
+        kFluidPresets[preset].choiceLabel,
+        kFluidPresets[preset].quality.spacing * 1000.0,
+        kFluidPresets[preset].quality.densityTolerance * 100.0,
+        static_cast<unsigned long long>(estimatedParticles),
+        s.fluidPresetRealTimeFactor[preset]);
   } else {
-    std::snprintf(text, sizeof(text),
-                  "%s | dx %.0f mm | ~%llu particles | rate not measured",
-                  kFluidPresets[preset].choiceLabel,
-                  kFluidPresets[preset].spacingM * 1000.0,
-                  static_cast<unsigned long long>(estimatedParticles));
+    std::snprintf(
+        text, sizeof(text),
+        "%s | dx %.0f mm | compression limit %.1f%% | ~%llu particles | rate not measured",
+        kFluidPresets[preset].choiceLabel,
+        kFluidPresets[preset].quality.spacing * 1000.0,
+        kFluidPresets[preset].quality.densityTolerance * 100.0,
+        static_cast<unsigned long long>(estimatedParticles));
   }
   return text;
 }
@@ -794,9 +798,9 @@ bool rechargeFluid(SolubilityState& s, bool forceAttempt = false) {
         // panel holding a partially configured Simulation.
         auto candidate = std::make_unique<fluid::Simulation>();
         candidate->setVessel(s.funnel.vessel, s.funnel.vesselVolumeMl);
-        candidate->setResolution(selectedFluidSpacing(s));
+        candidate->setQuality(
+            kFluidPresets[selectedFluidPreset(s)].quality);
         candidate->setPhases(fluidMaterials(s.funnel), interfaceTensions(s.funnel));
-        candidate->charge();
         s.fluidManualAcceleration = {0.0, 0.0, 0.0};
         candidate->setManualAcceleration(s.fluidManualAcceleration);
         s.fluid = std::move(candidate);
@@ -934,11 +938,13 @@ void drawFluidDiagnostics(SolubilityState& s) {
   ImGui::TextColored(s.funnelRunning ? style::col::Success : style::col::TextDim,
                      "%s%s", runState, stepping ? " - physics step active" : "");
   ImGui::TextWrapped("%s", status.c_str());
-  ImGui::TextWrapped("Particle-resolved %s preset (dx %.0f mm, ~%llu particles)",
-                     kFluidPresets[resolutionIndex].name,
-                     selectedFluidSpacing(s) * 1000.0,
-                     static_cast<unsigned long long>(
-                         estimatedParticleCount(s, resolutionIndex)));
+  ImGui::TextWrapped(
+      "Particle-resolved %s preset (dx %.0f mm, compression limit %.1f%%, ~%llu particles)",
+      kFluidPresets[resolutionIndex].name,
+      selectedFluidSpacing(s) * 1000.0,
+      kFluidPresets[resolutionIndex].quality.densityTolerance * 100.0,
+      static_cast<unsigned long long>(
+          estimatedParticleCount(s, resolutionIndex)));
 
   const bool completedStep = snapshot->elapsedS > 0.0;
   if (completedStep) rememberFluidRate(s, realTimeFactor);
@@ -1075,7 +1081,7 @@ void drawTransportControls(SolubilityState& s) {
   ImGui::SliderFloat("##speed", &s.funnelSpeed, 0.1f, 10.0f, "%.1fx");
 
   ImGui::TableNextColumn();
-  ImGui::TextDisabled("RESOLUTION");
+  ImGui::TextDisabled("SOLVER QUALITY");
   if (fluid::Simulation* simulation = s.fluid.get()) {
     double measured = std::numeric_limits<double>::quiet_NaN();
     if (runFluidInteraction(
@@ -1094,12 +1100,13 @@ void drawTransportControls(SolubilityState& s) {
         s.fluidResolution = static_cast<FluidResolution>(candidate);
         resolution = candidate;
         if (rechargeFluid(s)) {
-          char message[144];
+          char message[176];
           std::snprintf(
               message, sizeof(message),
-              "%s preset charged: dx %.0f mm, about %llu particles",
+              "%s preset charged: dx %.0f mm, %.1f%% compression limit, about %llu particles",
               kFluidPresets[candidate].name,
-              kFluidPresets[candidate].spacingM * 1000.0,
+              kFluidPresets[candidate].quality.spacing * 1000.0,
+              kFluidPresets[candidate].quality.densityTolerance * 100.0,
               static_cast<unsigned long long>(
                   estimatedParticleCount(s, candidate)));
           s.statusMessage = message;

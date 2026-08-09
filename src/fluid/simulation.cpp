@@ -57,6 +57,7 @@ struct Simulation::Impl {
   VesselMotion motion;
   VesselMotion requestedMotion;
   Resolution resolution;
+  QualityProfile quality = QualityProfile::quality();
   std::vector<PhaseMaterial> phases;
   std::vector<double> sigmaPairs;
   std::string statusIssue;
@@ -91,8 +92,13 @@ struct Simulation::Impl {
   std::string publishedIssue;
 
   Impl() {
+    resolution.spacing = quality.spacing;
     SolverConfig config;
     config.resolution = resolution;
+    config.densityTolerance = quality.densityTolerance;
+    config.minPressureIterations = quality.minPressureIterations;
+    config.maxPressureIterations = quality.maxPressureIterations;
+    config.enableSurfaceTension = quality.surfaceTension;
     solver.configure(config);
     vesselHeightM = vesselHeight(vessel, ratedVolumeMl);
     boundary.build(vessel, vesselHeightM, resolution.support(), resolution.spacing);
@@ -117,7 +123,10 @@ struct Simulation::Impl {
   }
 
   bool calibrateIfNeeded() {
-    if (phases.size() <= 1 || !hasPositiveSurfaceTension(sigmaPairs)) return true;
+    if (!solver.config().enableSurfaceTension || phases.size() <= 1 ||
+        !hasPositiveSurfaceTension(sigmaPairs)) {
+      return true;
+    }
     try {
       // Akinci et al. (ACM TOG 32(6), 2013) require a resolution-dependent
       // cohesion coefficient. Solver calibrates that coefficient against the
@@ -130,6 +139,27 @@ struct Simulation::Impl {
       statusIssue = "Surface tension disabled: interface calibration failed";
     }
     return false;
+  }
+
+  void applyQuality(const QualityProfile& nextQuality) {
+    quality = nextQuality;
+    resolution.spacing = quality.spacing;
+    SolverConfig config = solver.config();
+    config.resolution = resolution;
+    config.densityTolerance = quality.densityTolerance;
+    config.minPressureIterations = quality.minPressureIterations;
+    config.maxPressureIterations = quality.maxPressureIterations;
+    config.enableSurfaceTension = quality.surfaceTension;
+    solver.configure(config);
+    if (!phases.empty()) solver.setPhases(phases, sigmaPairs);
+    rebuildBoundary();
+    statusIssue.clear();
+    calibrateIfNeeded();
+    if (!phases.empty()) {
+      charge(true);
+    } else {
+      publish();
+    }
   }
 
   void zeroParticleMotion() {
@@ -431,27 +461,40 @@ void Simulation::setResolution(double spacingM) {
     return;
   }
   try {
-    impl_->resolution.spacing = spacingM;
-    SolverConfig config = impl_->solver.config();
-    config.resolution = impl_->resolution;
-    impl_->solver.configure(config);
-    if (!impl_->phases.empty()) {
-      impl_->solver.setPhases(impl_->phases, impl_->sigmaPairs);
-    }
-    impl_->rebuildBoundary();
-    impl_->statusIssue.clear();
-    impl_->calibrateIfNeeded();
-    if (!impl_->phases.empty()) {
-      impl_->charge(true);
-    } else {
-      impl_->publish();
-    }
+    QualityProfile quality = impl_->quality;
+    quality.spacing = spacingM;
+    impl_->applyQuality(quality);
   } catch (const std::exception& error) {
     impl_->statusIssue = std::string("Resolution setup failed: ") + error.what();
     impl_->particles.clear();
     impl_->publish();
   } catch (...) {
     impl_->statusIssue = "Resolution setup failed";
+    impl_->particles.clear();
+    impl_->publish();
+  }
+}
+
+void Simulation::setQuality(const QualityProfile& quality) {
+  std::lock_guard<std::mutex> lock(impl_->stepMutex);
+  const bool valid = std::isfinite(quality.spacing) && quality.spacing > 0.0 &&
+                     std::isfinite(quality.densityTolerance) &&
+                     quality.densityTolerance > 0.0 &&
+                     quality.minPressureIterations >= 1 &&
+                     quality.maxPressureIterations >= quality.minPressureIterations;
+  if (!valid) {
+    impl_->statusIssue = "Quality unchanged: invalid spacing or pressure budget";
+    impl_->publish();
+    return;
+  }
+  try {
+    impl_->applyQuality(quality);
+  } catch (const std::exception& error) {
+    impl_->statusIssue = std::string("Quality setup failed: ") + error.what();
+    impl_->particles.clear();
+    impl_->publish();
+  } catch (...) {
+    impl_->statusIssue = "Quality setup failed";
     impl_->particles.clear();
     impl_->publish();
   }
@@ -641,7 +684,11 @@ std::string Simulation::statusLine() const {
        << state->px.size() << " particles | ";
   if (state->elapsedS > 0.0) {
     text << stats->substeps << " substeps, " << stats->pressureIterations
-         << " pressure iterations | worst compression "
+         << " pressure iterations";
+    if (stats->stalledPressureSubsteps > 0) {
+      text << " (" << stats->stalledPressureSubsteps << " stalled solves)";
+    }
+    text << " | worst compression "
          << stats->maxDensityCompression * 100.0 << "%, deficit "
          << stats->maxDensityDeficit * 100.0 << "% | "
          << std::setprecision(2) << stats->millisecondsPerSubstep << " ms/substep | ";

@@ -61,6 +61,31 @@ struct SolverConfig {
   bool enableCoriolis = true;
 };
 
+// A named resolution/accuracy budget. Spacing and pressure convergence move
+// together so callers cannot accidentally label a coarse, loose preview as a
+// quality solve (or pay quality iteration costs at preview resolution).
+struct QualityProfile {
+  // Release, i7-9750H, one concurrent CPU load thread, 200 mL charge:
+  // Interactive: 16.14 -> 5.83 iterations/substep, 1.52x real time,
+  // 3.993% compression. Balanced: 17.64 -> 10.58, 0.210x, 0.575%.
+  // Quality: 21.58 -> 23.44, 0.052x, 0.488%; its 0.5% limit stays hard.
+  double densityTolerance = 5.0e-3;
+  int minPressureIterations = 3;
+  int maxPressureIterations = 32;
+  double spacing = 4.0e-3;
+  bool surfaceTension = true;
+
+  static constexpr QualityProfile interactive() {
+    return {4.0e-2, 3, 12, 8.0e-3, true};
+  }
+  static constexpr QualityProfile balanced() {
+    return {1.0e-2, 3, 20, 6.0e-3, true};
+  }
+  static constexpr QualityProfile quality() {
+    return {5.0e-3, 3, 40, 4.0e-3, true};
+  }
+};
+
 // Per-phase-pair interfacial tension, and the calibration that turns it into
 // the solver's cohesion coefficient at this resolution.
 struct InterfaceModel {
@@ -118,6 +143,9 @@ class Solver {
     double integrationMilliseconds = 0.0;
     int clampedParticles = 0;            // hit the speed clamp
     int rejectedSubsteps = 0;            // halved and retried
+    int stalledPressureSubsteps = 0;      // correction exited after no material progress
+    unsigned workerCount = 1;             // static gather partitions used by this advance
+    double pressureStiffnessSubstepS = 0.0; // quantised dt used by active stiffness
     std::uint64_t pressureStiffnessCalibrations = 0; // solver lifetime total
     std::uint64_t interfaceCalibrations = 0;         // solver lifetime total
   };
@@ -137,6 +165,7 @@ class Solver {
   };
   std::vector<StiffnessCacheEntry> stiffnessCache_;
   std::uint64_t pressureStiffnessCalibrations_ = 0;
+  double pressureStiffnessSubstepS_ = 0.0;
   std::uint64_t interfaceCalibrations_ = 0;
   Stats stats_;
   std::string calibrationError_;

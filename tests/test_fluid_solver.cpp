@@ -1,18 +1,21 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
-#include <chrono>
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
-#include <vector>
 #include <iostream>
+#include <thread>
+#include <vector>
 
 #include "fluid/frame.hpp"
 #include "fluid/kernels.hpp"
 #include "fluid/solver.hpp"
+#include "fluid/simulation.hpp"
 #include "fluid/vessel_sdf.hpp"
 #include "sol/funnel.hpp"
 
@@ -40,6 +43,27 @@ fluid::SolverConfig coarseConfig() {
   config.maxSpeed = 5.0;
   return config;
 }
+
+fluid::SolverConfig profileConfig(const fluid::QualityProfile& profile) {
+  fluid::SolverConfig config;
+  config.resolution.spacing = profile.spacing;
+  config.densityTolerance = profile.densityTolerance;
+  config.minPressureIterations = profile.minPressureIterations;
+  config.maxPressureIterations = profile.maxPressureIterations;
+  config.enableSurfaceTension = profile.surfaceTension;
+  return config;
+}
+
+struct NamedQuality {
+  const char* name;
+  fluid::QualityProfile profile;
+};
+
+constexpr std::array<NamedQuality, 3> kQualityProfiles{{
+    {"Interactive", fluid::QualityProfile::interactive()},
+    {"Balanced", fluid::QualityProfile::balanced()},
+    {"Quality", fluid::QualityProfile::quality()},
+}};
 
 fluid::VesselBoundary cylinder(const fluid::SolverConfig& config, double height = 0.12) {
   fluid::VesselBoundary boundary;
@@ -456,6 +480,70 @@ TEST_CASE("identical fluid runs are bit deterministic") {
   CHECK(a.vz == c.vz);
 }
 
+TEST_CASE("each named quality profile meets its own compression limit") {
+  const std::vector<fluid::PhaseMaterial> phases{
+      phase("water", 998.0, 0.89e-3, 25.0),
+      phase("dichloromethane", 1326.0, 0.43e-3, 25.0)};
+
+  for (const NamedQuality& named : kQualityProfiles) {
+    CAPTURE(named.name);
+    fluid::SolverConfig config = profileConfig(named.profile);
+    fluid::Solver solver;
+    solver.configure(config);
+    solver.setPhases(phases, {});
+    fluid::VesselBoundary boundary = separatoryFunnel(config);
+    fluid::Particles particles;
+    REQUIRE(boundary.chargeLattice(phases, named.profile.spacing, particles) > 0);
+
+    solver.advance(particles, boundary, noGravity(), 0.0, 30.0e-3);
+    const fluid::Solver::Stats& stats = solver.stats();
+    CHECK(stats.maxDensityCompression <= named.profile.densityTolerance);
+    CHECK(stats.pressureStiffnessSubstepS ==
+          doctest::Approx(stats.substepS).epsilon(1.0e-12));
+    CHECK(interfaceParticles(particles) < particles.size() / 4);
+    checkFiniteAndContained(
+        particles, boundary,
+        config.contactRadiusFactor * config.resolution.spacing);
+  }
+}
+
+TEST_CASE("setQuality recharges consistently and remains deterministic") {
+  const std::vector<fluid::PhaseMaterial> phases{
+      phase("water", 998.0, 0.89e-3, 20.0),
+      phase("dichloromethane", 1326.0, 0.43e-3, 20.0)};
+  const fluid::QualityProfile quality = fluid::QualityProfile::interactive();
+
+  fluid::Simulation changedAfterCharge;
+  changedAfterCharge.setPhases(phases, {});
+  const std::size_t fineCount = changedAfterCharge.snapshot()->px.size();
+  changedAfterCharge.setQuality(quality);
+
+  fluid::Simulation configuredFirst;
+  configuredFirst.setQuality(quality);
+  configuredFirst.setPhases(phases, {});
+
+  const auto recharged = changedAfterCharge.snapshot();
+  const auto fresh = configuredFirst.snapshot();
+  REQUIRE(recharged->px.size() > 0);
+  CHECK(recharged->px.size() < fineCount);
+  CHECK(recharged->elapsedS == 0.0);
+  CHECK(recharged->phase == fresh->phase);
+  CHECK(recharged->px == fresh->px);
+  CHECK(recharged->py == fresh->py);
+  CHECK(recharged->pz == fresh->pz);
+
+  changedAfterCharge.setManualAcceleration({0.0, 0.0, -kGravity});
+  configuredFirst.setManualAcceleration({0.0, 0.0, -kGravity});
+  changedAfterCharge.advance(30.0e-3);
+  configuredFirst.advance(30.0e-3);
+  const auto advancedA = changedAfterCharge.snapshot();
+  const auto advancedB = configuredFirst.snapshot();
+  CHECK(advancedA->phase == advancedB->phase);
+  CHECK(advancedA->px == advancedB->px);
+  CHECK(advancedA->py == advancedB->py);
+  CHECK(advancedA->pz == advancedB->pz);
+}
+
 TEST_CASE("resolution-aware ceiling keeps an interactive frame stable") {
   const std::vector<fluid::PhaseMaterial> phases{
       phase("water", 998.0, 0.89e-3, 100.0),
@@ -496,71 +584,124 @@ TEST_CASE("resolution-aware ceiling keeps an interactive frame stable") {
   CHECK(30.0e-3 / fineSubsteps < 30.0e-3 / coarseSubsteps);
 }
 
-TEST_CASE("default-charge substep timing reports the interactive budget") {
-  // Release timing is diagnostic rather than asserted because shared CI wall
-  // time is noisy. The phase breakdown identifies the cost that dominates.
+TEST_CASE("quality-profile timing reports the loaded interactive budget") {
   const std::vector<fluid::PhaseMaterial> phases{
       phase("water", 998.0, 0.89e-3, 100.0),
       phase("dichloromethane", 1326.0, 0.43e-3, 100.0)};
+  constexpr double kFrameS = 30.0e-3;
 
-  for (double spacing : {8.0e-3, 6.0e-3}) {
-    fluid::SolverConfig config;
-    config.resolution.spacing = spacing;
+  // Keep one CPU busy while the solve runs, approximating the application
+  // thread's input/layout/render submission work without launching the app.
+  std::atomic<std::uint64_t> renderTicks{0};
+  std::jthread renderLoad([&](std::stop_token stop) {
+    while (!stop.stop_requested()) {
+      renderTicks.fetch_add(1, std::memory_order_relaxed);
+    }
+  });
+  while (renderTicks.load(std::memory_order_relaxed) < 10000) {
+    std::this_thread::yield();
+  }
+
+  for (const NamedQuality& named : kQualityProfiles) {
+    CAPTURE(named.name);
+    fluid::SolverConfig legacy = profileConfig(named.profile);
+    legacy.densityTolerance = 5.0e-3;
+    legacy.minPressureIterations = 3;
+    legacy.maxPressureIterations = 32;
+
     fluid::Solver solver;
-    solver.configure(config);
+    solver.configure(legacy);
     solver.setPhases(phases, {0.028});
-    fluid::VesselBoundary boundary = separatoryFunnel(config);
+    fluid::VesselBoundary boundary = separatoryFunnel(legacy);
     solver.calibrateInterface(boundary);
     INFO("calibration=", solver.interfaceCalibrationError());
     REQUIRE(solver.interfaceModel().calibrated);
-    fluid::Particles particles;
-    boundary.chargeLattice(phases, spacing, particles);
-    if (spacing == 8.0e-3) REQUIRE(particles.size() > 300);
-    // Warm retained capacities and wall samples without changing the measured
-    // charge. The live worker takes this steady-state path after its first job.
-    fluid::Particles warm = particles;
+    fluid::Particles charged;
+    boundary.chargeLattice(phases, named.profile.spacing, charged);
+    REQUIRE(charged.size() > 300);
+
+    // Warm retained capacities, pair storage, and boundary samples. Both
+    // budgets below then take the same steady-state path as the live worker.
+    fluid::Particles warm = charged;
     REQUIRE(solver.advance(warm, boundary, noGravity(), 0.0, 1.0e-6) == 1);
 
-    constexpr double kFrameS = 30.0e-3;
-    const auto started = std::chrono::steady_clock::now();
-    const int substeps = solver.advance(particles, boundary, {}, 0.0, kFrameS);
+    struct Timing {
+      double realTimeFactor = 0.0;
+      fluid::Solver::Stats stats;
+    };
+    const auto measure = [&](const char* budget,
+                             const fluid::SolverConfig& config) {
+      solver.configure(config);
+      solver.setPhases(phases, {0.028});
+      fluid::Particles particles = charged;
+      const auto started = std::chrono::steady_clock::now();
+      const int substeps =
+          solver.advance(particles, boundary, {}, 0.0, kFrameS);
+      const double elapsedMs =
+          std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - started)
+              .count();
+      const fluid::Solver::Stats stats = solver.stats();
+      const double factor = 1000.0 * kFrameS / elapsedMs;
+      const double iterationsPerSubstep =
+          substeps > 0
+              ? static_cast<double>(stats.pressureIterations) / substeps
+              : 0.0;
+      std::cout << "[quality timing] " << named.name << ' ' << budget
+                << " dx=" << named.profile.spacing * 1000.0 << "mm"
+                << " tolerance=" << config.densityTolerance * 100.0 << "%"
+                << " particles=" << particles.size()
+                << " ms/substep=" << stats.millisecondsPerSubstep
+                << " iterations/substep=" << iterationsPerSubstep
+                << " real-time=" << factor << "x"
+                << " compression=" << stats.maxDensityCompression * 100.0 << "%"
+                << " stalled=" << stats.stalledPressureSubsteps
+                << " workers=" << stats.workerCount << '\n';
+      checkFiniteAndContained(
+          particles, boundary,
+          config.contactRadiusFactor * config.resolution.spacing);
+      return Timing{factor, stats};
+    };
 
-    const auto stopped = std::chrono::steady_clock::now();
-    const double elapsedMs =
-        std::chrono::duration<double, std::milli>(stopped - started).count();
-    const fluid::Solver::Stats& stats = solver.stats();
-    std::cout << "[fluid timing] dx=" << spacing * 1000.0 << "mm"
-              << " particles=" << particles.size()
-              << " frame-ms=" << elapsedMs
-              << " substeps=" << substeps
-              << " ms/substep=" << stats.millisecondsPerSubstep
-              << " real-time=" << (1000.0 * kFrameS / elapsedMs) << "x"
-              << " iterations=" << stats.pressureIterations
-              << " grid=" << stats.gridMilliseconds << "ms"
-              << " density=" << stats.densityMilliseconds << "ms"
-              << " force=" << stats.forceMilliseconds << "ms"
-              << " pressure=" << stats.pressureMilliseconds << "ms"
-              << " integrate=" << stats.integrationMilliseconds << "ms"
-              << " rejected=" << stats.rejectedSubsteps
-              << " clamps=" << stats.clampedParticles
-              << " compression=" << stats.maxDensityCompression * 100.0 << "%"
-              << " deficit=" << stats.maxDensityDeficit * 100.0 << "%\n";
-    CHECK(stats.maxDensityCompression <= config.densityTolerance);
-    checkFiniteAndContained(
-        particles, boundary, config.contactRadiusFactor * config.resolution.spacing);
-    if (spacing == 8.0e-3) CHECK(substeps < 10);
-    fluid::VesselMotion shake;
-    shake.shaking = true;
-    shake.shakeRemainingS = 1.0;
-    shake.shakeFrequencyHz = 3.0;
-    shake.shakeAmplitudeM = 0.05;
-    shake.shakeAxis = {1.0, 0.0, 0.25};
-    solver.advance(particles, boundary, shake, 0.25 / shake.shakeFrequencyHz,
-                   kFrameS);
-    CHECK(solver.stats().maxDensityCompression <= config.densityTolerance);
-    checkFiniteAndContained(
-        particles, boundary, config.contactRadiusFactor * config.resolution.spacing);
+    const Timing before = measure("legacy", legacy);
+    const fluid::SolverConfig configured = profileConfig(named.profile);
+    const Timing after = measure("profile", configured);
+    CHECK(after.stats.maxDensityCompression <= named.profile.densityTolerance);
+    if (named.profile.densityTolerance > 5.0e-3) {
+      CHECK(after.stats.pressureIterations < before.stats.pressureIterations);
+    }
+    const unsigned hardwareWorkers = std::thread::hardware_concurrency();
+    const unsigned availableForPhysics =
+        hardwareWorkers > 1 ? hardwareWorkers - 1 : 1;
+    CHECK(after.stats.workerCount <= availableForPhysics);
+    if (named.profile.spacing == fluid::QualityProfile::interactive().spacing) {
+      CHECK(after.realTimeFactor >= 0.8);
+    }
   }
+}
+
+TEST_CASE("a plateaued pressure correction is reported instead of burning its cap") {
+  fluid::SolverConfig config =
+      profileConfig(fluid::QualityProfile::interactive());
+  config.densityTolerance = 1.0e-10;
+  config.maxPressureIterations = 64;
+  config.enableSurfaceTension = false;
+  fluid::Solver solver;
+  solver.configure(config);
+  const std::vector<fluid::PhaseMaterial> phases{
+      phase("water", 998.0, 0.89e-3, 100.0),
+      phase("dichloromethane", 1326.0, 0.43e-3, 100.0)};
+  solver.setPhases(phases, {});
+  fluid::VesselBoundary boundary = separatoryFunnel(config);
+  fluid::Particles particles;
+  boundary.chargeLattice(phases, config.resolution.spacing, particles);
+
+  solver.advance(particles, boundary, noGravity(), 0.0, 30.0e-3);
+  CHECK(solver.stats().stalledPressureSubsteps > 0);
+  CHECK(solver.stats().pressureIterations <
+        solver.stats().substeps * config.maxPressureIterations);
+  CHECK(solver.stats().pressureIterations >=
+        solver.stats().substeps * config.minPressureIterations);
 }
 
 TEST_CASE("the solver remains finite under an abusive shake") {

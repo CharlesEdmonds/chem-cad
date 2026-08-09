@@ -143,6 +143,10 @@ unsigned configuredWorkerCount(std::size_t workItems) {
                       std::min(kMaxFluidWorkers, availableItems));
   }
   if (requested == 0) requested = 1;
+  // Default scheduling reserves one logical core for the render/UI thread.
+  // Explicit test/diagnostic overrides remain exact so worker-count
+  // determinism can still be exercised.
+  if (requested > 1) --requested;
   const unsigned useful =
       static_cast<unsigned>(std::max<std::size_t>(1, (workItems + 255) / 256));
   return std::clamp(requested, 1U, std::min(kMaxFluidWorkers, useful));
@@ -844,12 +848,16 @@ void Solver::ensurePressureStiffness(double substepS) {
     if (entry.values.size() == phases_.size() &&
         std::abs(entry.substepS - substepS) <= kRelativeCacheTolerance * scale) {
       stiffness_ = entry.values;
+      pressureStiffnessSubstepS_ = entry.substepS;
+      stats_.pressureStiffnessSubstepS = pressureStiffnessSubstepS_;
       return;
     }
   }
 
   stiffness_ = calibratePressureStiffness(
       mass_, config_.resolution.spacing, config_.resolution.support(), substepS);
+  pressureStiffnessSubstepS_ = substepS;
+  stats_.pressureStiffnessSubstepS = pressureStiffnessSubstepS_;
   ++pressureStiffnessCalibrations_;
   if (stiffnessCache_.size() == 16) stiffnessCache_.erase(stiffnessCache_.begin());
   stiffnessCache_.push_back({substepS, stiffness_});
@@ -870,7 +878,8 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
   }
   // Resolve the environment override and static split once per advance rather
   // than allocating or re-deriving worker partitions in every gather.
-  WorkerPartitionScope workerPartition(configuredWorkerCount(particles.size()));
+  stats_.workerCount = configuredWorkerCount(particles.size());
+  WorkerPartitionScope workerPartition(stats_.workerCount);
 
   const double support = config_.resolution.support();
   const double contactRadius = config_.contactRadiusFactor * config_.resolution.spacing;
@@ -1055,6 +1064,9 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
       std::fill(forceY_.begin(), forceY_.end(), 0.0f);
       std::fill(forceZ_.begin(), forceZ_.end(), 0.0f);
       double finalCompression = std::numeric_limits<double>::infinity();
+      double bestCompression = std::numeric_limits<double>::infinity();
+      int iterationsWithoutMaterialImprovement = 0;
+      bool pressureStalled = false;
       int iterations = 0;
       for (; iterations < config_.maxPressureIterations; ++iterations) {
         parallelFor(particles.size(), [&](std::size_t begin, std::size_t end) {
@@ -1119,8 +1131,17 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
         for (unsigned worker = 0; worker < errorWorkers; ++worker) {
           finalCompression = std::max(finalCompression, workerErrors[worker]);
         }
-
-
+        // A correction is material when it removes at least 0.2% of the best
+        // compression seen so far. Three consecutive non-improving iterations
+        // distinguish a plateau/oscillation from a single rounded float update.
+        const double materialImprovement =
+            std::isfinite(bestCompression) ? 2.0e-3 * bestCompression : 0.0;
+        if (finalCompression + materialImprovement < bestCompression) {
+          bestCompression = finalCompression;
+          iterationsWithoutMaterialImprovement = 0;
+        } else {
+          ++iterationsWithoutMaterialImprovement;
+        }
         parallelFor(particles.size(), [&](std::size_t begin, std::size_t end) {
           for (std::size_t i = begin; i < end; ++i) {
             const std::size_t phase = particles.phase[i];
@@ -1134,6 +1155,12 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
                              delta0_, densityError_, forceX_, forceY_, forceZ_);
         if (iterations + 1 >= config_.minPressureIterations &&
             finalCompression <= config_.densityTolerance) {
+          ++iterations;
+          break;
+        }
+        if (iterations + 1 >= config_.minPressureIterations &&
+            iterationsWithoutMaterialImprovement >= 3) {
+          pressureStalled = true;
           ++iterations;
           break;
         }
@@ -1214,6 +1241,7 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
               .count();
 
       stats_.pressureIterations += iterations;
+      if (pressureStalled) ++stats_.stalledPressureSubsteps;
       if (reject) {
         ++stats_.rejectedSubsteps;
         ++rejectionAttempts;

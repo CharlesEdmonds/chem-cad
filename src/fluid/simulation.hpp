@@ -52,7 +52,8 @@ class Simulation {
 
   // ---- setup ----------------------------------------------------------
   void setVessel(sol::Vessel, double ratedVolumeMl);
-  void setResolution(double spacingM);   // rebuilds and recharges
+  void setResolution(double spacingM);   // rebuilds and recharges, preserving quality budget
+  void setQuality(const QualityProfile&); // atomically applies spacing and pressure budget
   void setPhases(const std::vector<PhaseMaterial>&, const std::vector<double>& sigmaPairs);
 
   // Charges the vessel: lays a lattice of particles, dense phase at the
