@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -748,6 +750,28 @@ MeltingEstimate estimateMeltingPoint(const core::Molecule& molecule) {
 // every point still inside the 1.5-decade bar, while the previously
 // invisible mismatch cases are now physically ordered (glycine water >>
 // hexane, naphthalene ethanol >> water, caffeine water > hexane).
+//
+// These constants were fitted while the Flory-Huggins solve below carried the
+// SOLVENT's combinatorial term instead of the solute's, so they had absorbed
+// part of that error. With the derivation corrected (see the solve for the
+// full argument), the non-aqueous residuals measured on the anchor set are
+//
+//   caffeine     ethanol +0.72   chloroform -0.94
+//   benzoic acid ethanol -0.27   toluene    -0.26
+//   naphthalene  ethanol +0.64   toluene     0.00
+//   paracetamol  ethanol -0.21
+//
+// RMS 0.53, down from 0.67 with the buggy term. A refit of C1/C2/C3b on those
+// seven points was tried and REJECTED: the unconstrained optimum runs to
+// C1 = 0.75, C2 = 0 (no polar cost at all), C3b = 0.96 for an in-sample RMS of
+// 0.45, which is a corner solution that would rank polar/non-polar pairs
+// outside the calibration set badly; inside a physically bounded box the gain
+// is only 0.53 -> 0.51 and sits on the box boundary, i.e. it is a choice of
+// box, not a signal. Seven points cannot support four constants. The two
+// largest residuals also pull in opposite directions (caffeine over-predicted
+// in ethanol, under-predicted in chloroform), and no Hansen-coordinate chi can
+// fix both -- chloroform's C-H...O=C donation to caffeine is not a Hansen
+// interaction. Better data, not more parameters, is what moves this next.
 namespace chiCoeff {
 constexpr double kC0 = 0.0;
 constexpr double kC1 = 0.0;
@@ -768,7 +792,31 @@ double safeDiv(double numerator, double denominator, double fallback) {
 
 }  // namespace
 
-Solute describeSolute(const core::Molecule& molecule) {
+Solute describeSolute(const core::Molecule& structure) {
+  if (structure.empty()) throw SolError("draw a structure first");
+
+  // A drawn structure is not always one molecule: an alkaloid hydrochloride,
+  // a sodium carboxylate or simply a reagent parked next to the target all
+  // arrive as several connected components. The descriptors below belong to
+  // the SKELETON -- the largest component -- while the smaller components are
+  // examined as counter-ions, because a salt's solubility is governed by its
+  // free base's descriptors plus ionisation, not by an average over the
+  // whole drawing. Using whichever component happened to come first silently
+  // modelled counter-ions and spectators.
+  const Ionization ionization = analyseIonization(structure);
+  const std::vector<core::Molecule> components = splitComponents(structure);
+  // Guard: an inorganic salt ([Na+].[Cl-]) has no molecular skeleton at all --
+  // its largest component is a single ion -- so the whole drawing IS the
+  // solute and the Ksp path in predict() handles it.
+  const auto heavyAtoms = [](const core::Molecule& m) {
+    int count = 0;
+    for (const core::Atom& atom : m.atoms()) {
+      if (atom.atomicNumber != 1) ++count;
+    }
+    return count;
+  };
+  const bool molecularSkeleton = !components.empty() && heavyAtoms(components.front()) >= 2;
+  const core::Molecule& molecule = molecularSkeleton ? components.front() : structure;
   if (molecule.empty()) throw SolError("draw a structure first");
 
   chem::Properties props = chem::computeProperties(molecule);
@@ -779,6 +827,7 @@ Solute describeSolute(const core::Molecule& molecule) {
   solute.logP = props.logP;
   solute.molarVolume = mcGowanVolume(molecule);
   solute.hansen = estimateHansen(molecule, solute.molarVolume);
+  solute.ionization = ionization;
 
   // Joback (1987) group-contribution melting point: Tm(K) = 122.5 +
   // sum(dTm_i), with ring membership from a real cycle test (RingPerception)
@@ -797,10 +846,13 @@ Solute describeSolute(const core::Molecule& molecule) {
   // a measured Hansen sphere radius should override this.
   solute.interactionRadius = std::clamp(3.0 + 0.05 * solute.molarVolume, 5.0, 14.0);
 
-  // Identity key for the literature anchor/salt tables; stays empty for
-  // structures RDKit cannot canonicalise, which simply skips anchoring.
+  // Identity key for the literature anchor/salt tables: the WHOLE structure,
+  // because the salt table is keyed on complete species ("[Na+].[Cl-]") while
+  // the anchor table holds single neutral molecules, which equal the skeleton
+  // anyway. Stays empty for structures RDKit cannot canonicalise, which
+  // simply skips anchoring.
   try {
-    solute.canonicalSmiles = chem::canonicalize(chem::toSmiles(molecule));
+    solute.canonicalSmiles = chem::canonicalize(chem::toSmiles(structure));
   } catch (const std::exception&) {
   }
   return solute;
@@ -908,24 +960,63 @@ Prediction computeFhPrediction(const Solute& solute, const std::vector<Component
   double xIdeal = std::clamp(std::exp(logXIdeal), 1e-300, 1.0);
 
   // Self-consistent Flory-Huggins solve for the solute volume fraction
-  // phi_s (contract item 4): ln(a_s) = ln(phi_s) + (1 - 1/m)(1 - phi_s) +
-  // chi*(1-phi_s)^2, m = V_solute / V_mixture, solved for ln(a_s) ==
-  // ln(x_ideal) by bisection. ln(a_s) is monotone increasing in phi_s on
-  // (0,1), so plain bisection also correctly collapses to the phi_s == lo or
-  // phi_s == hi boundary when the interval doesn't bracket a root (i.e. the
-  // solute is essentially insoluble, or the model has it fully miscible) --
-  // no special-casing needed. This self-consistency (rather than assuming
-  // infinite dilution) is what makes the solubility genuinely depend on the
-  // solvent blend ratio and produces the co-solvency maximum as chi and m
-  // both move with it.
-  double m = std::max(volumeSolute / mixtureVolume, 1e-12);
+  // phi_s (contract item 4). For the SOLUTE -- the component made of r =
+  // V_solute / V_mixture segments -- Flory's activity is
+  //
+  //     ln a_s = ln(phi_s) + (1 - r) (1 - phi_s) + chi (1 - phi_s)^2
+  //
+  // (Flory, Principles of Polymer Chemistry, 1953, ch. XII; the same form
+  // used by Martin's extended-Hansen solubility work and by Ruckenstein &
+  // Shulgin's Flory-Huggins-corrected solubility equation). Two details are
+  // easy to get wrong and both matter here:
+  //   * the combinatorial coefficient is (1 - r), NOT (1 - 1/r). The latter
+  //     belongs to the SOLVENT's activity in the same theory; using it for
+  //     the solute flips the sign of the size-asymmetry entropy and so
+  //     penalises every solute bigger than its solvent. For a 232 cm3/mol
+  //     solute in acetone (r = 3.1) that error alone is exp(2.8) ~ 16x too
+  //     little solubility, and it is why the model used to bottom out in the
+  //     solvent whose Hansen parameters match the solute best.
+  //   * chi as computed above already carries V_solute, i.e. it is Flory's
+  //     r*chi_1, so it multiplies phi_1^2 directly rather than being scaled
+  //     again.
+  // Saturation is ln a_s == ln(x_ideal).
+  double r = std::max(volumeSolute / mixtureVolume, 1e-12);
   auto lnActivity = [&](double phi) {
     double oneMinusPhi = 1.0 - phi;
-    return std::log(phi) + (1.0 - 1.0 / m) * oneMinusPhi + chi * oneMinusPhi * oneMinusPhi;
+    return std::log(phi) + (1.0 - r) * oneMinusPhi + chi * oneMinusPhi * oneMinusPhi;
   };
 
-  double lo = 1e-12;
+  // ln a_s is NOT monotone in phi_s in general: a large chi folds the curve,
+  // and that fold is real physics (liquid-liquid demixing). A saturated
+  // solution sits on the dilute branch, so bracket the LOWEST root by
+  // scanning upward in log(phi) and bisect inside that bracket, instead of
+  // assuming monotonicity and possibly landing on the solute-rich root.
+  double lo = 1e-14;
   double hi = 1.0 - 1e-12;
+  {
+    constexpr int kScanSteps = 512;
+    const double logLo = std::log(lo);
+    const double logHi = std::log(hi);
+    double prevPhi = lo;
+    double prevF = lnActivity(lo) - logXIdeal;
+    bool bracketed = false;
+    for (int i = 1; i <= kScanSteps; ++i) {
+      const double phiScan =
+          std::exp(logLo + (logHi - logLo) * static_cast<double>(i) / kScanSteps);
+      const double f = lnActivity(phiScan) - logXIdeal;
+      if (prevF <= 0.0 && f > 0.0) {
+        lo = prevPhi;
+        hi = phiScan;
+        bracketed = true;
+        break;
+      }
+      prevPhi = phiScan;
+      prevF = f;
+    }
+    // No crossing anywhere: within the model the solute is miscible at every
+    // composition, so saturation is the phi -> 1 boundary.
+    if (!bracketed) lo = prevPhi;
+  }
   for (int i = 0; i < 200; ++i) {
     double mid = 0.5 * (lo + hi);
     double f = lnActivity(mid) - logXIdeal;
@@ -1014,6 +1105,172 @@ double idealSolubility(double meltingPointC, double entropyOfFusion, double temp
   return std::clamp(std::exp(std::min(logX, 0.0)), 1e-300, 1.0);
 }
 
+// ---- ionisation correction --------------------------------------------
+// Everything above this point describes a NEUTRAL species. Real bench
+// chemistry hands you acids, bases and their salts, whose solubility is set
+// by two further physics terms:
+//
+//   Henderson-Hasselbalch. The dissolved solute redistributes between its
+//   neutral and ionised forms, so the total solubility of the solid is
+//   S = S_0 (1 + [ionised]/[neutral]) with the ratio 10^(pKa - pH) for a base
+//   and 10^(pH - pKa) for an acid. Which SOLID is on the bottom of the flask
+//   decides which branches exist: a free base can dissolve as the neutral
+//   species anywhere, whereas a hydrochloride crystal can only dissolve by
+//   putting ions into solution -- so the salt path drops the neutral "1 +".
+//
+//   Born electrostatics. Carrying that ion pair into a solvent of lower
+//   dielectric constant costs (1/eps_s - 1/eps_water) of the ions' self
+//   energy, which is why an amine hydrochloride is freely soluble in water
+//   and practically insoluble in chloroform while its free base is the other
+//   way round. sol/ionization.cpp holds the equation and its caveats.
+//
+// The reference state matters: the FH/GSE/anchor value already corresponds
+// to the FREE species sitting in its own saturated, unbuffered solution, so
+// the correction is a RATIO against that reference pH. At the default
+// (self-buffered) pH a free acid or base therefore returns its reference
+// value essentially unchanged, and an anchored measurement stays measured.
+Prediction applyIonisation(Prediction prediction, const Solute& solute,
+                           const std::vector<Component>& components, double temperatureC,
+                           double pHRequest) {
+  const Ionization& ion = solute.ionization;
+  if (ion.ionClass == IonClass::Neutral || ion.ionClass == IonClass::Zwitterion) return prediction;
+  if (prediction.gramsPerMillilitre <= 0.0 || solute.molarMass <= 0.0) return prediction;
+
+  // Volume-fraction dielectric of the blend; a solvent with no tabulated
+  // value falls back to water so a missing datum cannot invent a penalty.
+  double totalFraction = 0.0;
+  double dielectric = 0.0;
+  for (const Component& component : components) {
+    if (!component.solvent || component.volumeFraction <= 0.0) continue;
+    totalFraction += component.volumeFraction;
+    const double eps = component.solvent->dielectric > 0.0 ? component.solvent->dielectric : 78.4;
+    dielectric += component.volumeFraction * eps;
+  }
+  if (totalFraction <= 0.0) return prediction;
+  dielectric /= totalFraction;
+
+  const double temperatureK = temperatureC + 273.15;
+  const double bornDecades =
+      bornPenaltyDecades(dielectric, bornRadiusFromMolarVolumeNm(solute.molarVolume),
+                         ion.counterIonRadiusNm, temperatureK);
+  const double bornFactor = std::pow(10.0, -bornDecades);
+
+  // Ion-PAIR branch. Born assumes two independent free ions, which is right in
+  // water and badly wrong below about eps ~ 15: there the Bjerrum length
+  // exceeds the contact distance, association is essentially complete, and the
+  // species that actually leaves the crystal is a neutral contact ion pair.
+  // Without this branch the model claims an amine hydrochloride is 12 decades
+  // insoluble in chloroform, when bench reality is roughly a decade below its
+  // free base -- and genuinely insoluble in hydrocarbons, because a contact
+  // pair still needs a polar or H-bond-donating solvent to be solvated at all.
+  // Empirical, and labelled as such: one decade of penalty, scaled by the
+  // blend's polar + H-bond Hansen distance against a chloroform-like
+  // reference (dP 3.1 + dH 5.7 ~ 9). Hexane (0 + 0) gets nothing, toluene
+  // (1.4 + 2.0) a third, an alcohol the full value.
+  constexpr double kPairPenaltyDecades = 1.0;
+  constexpr double kPairPolarityReference = 9.0;  // MPa^0.5, dP + dH
+  const Mixture mixture = blend(components);
+  const double pairSolvation = std::clamp(
+      (mixture.hansen.polar + mixture.hansen.hydrogenBond) / kPairPolarityReference, 0.0, 1.0);
+  const double pairFactor = pairSolvation * std::pow(10.0, -kPairPenaltyDecades);
+
+  // Reference: the free species in its own saturated solution.
+  Ionization freeForm = ion;
+  freeForm.saltForm = false;
+  const double referenceMolar = std::max(prediction.molesPerLitre, 1e-9);
+  const double referencePH = selfBufferedPH(freeForm, referenceMolar);
+  const double referenceRatio = ionisedRatio(freeForm, referencePH);
+
+  // Crystal-density ceiling: a saturated solution cannot hold more solute
+  // than the solute's own condensed volume allows. tanh saturates smoothly,
+  // so a graph never shows a hard clamp corner. The true ionised limit is
+  // the salt's own solubility product, which this app has no measured value
+  // for -- the ceiling stands in for it and says so in the note.
+  const double ceiling = std::max(solute.molarMass / std::max(solute.molarVolume, 1e-6), 1e-9);
+  const double reference = prediction.gramsPerMillilitre;
+
+  // Self-buffered pH depends on the saturated concentration, which depends on
+  // the pH: three fixed-point passes settle it to well inside the model's own
+  // uncertainty.
+  //
+  // A FREE acid or base at its own self-buffered pH is exactly the reference
+  // state, so the ratio is 1 by construction and the value must come back
+  // untouched -- an anchored measurement of benzoic acid already contains its
+  // own self-ionisation, and re-deriving it would only add noise. The
+  // correction therefore only moves the number for a SALT (whose crystal
+  // dissolves on the ionised side) or for an explicitly requested pH.
+  const bool corrects = ion.saltForm || pHRequest != kAutoPH;
+  double pH = pHRequest;
+  double grams = reference;
+  double ratio = 0.0;
+  for (int pass = 0; pass < 3; ++pass) {
+    if (pHRequest == kAutoPH) {
+      pH = selfBufferedPH(ion, std::max(grams / solute.molarMass * 1000.0, 1e-9));
+    }
+    ratio = ionisedRatio(ion, pH);
+    if (!corrects) break;
+    // Salt crystal: free ions (Born) plus the contact ion pair. Free acid or
+    // base: the neutral species, plus its ions when the pH calls for them.
+    const double available =
+        ion.saltForm ? ratio * bornFactor + pairFactor : 1.0 + ratio * bornFactor;
+    const double estimate = reference * available / (1.0 + referenceRatio);
+    grams = ceiling * std::tanh(estimate / ceiling);
+    if (pHRequest != kAutoPH) break;
+  }
+
+  if (corrects) {
+    prediction.gramsPerMillilitre = grams;
+    // Re-derive the mole fraction from the corrected concentration with the
+    // exact inverse of the forward transform (x -> g), not a linear rescale:
+    // g = x*M / (x*Vs + (1-x)*Vm)  =>  x = g*Vm / (M - g*(Vs - Vm)).
+    const double vs = std::max(solute.molarVolume, 1e-6);
+    const double vm = std::max(mixture.molarVolume, 1e-6);
+    const double mm = std::max(solute.molarMass, 1e-9);
+    double x = grams * vm / std::max(mm - grams * (vs - vm), 1e-300);
+    x = std::clamp(x, 0.0, 1.0);
+    const double solutionMolarVolume = x * vs + (1.0 - x) * vm;
+    prediction.moleFraction = x;
+    prediction.molesPerLitre = std::max(0.0, 1000.0 * x / solutionMolarVolume);
+    prediction.activityCoefficient =
+        safeDiv(prediction.idealMoleFraction, std::max(x, 1e-300),
+                prediction.activityCoefficient);
+  }
+
+  prediction.ionicPath = true;
+  prediction.pH = pH;
+  prediction.pHSelfBuffered = pHRequest == kAutoPH;
+  prediction.pKa = ion.pKa;
+  prediction.ionisedFraction = ratio / (1.0 + ratio);
+  prediction.bornPenaltyDecades = bornDecades;
+  prediction.ceilingLimited = grams > 0.5 * ceiling;
+
+  std::string note = (ion.ionClass == IonClass::Base ? "base, " : "acid, ");
+  note += ion.siteLabel.empty() ? "ionisable site" : ion.siteLabel;
+  char buffer[96];
+  std::snprintf(buffer, sizeof(buffer), ", pKa ~%.1f (estimated), pH %.1f%s", ion.pKa, pH,
+                prediction.pHSelfBuffered ? " (self-buffered)" : "");
+  note += buffer;
+  if (ion.saltForm) {
+    note += "; salt of " + (ion.counterIon.empty() ? std::string("an unspecified counter-ion")
+                                                   : ion.counterIon);
+  }
+  if (bornDecades > 0.5) {
+    std::snprintf(buffer, sizeof(buffer), "; Born penalty %.1f decades at eps %.1f", bornDecades,
+                  dielectric);
+    note += buffer;
+  }
+  if (prediction.ceilingLimited) {
+    std::snprintf(buffer, sizeof(buffer), "; saturating against the %.2f g/mL crystal-density bound",
+                  ceiling);
+    note += buffer;
+  }
+  if (!corrects) {
+    note += "; self-buffered, so the reported value already reflects it";
+  }
+  prediction.ionNote = note;
+  return prediction;
+}
+
 // Aqueous 1:1-salt path. Ksp machinery supplies RATIOS (common-ion effect,
 // ionic strength, van't Hoff temperature); the measured 25 C pure-water
 // value pins the endpoint exactly, so a pure-water query returns the
@@ -1080,7 +1337,8 @@ Prediction floryHugginsPrediction(const Solute& solute, const std::vector<Compon
 }
 
 Prediction predict(const Solute& solute, const std::vector<Component>& components,
-                   double temperatureC, const Electrolyte* background, double backgroundM) {
+                   double temperatureC, const Electrolyte* background, double backgroundM,
+                   double pH) {
   // 1:1 salts bypass the organic model: a Ksp equilibrium over the aqueous
   // share of the blend. A salt in a waterless blend is effectively
   // insoluble.
@@ -1099,7 +1357,9 @@ Prediction predict(const Solute& solute, const std::vector<Component>& component
   }
 
   Prediction prediction = computeFhPrediction(solute, components, temperatureC);
-  if (solute.canonicalSmiles.empty()) return prediction;
+  if (solute.canonicalSmiles.empty()) {
+    return applyIonisation(prediction, solute, components, temperatureC, pH);
+  }
 
   // Measured-value correction: where a literature anchor exists for an
   // involved pure solvent, pull the prediction toward it log-linearly in the
@@ -1116,7 +1376,7 @@ Prediction predict(const Solute& solute, const std::vector<Component>& component
   for (const Component& component : components) {
     if (component.solvent && component.volumeFraction > 0.0) total += component.volumeFraction;
   }
-  if (total <= 0.0) return prediction;
+  if (total <= 0.0) return applyIonisation(prediction, solute, components, temperatureC, pH);
 
   const double idealNow = idealSolubility(solute.meltingPoint, solute.entropyOfFusion,
                                           temperatureC);
@@ -1150,7 +1410,7 @@ Prediction predict(const Solute& solute, const std::vector<Component>& component
     if (!notes.empty()) notes += "; ";
     notes += anchor->note.empty() ? component.solvent->name : anchor->note;
   }
-  if (!anchored) return prediction;
+  if (!anchored) return applyIonisation(prediction, solute, components, temperatureC, pH);
 
   const double scale = std::exp(logCorrection);
   prediction.gramsPerMillilitre *= scale;
@@ -1170,12 +1430,12 @@ Prediction predict(const Solute& solute, const std::vector<Component>& component
   prediction.activityCoefficient = idealNow / std::max(x, 1e-300);
   prediction.anchored = true;
   prediction.anchorNote = "anchored to measured data (" + notes + ")";
-  return prediction;
+  return applyIonisation(prediction, solute, components, temperatureC, pH);
 }
 
 std::vector<SweepPoint> sweep(const Solute& solute, const std::vector<const Solvent*>& solvents,
                               int steps, double temperatureC, const Electrolyte* background,
-                              double backgroundM) {
+                              double backgroundM, double pH) {
   if (solvents.empty() || solvents.size() > 3) {
     throw SolError("sweep needs 1 to 3 solvents");
   }
@@ -1192,7 +1452,7 @@ std::vector<SweepPoint> sweep(const Solute& solute, const std::vector<const Solv
     components.push_back({solvents[0], f0});
     if (solvents.size() > 1) components.push_back({solvents[1], f1});
     if (solvents.size() > 2) components.push_back({solvents[2], f2});
-    point.prediction = predict(solute, components, temperatureC, background, backgroundM);
+    point.prediction = predict(solute, components, temperatureC, background, backgroundM, pH);
     points.push_back(std::move(point));
   };
 
@@ -1217,14 +1477,14 @@ std::vector<SweepPoint> sweep(const Solute& solute, const std::vector<const Solv
 }
 
 std::vector<ScreenRow> screen(const Solute& solute, double temperatureC,
-                              const Electrolyte* background, double backgroundM) {
+                              const Electrolyte* background, double backgroundM, double pH) {
   const std::vector<Solvent>& table = solvents();  // propagates a load failure
   std::vector<ScreenRow> rows;
   rows.reserve(table.size());
   for (const Solvent& solvent : table) {
     const std::vector<Component> pure{Component{&solvent, 1.0}};
     rows.push_back(ScreenRow{&solvent, predict(solute, pure, temperatureC, background,
-                                               backgroundM)});
+                                               backgroundM, pH)});
   }
   // Best solvent first; name tiebreak keeps the order deterministic across
   // runs when two predictions land on the same value.

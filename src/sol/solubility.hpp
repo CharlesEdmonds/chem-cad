@@ -7,6 +7,7 @@
 
 #include "core/model.hpp"
 #include "sol/anchors.hpp"
+#include "sol/ionization.hpp"
 #include "sol/solvent.hpp"
 
 namespace chemcad::sol {
@@ -23,6 +24,8 @@ struct Solute {
   double interactionRadius = 8.0;  // Hansen sphere radius R0, MPa^0.5
   bool meltingPointEstimated = false;  // true when Joback supplied it
   std::string canonicalSmiles;         // identity key for literature anchors
+  // Ionisable sites, counter-ions and salt form, from analyseIonization().
+  Ionization ionization;
 };
 
 // Group-contribution estimate of the solute from a sketched structure.
@@ -59,6 +62,16 @@ struct Prediction {
   bool anchored = false;    // a measured literature value contributed
   bool saltPath = false;    // Ksp equilibrium, not the organic FH model
   std::string anchorNote;   // e.g. "measured value (caffeine, CRC Handbook)"
+
+  // ---- ionisation (see sol/ionization.hpp) ----------------------------
+  bool ionicPath = false;         // an acid/base/salt correction was applied
+  double pH = 7.0;                // pH the correction used
+  bool pHSelfBuffered = true;     // true when the pH came from the solute itself
+  double pKa = 0.0;               // dominant site, estimated unless stated
+  double ionisedFraction = 0.0;   // ionised share of the dissolved solute, 0..1
+  double bornPenaltyDecades = 0.0;  // decades the ion loses to a low dielectric
+  bool ceilingLimited = false;    // saturated against the crystal-density bound
+  std::string ionNote;            // human-readable summary of the ionic path
 };
 
 // Neutral organic solutes use the Flory-Huggins + extended-Hansen model,
@@ -67,8 +80,14 @@ struct Prediction {
 // its measured value exactly). 1:1 salts in a water-containing blend use
 // the Ksp equilibrium instead, honouring `background` for the common-ion
 // effect and ionic strength.
+// Sentinel for "no pH supplied": the solute's own saturated solution sets it
+// (a free base runs basic, its hydrochloride runs acidic), which is what a
+// bench chemist observes when dissolving the solid in unbuffered water.
+constexpr double kAutoPH = -1.0;
+
 Prediction predict(const Solute&, const std::vector<Component>&, double temperatureC = 25.0,
-                   const Electrolyte* background = nullptr, double backgroundM = 0.0);
+                   const Electrolyte* background = nullptr, double backgroundM = 0.0,
+                   double pH = kAutoPH);
 
 struct SweepPoint {
   std::array<double, 3> fractions{};  // volume fractions, sums to 1
@@ -80,7 +99,8 @@ struct SweepPoint {
 // SolError.
 std::vector<SweepPoint> sweep(const Solute&, const std::vector<const Solvent*>&, int steps,
                               double temperatureC = 25.0,
-                              const Electrolyte* background = nullptr, double backgroundM = 0.0);
+                              const Electrolyte* background = nullptr, double backgroundM = 0.0,
+                              double pH = kAutoPH);
 
 // One row of the solvent screen: predicted solubility in a pure solvent.
 struct ScreenRow {
@@ -93,7 +113,8 @@ struct ScreenRow {
 // predictions, cheap enough to recompute whenever the solute or temperature
 // changes. Throws SolError only when the database itself fails to load.
 std::vector<ScreenRow> screen(const Solute&, double temperatureC = 25.0,
-                              const Electrolyte* background = nullptr, double backgroundM = 0.0);
+                              const Electrolyte* background = nullptr, double backgroundM = 0.0,
+                              double pH = kAutoPH);
 
 // Distribution of a neutral solute between water and a water-immiscible
 // organic phase, using logP as the octanol/water partition proxy.

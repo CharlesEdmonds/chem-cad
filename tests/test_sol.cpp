@@ -20,14 +20,11 @@ namespace sol = chemcad::sol;
 
 namespace {
 
-// Sums the volume still resident in droplets, converted from the metre-scale
-// radius the simulation stores to millilitres, matching totalVolumeMl's unit.
+// Parcel volume is the conserved bulk quantity. Physical radius belongs only
+// to breakup and settling and must never be used for volume bookkeeping.
 double dropletVolumeMl(const sol::Simulation& sim) {
   double volume = 0.0;
-  for (const sol::Droplet& d : sim.droplets) {
-    const double r = static_cast<double>(d.radius);
-    volume += (4.0 / 3.0) * std::numbers::pi_v<double> * r * r * r * 1.0e6;
-  }
+  for (const sol::Droplet& d : sim.droplets) volume += double(d.parcelMl);
   return volume;
 }
 
@@ -390,15 +387,15 @@ TEST_CASE("funnel simulation conserves total charged volume through shaking and 
 
   const double total = sol::totalVolumeMl(sim);
   CHECK(total == doctest::Approx(180.0).epsilon(1e-9));
-  CHECK(std::abs(settledVolumeMl(sim) + dropletVolumeMl(sim) - total) < 1e-6);
+  CHECK(std::abs(settledVolumeMl(sim) + dropletVolumeMl(sim) - total) <= 1e-9);
 
   sol::shake(sim, sol::ShakeParams{4.0, 3.0, 0.06});
-  CHECK(std::abs(settledVolumeMl(sim) + dropletVolumeMl(sim) - total) < 1e-6);
+  CHECK(std::abs(settledVolumeMl(sim) + dropletVolumeMl(sim) - total) <= 1e-9);
 
   for (int i = 0; i < 500; ++i) {
     sol::step(sim, 0.05);
     CAPTURE(i);
-    CHECK(std::abs(settledVolumeMl(sim) + dropletVolumeMl(sim) - total) < 1e-6);
+    CHECK(std::abs(settledVolumeMl(sim) + dropletVolumeMl(sim) - total) <= 1e-9);
   }
 }
 

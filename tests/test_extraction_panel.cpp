@@ -4,6 +4,9 @@
 // work without a display.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
+#include <algorithm>
+#include <array>
+#include <cmath>
 
 #include <string>
 
@@ -58,6 +61,53 @@ int panelFrame(ui::AppState& st) {
 int settledVertexCount(ui::AppState& st) {
   panelFrame(st);
   return panelFrame(st);
+}
+
+constexpr double kPi = 3.14159265358979323846;
+
+sol::Simulation physicsSimulation() {
+  sol::Simulation sim;
+  sim.vessel = sol::Vessel::SeparatoryFunnel;
+  sim.vesselVolumeMl = 250.0;
+
+  sol::Phase aqueous;
+  aqueous.label = "Aqueous";
+  aqueous.volumeMl = 125.0;
+  aqueous.density = 1.10;
+  aqueous.viscosity = 1.2;
+  aqueous.interfacialTension = 30.0;
+  aqueous.emulsionStability = 0.25;
+
+  sol::Phase organic;
+  organic.label = "Organic";
+  organic.volumeMl = 125.0;
+  organic.density = 0.82;
+  organic.viscosity = 1.0;
+  organic.interfacialTension = 30.0;
+  organic.emulsionStability = 0.25;
+
+  sim.phases = {aqueous, organic};
+  sol::reset(sim);
+  return sim;
+}
+
+double representedVolumeMl(const sol::Simulation& sim) {
+  double total = 0.0;
+  for (double settled : sim.settledMl) total += settled;
+  for (const sol::Droplet& droplet : sim.droplets) total += double(droplet.parcelMl);
+  return total;
+}
+
+double cloudRadiusM(const sol::Droplet& droplet) {
+  return std::cbrt(3.0 * double(droplet.parcelMl) * 1e-6 / (4.0 * kPi));
+}
+
+double outlineMaxHalfWidth(sol::Vessel vessel, double height) {
+  double maxWidth = 0.0;
+  for (const core::Vec2& point : sol::vesselOutline(vessel, height)) {
+    maxWidth = std::max(maxWidth, std::abs(double(point.x)));
+  }
+  return maxWidth;
 }
 
 }  // namespace
@@ -144,4 +194,114 @@ TEST_CASE("the solute distribution panel draws when a solute is available") {
   // The stacked partition bar and its labels are real geometry on top of the
   // bare vessel.
   CHECK(soluteVertices > bareVertices);
+}
+
+TEST_CASE("parcel bookkeeping conserves volume through shake and long settling") {
+  sol::Simulation sim = physicsSimulation();
+  const double charged = sol::totalVolumeMl(sim);
+  sol::shake(sim, sol::ShakeParams{5.0, 3.0, 0.05});
+
+  for (int i = 0; i < 100; ++i) sol::step(sim, 0.05);
+  REQUIRE(!sim.droplets.empty());
+  CHECK(sim.droplets.size() >= 600);
+  CHECK(sim.droplets.size() <= 1200);
+  CHECK(sim.shake.sauterRadiusM >= 100e-6);
+  CHECK(sim.shake.sauterRadiusM <= 400e-6);
+  CHECK(std::abs(representedVolumeMl(sim) - charged) <= 1e-9);
+
+  for (int i = 0; i < 1200; ++i) sol::step(sim, 0.05);
+  CHECK(std::abs(representedVolumeMl(sim) - charged) <= 1e-9);
+}
+
+TEST_CASE("parcel clouds remain inside their analytic vessel over thirty seconds") {
+  sol::Simulation sim = physicsSimulation();
+  sol::shake(sim, sol::ShakeParams{5.0, 3.0, 0.05});
+  const double height = sol::columnHeightM(sim);
+  const double maxHalfWidth = outlineMaxHalfWidth(sim.vessel, height);
+  constexpr double kGeometryTolerance = 2e-6;
+
+  for (int frame = 0; frame < 600; ++frame) {
+    sol::step(sim, 0.05);
+    for (const sol::Droplet& droplet : sim.droplets) {
+      const double cloud = cloudRadiusM(droplet);
+      const double y = double(droplet.position.y);
+      const double wall =
+          maxHalfWidth * sol::vesselWidthAt(sim.vessel, y / height);
+      CAPTURE(frame, droplet.phase, droplet.position.x, droplet.position.y,
+              droplet.radius, droplet.parcelMl);
+      CHECK(droplet.radius >= 20e-6f);
+      CHECK(droplet.radius <= 3e-3f);
+      CHECK(y >= 0.0);
+      CHECK(y <= height);
+      CHECK(y - cloud >= -kGeometryTolerance);
+      CHECK(y + cloud <= height + kGeometryTolerance);
+      CHECK(std::abs(double(droplet.position.x)) + cloud <=
+            wall + kGeometryTolerance);
+    }
+  }
+}
+
+TEST_CASE("column height and analytic profile reproduce rated vessel capacity") {
+  constexpr std::array<sol::Vessel, 3> kVessels = {
+      sol::Vessel::SeparatoryFunnel,
+      sol::Vessel::DecantingFlask,
+      sol::Vessel::GraduatedCylinder,
+  };
+  constexpr int kIntegrationSteps = 4096;
+
+  for (sol::Vessel vessel : kVessels) {
+    sol::Simulation sim;
+    sim.vessel = vessel;
+    sim.vesselVolumeMl = 250.0;
+    const double height = sol::columnHeightM(sim);
+    const double maxHalfWidth = outlineMaxHalfWidth(vessel, height);
+    const std::vector<core::Vec2> outline = sol::vesselOutline(vessel, height);
+    REQUIRE(outline.size() >= 515);
+    REQUIRE(outline.front().x == outline.back().x);
+    REQUIRE(outline.front().y == outline.back().y);
+    double signedAreaTwice = 0.0;
+    for (size_t i = 1; i < outline.size(); ++i) {
+      signedAreaTwice += double(outline[i - 1].x) * double(outline[i].y) -
+                         double(outline[i].x) * double(outline[i - 1].y);
+    }
+    CHECK(signedAreaTwice > 0.0);
+
+    double integral = 0.0;
+    for (int i = 0; i <= kIntegrationSteps; ++i) {
+      const double t = double(i) / kIntegrationSteps;
+      const double width = sol::vesselWidthAt(vessel, t);
+      const double weight =
+          (i == 0 || i == kIntegrationSteps) ? 1.0 : (i % 2 == 0 ? 2.0 : 4.0);
+      integral += weight * width * width;
+    }
+    integral /= 3.0 * kIntegrationSteps;
+    const double integratedMl =
+        kPi * maxHalfWidth * maxHalfWidth * height * integral * 1e6;
+    CAPTURE(static_cast<int>(vessel), height, maxHalfWidth, integratedMl);
+    CHECK(integratedMl == doctest::Approx(sim.vesselVolumeMl).epsilon(0.01));
+  }
+}
+
+TEST_CASE("Squibb profile widens to its high shoulder and never forms a kite") {
+  constexpr int kSamples = 720;
+  double previous = sol::vesselWidthAt(sol::Vessel::SeparatoryFunnel, 0.0);
+  for (int i = 1; i <= kSamples; ++i) {
+    const double t = 0.72 * double(i) / kSamples;
+    const double width = sol::vesselWidthAt(sol::Vessel::SeparatoryFunnel, t);
+    CAPTURE(t, width, previous);
+    CHECK(width >= previous - 1e-12);
+    previous = width;
+  }
+  CHECK(previous == doctest::Approx(1.0).epsilon(1e-12));
+
+  for (int i = 1; i <= kSamples; ++i) {
+    const double t = 0.72 + 0.14 * double(i) / kSamples;
+    const double width = sol::vesselWidthAt(sol::Vessel::SeparatoryFunnel, t);
+    CAPTURE(t, width, previous);
+    CHECK(width <= previous + 1e-12);
+    previous = width;
+  }
+  CHECK(previous == doctest::Approx(0.20).epsilon(1e-12));
+  CHECK(sol::vesselWidthAt(sol::Vessel::SeparatoryFunnel, 1.0) ==
+        doctest::Approx(0.20));
 }

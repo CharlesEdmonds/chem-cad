@@ -26,6 +26,15 @@ struct ExtractionImport {
   double soluteMassMg = 100.0;
 };
 
+// One fixed-C slice of the ternary composition cube. Points are ordered along
+// the A:B sweep; keeping the slices here makes the expensive predictions a
+// signature-keyed cache rather than per-frame drawing work.
+struct TernaryLayerSweep {
+  float fractionC = 0.0f;
+  std::vector<sol::SweepPoint> points;
+  int peakIndex = -1;
+};
+
 struct SolubilityState {
   // ------------------------------------------------------------- solute
   bool useSketch = true;        // true: pull from st.doc.molecules; false: manualSmiles
@@ -34,6 +43,9 @@ struct SolubilityState {
   sol::Solute solute;
   bool soluteValid = false;
   std::string soluteError;
+  // Non-fatal advisory about how the solute was interpreted (e.g. a sketch
+  // holding several fragments, where only the largest is the solute).
+  std::string soluteNote;
 
   bool overrideSolute = false;  // user-supplied melting point / R0 vs group contribution
   float meltingPointC = 25.0f;
@@ -49,6 +61,13 @@ struct SolubilityState {
 
   float temperatureC = 25.0f;
 
+  // pH matters only for an ionisable solute. Auto means "whatever the solute's
+  // own saturated solution sets" -- a free base runs basic, its hydrochloride
+  // runs acidic -- which is what happens when you drop the solid into
+  // unbuffered water.
+  bool pHAuto = true;
+  float pH = 7.0f;
+
   // -------------------------------------------------------------- result
   sol::Prediction prediction;
 
@@ -61,6 +80,7 @@ struct SolubilityState {
   int sweepSteps = 20;
   std::string sweepSignature;  // cache key: solvent ids + steps + temperature + soluteVersion
   int sweepPeakIndex = -1;  // index into `sweep` of the max-solubility sample, or -1
+  std::vector<TernaryLayerSweep> ternaryLayers;  // fixed-C curves, cached with `sweep`
 
   // ------------------------------------------------------- solvent screen
   std::vector<sol::ScreenRow> screening;  // pure-solvent table, best first

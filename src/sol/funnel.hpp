@@ -25,7 +25,8 @@ struct Phase {
 struct Droplet {
   core::Vec2 position{};  // vessel-local metres, origin at the bottom centre
   core::Vec2 velocity{};
-  float radius = 0.0f;    // metres
+  float radius = 0.0f;    // physical droplet radius, metres
+  float parcelMl = 0.0f;  // bulk volume represented by this parcel, mL
   int phase = 0;          // index into Simulation::phases
 };
 
@@ -85,6 +86,10 @@ double totalVolumeMl(const Simulation&);
 
 // Fraction of the charged volume currently dispersed as droplets, 0..1.
 double emulsifiedFraction(const Simulation&);
+
+// Full vessel height in metres. The axisymmetric revolution of the analytic
+// width profile at the vessel's fixed aspect ratio holds vesselVolumeMl.
+double columnHeightM(const Simulation&);
 
 // Closed polygon outline of the vessel cross-section, in vessel-local metres,
 // counter-clockwise from the bottom.

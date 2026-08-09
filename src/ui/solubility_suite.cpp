@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "chem/bridge.hpp"
@@ -147,8 +148,8 @@ std::string formatUnits(double gramsPerMillilitre, double molarMass, int units) 
          kUnitLabels[static_cast<size_t>(clamped)];
 }
 
-// A small perceptually-ordered ramp (violet -> blue -> teal -> green ->
-// yellow), used for both the ternary fill and its legend.
+// A perceptually ordered ramp (violet -> blue -> teal -> green -> yellow)
+// gives the active ternary layer's under-curve fill useful value depth.
 ImVec4 colorRampF(float t) {
   static constexpr ImVec4 kStops[] = {
       {0.231f, 0.114f, 0.494f, 1.0f},
@@ -167,10 +168,9 @@ ImVec4 colorRampF(float t) {
   return ImVec4(c0.x + (c1.x - c0.x) * frac, c0.y + (c1.y - c0.y) * frac,
                c0.z + (c1.z - c0.z) * frac, 1.0f);
 }
-ImU32 colorRamp(float t) { return style::u32(colorRampF(t)); }
 
-// Slot identity colours: the mixer rows, the plot markers and the ternary
-// corners all use these so a solvent keeps its colour across the panel.
+// Slot identity colours are shared by mixer rows, plot markers and axes so a
+// solvent keeps its colour across the panel.
 ImVec4 slotColor(int index) {
   switch (index) {
     case 0: return style::col::Teal;
@@ -282,21 +282,51 @@ void applySoluteOverrides(SolubilityState& sb) {
   sb.solute.interactionRadius = static_cast<double>(sb.interactionRadius);
 }
 
+// Note describing how a multi-fragment sketch was interpreted, or empty when
+// there is nothing surprising to say.
+std::string soluteInterpretationNote(const sol::Solute& solute) {
+  const sol::Ionization& ion = solute.ionization;
+  if (ion.fragmentCount <= 1) return {};
+  char note[224];
+  if (ion.saltForm && !ion.counterIon.empty()) {
+    std::snprintf(note, sizeof(note),
+                  "Salt: %s counter-ion detected, modelled as the ionised form of the "
+                  "%.1f g/mol skeleton.",
+                  ion.counterIon.c_str(), solute.molarMass);
+  } else {
+    std::snprintf(note, sizeof(note),
+                  "Sketch holds %d fragments; modelling the largest (%.1f g/mol). "
+                  "Spectator molecules are ignored.",
+                  ion.fragmentCount, solute.molarMass);
+  }
+  return note;
+}
+
 void recomputeSoluteFromSketch(AppState& st) {
   SolubilityState& sb = st.solubility;
   sb.soluteError.clear();
+  sb.soluteNote.clear();
   sb.soluteValid = false;
   try {
-    const core::Molecule* found = nullptr;
-    for (const core::Molecule& mol : st.doc.molecules) {
-      if (!mol.empty()) {
-        found = &mol;
-        break;
+    // Hand the WHOLE sketch over, not the first fragment: describeSolute picks
+    // the skeleton and reads the rest as counter-ions, so a drawn
+    // hydrochloride is modelled as a salt instead of as its free base, and a
+    // reagent parked beside the target cannot become the solute.
+    core::Molecule structure;
+    for (const core::Molecule& fragment : st.doc.molecules) {
+      if (fragment.empty()) continue;
+      std::unordered_map<core::AtomId, core::AtomId> ids;
+      ids.reserve(fragment.atomCount());
+      for (const core::Atom& atom : fragment.atoms()) ids.emplace(atom.id, structure.addAtom(atom));
+      for (const core::Bond& bond : fragment.bonds()) {
+        const core::BondId id = structure.addBond(ids.at(bond.a), ids.at(bond.b), bond.order);
+        if (core::Bond* added = structure.bond(id)) added->stereo = bond.stereo;
       }
     }
-    if (!found) throw sol::SolError("Sketch is empty -- draw a structure first.");
-    sb.solute = sol::describeSolute(*found);
+    if (structure.empty()) throw sol::SolError("Sketch is empty -- draw a structure first.");
+    sb.solute = sol::describeSolute(structure);
     sb.soluteValid = true;
+    sb.soluteNote = soluteInterpretationNote(sb.solute);
   } catch (const sol::SolError& err) {
     sb.soluteError = err.what();
   } catch (const chem::ChemError& err) {
@@ -312,6 +342,7 @@ void recomputeSoluteFromSketch(AppState& st) {
 void recomputeSoluteFromSmiles(AppState& st) {
   SolubilityState& sb = st.solubility;
   sb.soluteError.clear();
+  sb.soluteNote.clear();
   sb.soluteValid = false;
   if (sb.manualSmiles.empty()) {
     sb.soluteError = "Enter a SMILES string.";
@@ -320,6 +351,7 @@ void recomputeSoluteFromSmiles(AppState& st) {
       const core::Molecule mol = chem::fromSmiles(sb.manualSmiles);
       sb.solute = sol::describeSolute(mol);
       sb.soluteValid = true;
+      sb.soluteNote = soluteInterpretationNote(sb.solute);
     } catch (const sol::SolError& err) {
       sb.soluteError = err.what();
     } catch (const chem::ChemError& err) {
@@ -343,6 +375,20 @@ const sol::Electrolyte* activeBackground(const SolubilityState& sb) {
   return &all[index];
 }
 
+// pH the model should use: the sentinel when the solute self-buffers.
+double requestedPH(const SolubilityState& sb) {
+  return sb.pHAuto ? sol::kAutoPH : static_cast<double>(sb.pH);
+}
+
+int ternaryLayerCount(int sweepSteps) {
+  // The existing resolution control chooses both curve detail and stack
+  // density. Five layers remain legible in a narrow card; higher settings add
+  // depth without turning the cube into a wall of nearly identical lines.
+  if (sweepSteps >= 44) return 7;
+  if (sweepSteps >= 23) return 6;
+  return 5;
+}
+
 void recomputeSweepIfNeeded(SolubilityState& sb,
                             const std::vector<const sol::Solvent*>& chosen) {
   std::string signature;
@@ -356,6 +402,8 @@ void recomputeSweepIfNeeded(SolubilityState& sb,
   signature += std::to_string(static_cast<int>(sb.temperatureC * 100.0f));
   signature += '|';
   signature += std::to_string(sb.soluteVersion);
+  signature += '|';
+  signature += sb.pHAuto ? "auto" : std::to_string(static_cast<int>(sb.pH * 10.0f));
   if (const sol::Electrolyte* bg = activeBackground(sb)) {
     signature += '|';
     signature += bg->id;
@@ -364,23 +412,86 @@ void recomputeSweepIfNeeded(SolubilityState& sb,
   if (signature == sb.sweepSignature) return;
   sb.sweepSignature = signature;
   sb.sweepPeakIndex = -1;
+  sb.ternaryLayers.clear();
   try {
-    sb.sweep = sol::sweep(sb.solute, chosen, sb.sweepSteps, static_cast<double>(sb.temperatureC),
-                          activeBackground(sb),
-                          static_cast<double>(sb.backgroundMolarity));
-    // Cache the maximum-solubility sample once per sweep -- this is the
-    // co-solvency peak the ratio plot marks, and finding it is work we do
-    // not want to redo on every draw call of an unchanged frame.
-    double best = -1.0;
-    for (size_t i = 0; i < sb.sweep.size(); ++i) {
-      const double v = sb.sweep[i].prediction.gramsPerMillilitre;
-      if (v > best) {
-        best = v;
-        sb.sweepPeakIndex = static_cast<int>(i);
+    if (chosen.size() == 3) {
+      const int layerCount = ternaryLayerCount(sb.sweepSteps);
+      sb.ternaryLayers.reserve(static_cast<size_t>(layerCount));
+      const std::vector<const sol::Solvent*> ab{chosen[0], chosen[1]};
+      const sol::Electrolyte* background = activeBackground(sb);
+      const double temperature = static_cast<double>(sb.temperatureC);
+      const double backgroundM = static_cast<double>(sb.backgroundMolarity);
+      const double pH = requestedPH(sb);
+      double globalBest = -1.0;
+      sol::SweepPoint globalPeak;
+      std::vector<sol::Component> components{
+          {chosen[0], 0.0}, {chosen[1], 0.0}, {chosen[2], 0.0}};
+
+      for (int layerIndex = 0; layerIndex < layerCount; ++layerIndex) {
+        TernaryLayerSweep layer;
+        layer.fractionC =
+            static_cast<float>(layerIndex) / static_cast<float>(layerCount - 1);
+
+        // `sweep` supplies the same stable A:B sampling contract as the binary
+        // graph. Its predictions are replaced with the real three-component
+        // blend at this fixed C slice; the completed slices stay cached behind
+        // the signature above.
+        layer.points = sol::sweep(sb.solute, ab, sb.sweepSteps, temperature,
+                                  background, backgroundM, pH);
+        const double cFraction = static_cast<double>(layer.fractionC);
+        const double abFraction = 1.0 - cFraction;
+        double layerBest = -1.0;
+        for (size_t pointIndex = 0; pointIndex < layer.points.size(); ++pointIndex) {
+          sol::SweepPoint& point = layer.points[pointIndex];
+          const double fractionA = point.fractions[0] * abFraction;
+          const double fractionB = point.fractions[1] * abFraction;
+          point.fractions = {fractionA, fractionB, cFraction};
+          components[0].volumeFraction = fractionA;
+          components[1].volumeFraction = fractionB;
+          components[2].volumeFraction = cFraction;
+          point.prediction =
+              sol::predict(sb.solute, components, temperature, background, backgroundM, pH);
+          const double value = point.prediction.gramsPerMillilitre;
+          if (value > layerBest) {
+            layerBest = value;
+            layer.peakIndex = static_cast<int>(pointIndex);
+          }
+          if (value > globalBest) {
+            globalBest = value;
+            globalPeak = point;
+          }
+        }
+        sb.ternaryLayers.push_back(std::move(layer));
+      }
+
+      // The evidence card consumes the legacy global peak cache. Keeping only
+      // the winner avoids duplicating every layered sample in a second vector.
+      sb.sweep.clear();
+      if (globalBest >= 0.0) {
+        sb.sweep.push_back(std::move(globalPeak));
+        sb.sweepPeakIndex = 0;
+      }
+    } else {
+      sb.sweep = sol::sweep(sb.solute, chosen, sb.sweepSteps,
+                            static_cast<double>(sb.temperatureC),
+                            activeBackground(sb),
+                            static_cast<double>(sb.backgroundMolarity),
+                            requestedPH(sb));
+      // Cache the maximum-solubility sample once per sweep -- this is the
+      // co-solvency peak the ratio plot marks, and finding it is work we do
+      // not want to redo on every draw call of an unchanged frame.
+      double best = -1.0;
+      for (size_t i = 0; i < sb.sweep.size(); ++i) {
+        const double v = sb.sweep[i].prediction.gramsPerMillilitre;
+        if (v > best) {
+          best = v;
+          sb.sweepPeakIndex = static_cast<int>(i);
+        }
       }
     }
   } catch (const sol::SolError& err) {
     sb.sweep.clear();
+    sb.ternaryLayers.clear();
     sb.statusMessage = std::string("Ratio sweep failed: ") + err.what();
   }
 }
@@ -396,6 +507,8 @@ void recomputeScreeningIfNeeded(SolubilityState& sb) {
   std::string signature = std::to_string(sb.soluteVersion);
   signature += '|';
   signature += std::to_string(static_cast<int>(sb.temperatureC * 100.0f));
+  signature += '|';
+  signature += sb.pHAuto ? "auto" : std::to_string(static_cast<int>(sb.pH * 10.0f));
   if (const sol::Electrolyte* bg = activeBackground(sb)) {
     signature += '|';
     signature += bg->id;
@@ -406,7 +519,7 @@ void recomputeScreeningIfNeeded(SolubilityState& sb) {
   try {
     sb.screening = sol::screen(sb.solute, static_cast<double>(sb.temperatureC),
                                activeBackground(sb),
-                               static_cast<double>(sb.backgroundMolarity));
+                               static_cast<double>(sb.backgroundMolarity), requestedPH(sb));
   } catch (const std::exception& err) {
     sb.screening.clear();
     sb.statusMessage = std::string("Solvent screen failed: ") + err.what();
@@ -537,6 +650,15 @@ void drawSoluteCard(AppState& st) {
     textDisabledWrapped("%s", sb.useSketch ? "Draw a structure to describe the solute."
                                            : "Enter a SMILES string and press Enter.");
     return;
+  }
+
+  // How the sketch was read: which fragment is the solute, and whether a
+  // counter-ion turned it into a salt. This is the difference between
+  // modelling an alkaloid and modelling its hydrochloride.
+  if (!sb.soluteNote.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, style::col::Accent);
+    ImGui::TextWrapped("%s", sb.soluteNote.c_str());
+    ImGui::PopStyleColor();
   }
 
   // Two-column property grid fits the narrow rail better than five cards
@@ -825,6 +947,30 @@ void drawTheoryReadout(SolubilityState& sb, const std::vector<const sol::Solvent
   style::popFont(mono3);
   if (ImGui::IsItemHovered()) {
     ImGui::SetTooltip("Total Hildebrand parameter: d^2 = dD^2 + dP^2 + dH^2");
+  }
+
+  // Ionisation: pKa, the pH in force, and the Born penalty for asking an ion
+  // to live in a low-dielectric solvent. Only shown when it applies.
+  if (sb.prediction.ionicPath) {
+    const bool mono4 = style::pushFont(style::fonts::mono());
+    ImGui::TextWrapped("Ionisation | pKa ~%.1f | pH %.1f%s | ionised %.0f%% | "
+                       "Born %.1f decades",
+                       sb.prediction.pKa, sb.prediction.pH,
+                       sb.prediction.pHSelfBuffered ? " (self)" : "",
+                       sb.prediction.ionisedFraction * 100.0,
+                       sb.prediction.bornPenaltyDecades);
+    style::popFont(mono4);
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip(
+          "Henderson-Hasselbalch: S = S_0 (1 + 10^(pKa - pH)) for a base\n"
+          "Salt crystal: the ionised branch only, so its solubility tracks\n"
+          "  the medium's ability to support ions\n"
+          "Born transfer: ddG = sum_i [N_A e^2 / (8 pi eps_0 r_i)] (1/eps - 1/eps_water)\n"
+          "pKa is a group-contribution estimate, not a measured value.");
+    }
+    if (!sb.prediction.ionNote.empty()) {
+      textDisabledWrapped("%s", sb.prediction.ionNote.c_str());
+    }
   }
 
   // Honest uncertainty: measured on the anchor validation set (see
@@ -1154,279 +1300,472 @@ void drawBinarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::
 
 // ------------------------------------------------------------ ternary plot
 
-struct TernaryGrid {
-  int steps = 0;
-  std::unordered_map<int64_t, const sol::SweepPoint*> byIndex;
-};
-
-TernaryGrid buildTernaryGrid(const std::vector<sol::SweepPoint>& sweep, int steps) {
-  TernaryGrid grid;
-  grid.steps = steps;
-  grid.byIndex.reserve(sweep.size() * 2);
-  for (const sol::SweepPoint& sp : sweep) {
-    const int i = static_cast<int>(std::lround(sp.fractions[0] * steps));
-    const int j = static_cast<int>(std::lround(sp.fractions[1] * steps));
-    grid.byIndex[static_cast<int64_t>(i) * 4096 + j] = &sp;
-  }
-  return grid;
+void setTernaryComposition(SolubilityState& sb, float fractionAInPair,
+                           float fractionC) {
+  fractionAInPair = std::clamp(fractionAInPair, 0.0f, 1.0f);
+  fractionC = std::clamp(fractionC, 0.0f, 1.0f);
+  const float pairFraction = 1.0f - fractionC;
+  sb.ratios[0] = pairFraction * fractionAInPair;
+  sb.ratios[1] = pairFraction * (1.0f - fractionAInPair);
+  sb.ratios[2] = fractionC;
 }
 
-const sol::SweepPoint* gridAt(const TernaryGrid& grid, int i, int j) {
-  if (i < 0 || j < 0 || i + j > grid.steps) return nullptr;
-  const auto it = grid.byIndex.find(static_cast<int64_t>(i) * 4096 + j);
-  return it == grid.byIndex.end() ? nullptr : it->second;
-}
-
-void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a, const sol::Solvent& b,
-                          const sol::Solvent& c, ImVec2 canvasSize) {
-  if (sb.sweep.size() < 3) {
-    ImGui::TextDisabled("Not enough data for a ternary plot.");
+void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a,
+                          const sol::Solvent& b, const sol::Solvent& c,
+                          ImVec2 canvasSize) {
+  if (sb.ternaryLayers.empty() || sb.ternaryLayers.front().points.empty()) {
+    ImGui::TextDisabled("Not enough data for a layered ternary plot.");
     return;
   }
 
-  double lo = sb.sweep.front().prediction.gramsPerMillilitre;
+  double lo = sb.ternaryLayers.front().points.front().prediction.gramsPerMillilitre;
   double hi = lo;
-  for (const sol::SweepPoint& sp : sb.sweep) {
-    lo = std::min(lo, sp.prediction.gramsPerMillilitre);
-    hi = std::max(hi, sp.prediction.gramsPerMillilitre);
+  for (const TernaryLayerSweep& layer : sb.ternaryLayers) {
+    for (const sol::SweepPoint& point : layer.points) {
+      const double value = point.prediction.gramsPerMillilitre;
+      lo = std::min(lo, value);
+      hi = std::max(hi, value);
+    }
   }
-  const double range = hi - lo;
-  const bool degenerate = range < 1e-12;
+  lo = std::min(lo, sb.prediction.gramsPerMillilitre);
+  hi = std::max(hi, sb.prediction.gramsPerMillilitre);
+  if (hi - lo < 1e-12) hi = lo + std::max(1e-9, std::fabs(lo) * 0.1 + 1e-9);
 
-  const double molarMass = sb.solute.molarMass;
-  const auto unitLabel = [&](double v) { return formatUnits(v, molarMass, sb.units); };
-  const std::string highLegend = unitLabel(hi);
-  const std::string lowLegend = unitLabel(lo);
-  const float legendW = ImGui::GetFontSize() * 0.75f;
+  const bool logY = sb.logScale && hi > 0.0;
+  const double logFloor = std::max(hi * 1e-6, 1e-12);
+  double yLo = logY ? std::log10(std::max(lo, logFloor)) : lo;
+  double yHi = logY ? std::log10(hi) : hi;
+  if (yHi - yLo < 1e-9) yHi = yLo + 1.0;
+  const auto mapValue = [&](double value) {
+    return logY ? std::log10(std::max(value, logFloor)) : value;
+  };
+
+  const double total = static_cast<double>(sb.ratios[0]) +
+                       static_cast<double>(sb.ratios[1]) +
+                       static_cast<double>(sb.ratios[2]);
+  const float currentC =
+      total > 1e-9 ? static_cast<float>(static_cast<double>(sb.ratios[2]) / total)
+                   : 0.0f;
+  int activeLayer = 0;
+  float activeDistance = 2.0f;
+  for (size_t i = 0; i < sb.ternaryLayers.size(); ++i) {
+    const float distance = std::fabs(sb.ternaryLayers[i].fractionC - currentC);
+    if (distance < activeDistance) {
+      activeDistance = distance;
+      activeLayer = static_cast<int>(i);
+    }
+  }
+
+  const float fontSize = ImGui::GetFontSize();
   const float gap = style::metrics().gap;
-  const float legendTextW =
-      std::max(ImGui::CalcTextSize(highLegend.c_str()).x,
-               ImGui::CalcTextSize(lowLegend.c_str()).x);
-  const float legendReserve = legendW + gap * 0.75f + legendTextW;
-  const float leftPad = gap * 2.0f;
-  const float availablePlotWidth =
-      std::max(1.0f, canvasSize.x - leftPad - gap * 2.0f - legendReserve);
-  const float availablePlotHeight =
-      std::max(1.0f, (canvasSize.y - ImGui::GetFontSize() * 2.5f) / 0.8660254f);
-  const float side = std::min(availablePlotWidth, availablePlotHeight);
-  const float height = side * 0.8660254f;  // sqrt(3)/2
+  const double molarMass = sb.solute.molarMass;
+  const std::string unitCaption =
+      kUnitLabels[static_cast<size_t>(std::clamp(sb.units, 0, 3))];
+  float widestYLabel = ImGui::CalcTextSize(unitCaption.c_str()).x;
+  for (int i = 0; i <= 4; ++i) {
+    const double mapped = yLo + (yHi - yLo) * (1.0 - static_cast<double>(i) / 4.0);
+    const double raw = logY ? std::pow(10.0, mapped) : mapped;
+    const std::string label =
+        formatSolubility(toDisplayUnits(raw, molarMass, sb.units));
+    widestYLabel = std::max(widestYLabel, ImGui::CalcTextSize(label.c_str()).x);
+  }
+
+  // The 28-degree depth vector is fixed; compact layouts reduce its length,
+  // never its angle, so the cube does not shear as the panel is resized.
+  constexpr float kDepthTan = 0.5317094f;  // tan(28 degrees)
+  const float leftPad =
+      std::min(std::max(widestYLabel + gap, fontSize * 4.2f), canvasSize.x * 0.34f);
+  const float rightPad = std::min(fontSize * 3.6f, canvasSize.x * 0.18f);
+  const float topPad = std::min(fontSize * 1.35f, canvasSize.y * 0.12f);
+  const float bottomPad = std::min(fontSize * 3.7f, canvasSize.y * 0.28f);
+  const float innerW = std::max(1.0f, canvasSize.x - leftPad - rightPad);
+  const float innerH = std::max(1.0f, canvasSize.y - topPad - bottomPad);
+  float depthX = std::min(innerW * 0.22f, innerH * 0.24f / kDepthTan);
+  depthX = std::max(0.0f, std::min(depthX, innerW * 0.42f));
+  const float depthY = depthX * kDepthTan;
+  const float plotW = std::max(1.0f, innerW - depthX);
+  const float plotH = std::max(1.0f, innerH - depthY);
+
   const ImVec2 origin = ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##ternary_plot", canvasSize);
+  ImGui::InvisibleButton("##ternary_cube", canvasSize);
   const bool hovered = ImGui::IsItemHovered();
+  const bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+  const bool dragging =
+      ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left);
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  dl->AddRectFilled(origin, ImVec2(origin.x + canvasSize.x, origin.y + canvasSize.y),
-                    style::u32(style::col::BgSurface), style::metrics().radiusMd);
-  dl->PushClipRect(origin, ImVec2(origin.x + canvasSize.x, origin.y + canvasSize.y), true);
+  const ImVec2 canvasMax(origin.x + canvasSize.x, origin.y + canvasSize.y);
+  dl->AddRectFilled(origin, canvasMax, style::u32(style::col::BgSurface),
+                    style::metrics().radiusMd);
+  dl->PushClipRect(origin, canvasMax, true);
 
-  const float cx = origin.x + leftPad + side * 0.5f;
-  const float top =
-      origin.y + std::max(ImGui::GetFontSize(), (canvasSize.y - height) * 0.5f);
-  const ImVec2 vA(cx, top);                             // 100% solvent A (top)
-  const ImVec2 vB(cx - side * 0.5f, top + height);      // 100% solvent B (bottom-left)
-  const ImVec2 vC(cx + side * 0.5f, top + height);      // 100% solvent C (bottom-right)
-
-  const auto toScreen = [&](double wa, double wb, double wc) {
-    return ImVec2(static_cast<float>(wa) * vA.x + static_cast<float>(wb) * vB.x +
-                      static_cast<float>(wc) * vC.x,
-                  static_cast<float>(wa) * vA.y + static_cast<float>(wb) * vB.y +
-                      static_cast<float>(wc) * vC.y);
+  const ImVec2 frontBL(origin.x + leftPad, origin.y + canvasSize.y - bottomPad);
+  const ImVec2 frontBR(frontBL.x + plotW, frontBL.y);
+  const ImVec2 frontTL(frontBL.x, frontBL.y - plotH);
+  const ImVec2 frontTR(frontBR.x, frontTL.y);
+  const ImVec2 depth(depthX, -depthY);
+  const auto offset = [&](ImVec2 point, float fraction) {
+    return ImVec2(point.x + depth.x * fraction, point.y + depth.y * fraction);
   };
-  const auto valueColor = [&](double v) {
-    const float t = degenerate ? 0.5f : static_cast<float>((v - lo) / range);
-    return colorRamp(t);
+  const ImVec2 backBL = offset(frontBL, 1.0f);
+  const ImVec2 backBR = offset(frontBR, 1.0f);
+  const ImVec2 backTL = offset(frontTL, 1.0f);
+  const ImVec2 backTR = offset(frontTR, 1.0f);
+  const auto screenAt = [&](const TernaryLayerSweep& layer, float xFraction,
+                            double value) {
+    const float yFraction = static_cast<float>(
+        (mapValue(value) - yLo) / std::max(1e-12, yHi - yLo));
+    const ImVec2 base(
+        frontBL.x + plotW * std::clamp(xFraction, 0.0f, 1.0f),
+        frontBL.y - plotH * std::clamp(yFraction, 0.0f, 1.0f));
+    return offset(base, layer.fractionC);
+  };
+  const auto layerPoint = [&](const TernaryLayerSweep& layer, size_t pointIndex,
+                              double value) {
+    const float xFraction =
+        layer.points.size() > 1
+            ? static_cast<float>(pointIndex) /
+                  static_cast<float>(layer.points.size() - 1)
+            : 0.0f;
+    return screenAt(layer, xFraction, value);
   };
 
-  // Barycentric weights of the mouse, shared by hover and click.
-  const auto barycentric = [&](ImVec2 mouse, float& wa, float& wb, float& wc) {
-    const float denom = (vB.y - vC.y) * (vA.x - vC.x) + (vC.x - vB.x) * (vA.y - vC.y);
-    if (std::fabs(denom) < 1e-6f) return false;
-    wa = ((vB.y - vC.y) * (mouse.x - vC.x) + (vC.x - vB.x) * (mouse.y - vC.y)) / denom;
-    wb = ((vC.y - vA.y) * (mouse.x - vC.x) + (vA.x - vC.x) * (mouse.y - vC.y)) / denom;
-    wc = 1.0f - wa - wb;
-    return wa >= -0.02f && wb >= -0.02f && wc >= -0.02f;
-  };
+  // Three subtly filled faces and their grids establish volume before any
+  // data is drawn. Curves remain the visual focus.
+  dl->AddQuadFilled(backTL, backTR, backBR, backBL,
+                    style::u32(style::col::BgPanel, 0.66f));
+  dl->AddQuadFilled(frontTL, backTL, backBL, frontBL,
+                    style::u32(style::col::BgPanel, 0.48f));
+  dl->AddQuadFilled(frontBL, frontBR, backBR, backBL,
+                    style::u32(style::col::BgDeep, 0.42f));
+  for (int i = 1; i < 4; ++i) {
+    const float t = static_cast<float>(i) / 4.0f;
+    const ImVec2 rearY0(backTL.x, backTL.y + plotH * t);
+    const ImVec2 rearY1(backTR.x, backTR.y + plotH * t);
+    const ImVec2 frontY(frontTL.x, frontTL.y + plotH * t);
+    dl->AddLine(rearY0, rearY1, style::u32(style::col::Border, 0.28f));
+    dl->AddLine(frontY, rearY0, style::u32(style::col::Border, 0.22f));
 
-  // Click or drag sets all three working ratios from the barycentric
-  // position.
-  if (ImGui::IsItemClicked() ||
-      (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left))) {
-    float wa = 0.0f, wb = 0.0f, wc = 0.0f;
-    if (barycentric(ImGui::GetMousePos(), wa, wb, wc)) {
-      wa = std::clamp(wa, 0.0f, 1.0f);
-      wb = std::clamp(wb, 0.0f, 1.0f);
-      wc = std::clamp(wc, 0.0f, 1.0f);
-      const float sum = std::max(wa + wb + wc, 1e-6f);
-      sb.ratios[0] = wa / sum;
-      sb.ratios[1] = wb / sum;
-      sb.ratios[2] = wc / sum;
-    }
+    const ImVec2 frontX(frontBL.x + plotW * t, frontBL.y);
+    const ImVec2 backX(backBL.x + plotW * t, backBL.y);
+    dl->AddLine(ImVec2(backTL.x + plotW * t, backTL.y), backX,
+                style::u32(style::col::Border, 0.24f));
+    dl->AddLine(frontX, backX, style::u32(style::col::Border, 0.22f));
+
+    const ImVec2 depthL = offset(frontBL, t);
+    const ImVec2 depthR = offset(frontBR, t);
+    dl->AddLine(depthL, depthR, style::u32(style::col::Border, 0.18f));
   }
 
-  const int steps = sb.sweepSteps;
-  const TernaryGrid grid = buildTernaryGrid(sb.sweep, steps);
+  const ImVec2 mouse = ImGui::GetMousePos();
+  int hoveredLayer = -1;
+  size_t hoveredPoint = 0;
+  float nearestPointDistanceSq = 1e30f;
+  if (hovered) {
+    for (size_t layerIndex = 0; layerIndex < sb.ternaryLayers.size(); ++layerIndex) {
+      const TernaryLayerSweep& layer = sb.ternaryLayers[layerIndex];
+      const ImVec2 layerBase = offset(frontBL, layer.fractionC);
+      const float xFraction =
+          std::clamp((mouse.x - layerBase.x) / std::max(1.0f, plotW), 0.0f, 1.0f);
+      const size_t pointIndex = static_cast<size_t>(std::lround(
+          xFraction * static_cast<float>(layer.points.size() - 1)));
+      const ImVec2 point =
+          layerPoint(layer, pointIndex,
+                     layer.points[pointIndex].prediction.gramsPerMillilitre);
+      const float dx = mouse.x - point.x;
+      const float dy = mouse.y - point.y;
+      const float distanceSq = dx * dx + dy * dy;
+      if (distanceSq < nearestPointDistanceSq) {
+        nearestPointDistanceSq = distanceSq;
+        hoveredLayer = static_cast<int>(layerIndex);
+        hoveredPoint = pointIndex;
+      }
+    }
+    const float hoverRadius = std::max(10.0f, fontSize * 0.9f);
+    if (nearestPointDistanceSq > hoverRadius * hoverRadius) hoveredLayer = -1;
+  }
+
+  const auto currentPairFractionA = [&]() {
+    const float pairTotal = sb.ratios[0] + sb.ratios[1];
+    return pairTotal > 1e-6f ? sb.ratios[0] / pairTotal : 0.5f;
+  };
+  bool changedLayer = false;
+  if (hovered && ImGui::GetIO().MouseWheel != 0.0f) {
+    const int direction = ImGui::GetIO().MouseWheel > 0.0f ? 1 : -1;
+    const int next = std::clamp(activeLayer + direction, 0,
+                                static_cast<int>(sb.ternaryLayers.size()) - 1);
+    if (next != activeLayer) {
+      setTernaryComposition(sb, currentPairFractionA(),
+                            sb.ternaryLayers[static_cast<size_t>(next)].fractionC);
+      activeLayer = next;
+      changedLayer = true;
+    }
+  }
+  if (clicked && hoveredLayer >= 0 && hoveredLayer != activeLayer) {
+    setTernaryComposition(
+        sb, currentPairFractionA(),
+        sb.ternaryLayers[static_cast<size_t>(hoveredLayer)].fractionC);
+    activeLayer = hoveredLayer;
+    changedLayer = true;
+  }
+  if ((clicked && !changedLayer) || dragging) {
+    const TernaryLayerSweep& active =
+        sb.ternaryLayers[static_cast<size_t>(activeLayer)];
+    const ImVec2 activeBase = offset(frontBL, active.fractionC);
+    const float fractionB =
+        std::clamp((mouse.x - activeBase.x) / std::max(1.0f, plotW), 0.0f, 1.0f);
+    setTernaryComposition(sb, 1.0f - fractionB, active.fractionC);
+  }
+
+  std::array<float, 7> layerHighlight{};
+  ImGui::PushID(&sb);
+  for (size_t i = 0; i < sb.ternaryLayers.size(); ++i) {
+    ImGui::PushID(static_cast<int>(i));
+    layerHighlight[i] =
+        widgets::hoverT(ImGui::GetID("active_layer"), static_cast<int>(i) == activeLayer);
+    ImGui::PopID();
+  }
+  ImGui::PopID();
+
   const float drawProgress = sweepDrawProgress(sb);
-  const float revealY = top + std::max(0.001f, drawProgress) * height;
-  dl->PushClipRect(origin, ImVec2(origin.x + canvasSize.x, revealY), true);
-  for (int i = 0; i < steps; ++i) {
-    for (int j = 0; i + j < steps; ++j) {
-      const sol::SweepPoint* p00 = gridAt(grid, i, j);
-      const sol::SweepPoint* p10 = gridAt(grid, i + 1, j);
-      const sol::SweepPoint* p01 = gridAt(grid, i, j + 1);
-      if (p00 && p10 && p01) {
-        const double avg = (p00->prediction.gramsPerMillilitre +
-                            p10->prediction.gramsPerMillilitre +
-                            p01->prediction.gramsPerMillilitre) /
-                           3.0;
-        dl->AddTriangleFilled(toScreen(p00->fractions[0], p00->fractions[1], p00->fractions[2]),
-                              toScreen(p10->fractions[0], p10->fractions[1], p10->fractions[2]),
-                              toScreen(p01->fractions[0], p01->fractions[1], p01->fractions[2]),
-                              valueColor(avg));
+  const auto drawLayer = [&](size_t layerIndex) {
+    const TernaryLayerSweep& layer = sb.ternaryLayers[layerIndex];
+    const float highlight = layerHighlight[layerIndex];
+    const float frontBrightness = 1.0f - layer.fractionC;
+    const float baseAlpha = 0.20f + frontBrightness * 0.34f;
+    const float lineAlpha = baseAlpha + (1.0f - baseAlpha) * highlight;
+    const float thickness =
+        0.85f + frontBrightness * 0.45f + highlight * 1.85f;
+    const ImU32 lineColor = style::u32(style::col::Teal, lineAlpha);
+    const ImVec2 baseline = offset(frontBL, layer.fractionC);
+    const float revealX =
+        baseline.x + std::max(0.001f, drawProgress) * plotW;
+    dl->PushClipRect(ImVec2(baseline.x, origin.y),
+                     ImVec2(revealX, canvasMax.y), true);
+
+    for (size_t i = 0; i + 1 < layer.points.size(); ++i) {
+      const ImVec2 p0 =
+          layerPoint(layer, i, layer.points[i].prediction.gramsPerMillilitre);
+      const ImVec2 p1 =
+          layerPoint(layer, i + 1,
+                     layer.points[i + 1].prediction.gramsPerMillilitre);
+      if (highlight > 0.002f) {
+        const ImVec2 b0(p0.x, baseline.y);
+        const ImVec2 b1(p1.x, baseline.y);
+        const float valueT = static_cast<float>(
+            (mapValue(layer.points[i].prediction.gramsPerMillilitre) - yLo) /
+            std::max(1e-12, yHi - yLo));
+        dl->AddQuadFilled(p0, p1, b1, b0,
+                          style::u32(colorRampF(valueT), 0.14f * highlight));
       }
-      const sol::SweepPoint* p11 = gridAt(grid, i + 1, j + 1);
-      if (p10 && p01 && p11) {
-        const double avg = (p10->prediction.gramsPerMillilitre +
-                            p01->prediction.gramsPerMillilitre +
-                            p11->prediction.gramsPerMillilitre) /
-                           3.0;
-        dl->AddTriangleFilled(toScreen(p10->fractions[0], p10->fractions[1], p10->fractions[2]),
-                              toScreen(p01->fractions[0], p01->fractions[1], p01->fractions[2]),
-                              toScreen(p11->fractions[0], p11->fractions[1], p11->fractions[2]),
-                              valueColor(avg));
-      }
+      dl->AddLine(p0, p1, lineColor, thickness);
     }
+    dl->PopClipRect();
+  };
+
+  // Back-to-front outlines preserve the depth order. The active slice is
+  // redrawn last so its eased highlight and fill cannot be hidden.
+  for (size_t reverse = sb.ternaryLayers.size(); reverse > 0; --reverse) {
+    const size_t index = reverse - 1;
+    if (static_cast<int>(index) != activeLayer) drawLayer(index);
   }
-  dl->PopClipRect();
+  drawLayer(static_cast<size_t>(activeLayer));
 
-  dl->AddTriangle(vA, vB, vC, style::u32(style::col::BorderStrong), 1.6f);
+  const TernaryLayerSweep& active =
+      sb.ternaryLayers[static_cast<size_t>(activeLayer)];
+  const float activeC = active.fractionC;
+  const ImVec2 activeBL = offset(frontBL, activeC);
+  const ImVec2 activeTL = offset(frontTL, activeC);
 
-  const float cornerLabelWidth = std::max(1.0f, side * 0.45f);
-  const std::string aName = ellipsizeText(a.name, cornerLabelWidth);
-  const std::string bName = ellipsizeText(b.name, cornerLabelWidth);
-  const std::string cName = ellipsizeText(c.name, cornerLabelWidth);
-  const ImVec2 aLabel = ImGui::CalcTextSize(aName.c_str());
-  const ImVec2 bLabel = ImGui::CalcTextSize(bName.c_str());
-  const ImVec2 cLabel = ImGui::CalcTextSize(cName.c_str());
-  const float canvasRight = origin.x + canvasSize.x;
-  const float canvasBottom = origin.y + canvasSize.y;
-  dl->AddText(ImVec2(std::clamp(vA.x - aLabel.x * 0.5f, origin.x,
-                                std::max(origin.x, canvasRight - aLabel.x)),
-                     std::max(origin.y, vA.y - aLabel.y - gap * 0.5f)),
-              style::u32(slotColor(0)), aName.c_str());
-  dl->AddText(ImVec2(std::clamp(vB.x - bLabel.x - gap * 0.5f, origin.x,
-                                std::max(origin.x, canvasRight - bLabel.x)),
-                     std::min(vB.y + gap * 0.5f, canvasBottom - bLabel.y)),
-              style::u32(slotColor(1)), bName.c_str());
-  dl->AddText(ImVec2(std::clamp(vC.x + gap * 0.5f, origin.x,
-                                std::max(origin.x, canvasRight - cLabel.x)),
-                     std::min(vC.y + gap * 0.5f, canvasBottom - cLabel.y)),
-              style::u32(slotColor(2)), cName.c_str());
-
-  const sol::SweepPoint* peak =
-      (sb.sweepPeakIndex >= 0 &&
-       static_cast<size_t>(sb.sweepPeakIndex) < sb.sweep.size())
-          ? &sb.sweep[static_cast<size_t>(sb.sweepPeakIndex)]
-          : nullptr;
-  if (peak) {
-    const ImVec2 peakMarker =
-        toScreen(peak->fractions[0], peak->fractions[1], peak->fractions[2]);
-    const float pathProgress =
-        std::clamp((peakMarker.y - top) / std::max(1.0f, height), 0.0f, 1.0f);
-    const float reveal = markerReveal(drawProgress, pathProgress);
+  if (active.peakIndex >= 0 &&
+      static_cast<size_t>(active.peakIndex) < active.points.size()) {
+    const size_t peakIndex = static_cast<size_t>(active.peakIndex);
+    const float path =
+        active.points.size() > 1
+            ? static_cast<float>(peakIndex) /
+                  static_cast<float>(active.points.size() - 1)
+            : 0.0f;
+    const float reveal = markerReveal(drawProgress, path);
     if (reveal > 0.0f) {
+      const sol::SweepPoint& peak = active.points[peakIndex];
+      const ImVec2 marker =
+          layerPoint(active, peakIndex, peak.prediction.gramsPerMillilitre);
       const float pulse = markerPulse();
-      dl->AddCircleFilled(peakMarker, 5.5f,
+      dl->AddLine(ImVec2(marker.x, activeBL.y), marker,
+                  style::u32(style::col::Accent, 0.68f * reveal), 1.35f);
+      dl->AddCircleFilled(marker, 4.8f,
                           style::u32(style::col::Accent, reveal));
-      dl->AddCircle(peakMarker, 8.5f + pulse * 4.0f,
+      dl->AddCircle(marker, 7.0f + pulse * 3.5f,
                     style::u32(style::col::Accent,
-                               reveal * (0.70f - pulse * 0.48f)),
-                    0, 1.5f);
-      const char* peakLabel = "peak";
-      const ImVec2 labelSize = ImGui::CalcTextSize(peakLabel);
-      const float labelX =
-          std::clamp(peakMarker.x + 7.0f, origin.x,
-                     std::max(origin.x, origin.x + canvasSize.x - labelSize.x));
-      dl->AddText(ImVec2(labelX, peakMarker.y - labelSize.y - 5.0f),
-                  style::u32(style::col::Accent, reveal), peakLabel);
-    }
-  }
-
-  const double totalRatio = static_cast<double>(sb.ratios[0]) +
-                            static_cast<double>(sb.ratios[1]) +
-                            static_cast<double>(sb.ratios[2]);
-  if (totalRatio > 1e-9) {
-    const ImVec2 marker = toScreen(sb.ratios[0] / totalRatio,
-                                   sb.ratios[1] / totalRatio,
-                                   sb.ratios[2] / totalRatio);
-    const float pathProgress =
-        std::clamp((marker.y - top) / std::max(1.0f, height), 0.0f, 1.0f);
-    const float reveal = markerReveal(drawProgress, pathProgress);
-    if (reveal > 0.0f) {
-      const float pulse = markerPulse(1.9f);
-      dl->AddCircleFilled(marker, 5.0f,
-                          style::u32(style::col::Violet, reveal));
-      dl->AddCircle(marker, 8.0f + pulse * 3.5f,
-                    style::u32(style::col::Violet,
                                reveal * (0.66f - pulse * 0.44f)),
                     0, 1.35f);
+      const float pairTotal = static_cast<float>(peak.fractions[0] +
+                                                  peak.fractions[1]);
+      const int fractionA =
+          pairTotal > 1e-6f
+              ? static_cast<int>(std::lround(peak.fractions[0] / pairTotal * 100.0))
+              : 0;
+      const std::string rawLabel =
+          "peak " + formatUnits(peak.prediction.gramsPerMillilitre, molarMass,
+                                sb.units) +
+          " at A:B " + std::to_string(fractionA) + ":" +
+          std::to_string(100 - fractionA);
+      const std::string label =
+          ellipsizeText(rawLabel, std::max(1.0f, plotW - gap));
+      const ImVec2 labelSize = ImGui::CalcTextSize(label.c_str());
+      const float labelX =
+          std::clamp(marker.x - labelSize.x * 0.5f, origin.x,
+                     std::max(origin.x, canvasMax.x - labelSize.x));
+      float labelY = marker.y - labelSize.y - gap;
+      if (labelY < origin.y) labelY = marker.y + gap * 0.5f;
+      labelY = std::clamp(labelY, origin.y,
+                          std::max(origin.y, canvasMax.y - labelSize.y));
+      dl->AddRectFilled(ImVec2(labelX - 3.0f, labelY - 2.0f),
+                        ImVec2(labelX + labelSize.x + 3.0f,
+                               labelY + labelSize.y + 2.0f),
+                        style::u32(style::col::BgRaised, 0.92f * reveal),
+                        style::metrics().radiusSm);
+      dl->AddText(ImVec2(labelX, labelY),
+                  style::u32(style::col::Accent, reveal), label.c_str());
+    }
+  }
+
+  const float pairTotal = sb.ratios[0] + sb.ratios[1];
+  if (pairTotal > 1e-6f) {
+    const float fractionB = sb.ratios[1] / pairTotal;
+    const ImVec2 marker =
+        screenAt(active, fractionB, sb.prediction.gramsPerMillilitre);
+    const float reveal = markerReveal(drawProgress, fractionB);
+    if (reveal > 0.0f) {
+      const float pulse = markerPulse(1.9f);
+      dl->AddLine(ImVec2(marker.x, activeTL.y), ImVec2(marker.x, activeBL.y),
+                  style::u32(style::col::Violet, 0.52f * reveal), 1.35f);
+      dl->AddCircleFilled(marker, 4.2f,
+                          style::u32(style::col::Violet, reveal));
+      dl->AddCircle(marker, 6.5f + pulse * 3.2f,
+                    style::u32(style::col::Violet,
+                               reveal * (0.62f - pulse * 0.40f)),
+                    0, 1.25f);
       const ImVec2 currentSize = ImGui::CalcTextSize("current");
       const float currentX =
           std::clamp(marker.x + gap * 0.5f, origin.x,
-                     std::max(origin.x, origin.x + canvasSize.x - currentSize.x));
+                     std::max(origin.x, canvasMax.x - currentSize.x));
       const float currentY =
-          std::min(marker.y + gap * 0.5f, origin.y + canvasSize.y - currentSize.y);
+          std::clamp(activeTL.y + 2.0f, origin.y,
+                     std::max(origin.y, canvasMax.y - currentSize.y));
       dl->AddText(ImVec2(currentX, currentY),
                   style::u32(style::col::Violet, reveal), "current");
     }
   }
 
-  // Legend dimensions and label widths were reserved before sizing the
-  // triangle, so the complete legend remains inside the canvas.
-  const float legendX = origin.x + leftPad + side + gap;
-  constexpr int kStripes = 24;
-  for (int s = 0; s < kStripes; ++s) {
-    const float t0 = static_cast<float>(s) / kStripes;
-    const float t1 = static_cast<float>(s + 1) / kStripes;
-    const float y0 = top + height * (1.0f - t1);
-    const float y1 = top + height * (1.0f - t0);
-    dl->AddRectFilled(ImVec2(legendX, y0), ImVec2(legendX + legendW, y1),
-                      colorRamp((t0 + t1) * 0.5f));
-  }
-  dl->AddRect(ImVec2(legendX, top), ImVec2(legendX + legendW, top + height),
-             style::u32(style::col::Border));
-  dl->AddText(ImVec2(legendX + legendW + gap * 0.75f, top),
-              style::u32(style::col::TextDim), highLegend.c_str());
-  dl->AddText(ImVec2(legendX + legendW + gap * 0.75f,
-                     top + height - ImGui::GetFontSize()),
-              style::u32(style::col::TextDim), lowLegend.c_str());
-  dl->AddText(ImVec2(legendX, top + height + gap * 0.5f),
-              style::u32(style::col::TextFaint), "%s",
-              kUnitLabels[static_cast<size_t>(std::clamp(sb.units, 0, 3))]);
+  // Cube frame is drawn over the data so every edge remains readable.
+  const ImU32 frontEdge = style::u32(style::col::BorderStrong, 0.95f);
+  const ImU32 backEdge = style::u32(style::col::BorderStrong, 0.58f);
+  dl->AddQuad(frontTL, frontTR, frontBR, frontBL, frontEdge, 1.45f);
+  dl->AddQuad(backTL, backTR, backBR, backBL, backEdge, 1.1f);
+  dl->AddLine(frontTL, backTL, backEdge, 1.1f);
+  dl->AddLine(frontTR, backTR, backEdge, 1.1f);
+  dl->AddLine(frontBR, backBR, backEdge, 1.1f);
+  dl->AddLine(frontBL, backBL, frontEdge, 1.35f);
 
-  if (hovered) {
-    float wa = 0.0f, wb = 0.0f, wc = 0.0f;
-    if (barycentric(ImGui::GetMousePos(), wa, wb, wc)) {
-      const sol::SweepPoint* nearest = nullptr;
-      double best = 1e18;
-      for (const sol::SweepPoint& sp : sb.sweep) {
-        const double d = std::fabs(sp.fractions[0] - wa) + std::fabs(sp.fractions[1] - wb) +
-                         std::fabs(sp.fractions[2] - wc);
-        if (d < best) {
-          best = d;
-          nearest = &sp;
-        }
-      }
-      if (nearest) {
-        const std::string tip =
-            a.name + " " + std::to_string(static_cast<int>(std::lround(nearest->fractions[0] * 100.0))) +
-            "%  /  " + b.name + " " +
-            std::to_string(static_cast<int>(std::lround(nearest->fractions[1] * 100.0))) +
-            "%  /  " + c.name + " " +
-            std::to_string(static_cast<int>(std::lround(nearest->fractions[2] * 100.0))) +
-            "%   ->   " + unitLabel(nearest->prediction.gramsPerMillilitre);
-        ImGui::SetTooltip("%s", tip.c_str());
-      }
-    }
+  // Left vertical axis: bare values plus a single non-overlapping unit title.
+  for (int i = 0; i <= 4; ++i) {
+    const float t = static_cast<float>(i) / 4.0f;
+    const double mapped = yLo + (yHi - yLo) * (1.0 - t);
+    const double value = logY ? std::pow(10.0, mapped) : mapped;
+    const std::string label = ellipsizeText(
+        formatSolubility(toDisplayUnits(value, molarMass, sb.units)),
+        std::max(1.0f, leftPad - gap * 0.75f));
+    const ImVec2 size = ImGui::CalcTextSize(label.c_str());
+    const float y = frontTL.y + plotH * t;
+    dl->AddLine(ImVec2(frontTL.x - 3.0f, y), ImVec2(frontTL.x + 3.0f, y),
+                style::u32(style::col::BorderStrong));
+    dl->AddText(ImVec2(frontTL.x - size.x - gap * 0.65f,
+                       y - size.y * 0.5f),
+                style::u32(style::col::TextDim), label.c_str());
   }
+  const std::string yTitle =
+      ellipsizeText("Solubility (" + unitCaption + ")",
+                    std::max(1.0f, leftPad - gap * 0.5f));
+  dl->AddText(ImVec2(origin.x + gap * 0.25f, origin.y + gap * 0.25f),
+              style::u32(style::col::TextFaint), yTitle.c_str());
+
+  // Front-bottom A:B axis runs from pure A on the left to pure B on the right.
+  const int xSubdivisions = plotW < fontSize * 16.0f ? 2 : 4;
+  for (int i = 0; i <= xSubdivisions; ++i) {
+    const float t = static_cast<float>(i) / static_cast<float>(xSubdivisions);
+    const float x = frontBL.x + plotW * t;
+    char label[16];
+    std::snprintf(label, sizeof(label), "%.0f:%.0f",
+                  (1.0f - t) * 100.0f, t * 100.0f);
+    const ImVec2 size = ImGui::CalcTextSize(label);
+    dl->AddLine(ImVec2(x, frontBL.y - 3.0f), ImVec2(x, frontBL.y + 3.0f),
+                style::u32(style::col::BorderStrong));
+    dl->AddText(ImVec2(
+                    std::clamp(x - size.x * 0.5f, origin.x,
+                               std::max(origin.x, canvasMax.x - size.x)),
+                    frontBL.y + gap * 0.45f),
+                style::u32(style::col::TextDim), label);
+  }
+  const std::string pairTitle =
+      ellipsizeText("A " + a.name + "  ->  B " + b.name, plotW);
+  const ImVec2 pairTitleSize = ImGui::CalcTextSize(pairTitle.c_str());
+  dl->AddText(ImVec2(frontBL.x + (plotW - pairTitleSize.x) * 0.5f,
+                     frontBL.y + fontSize + gap * 0.65f),
+              style::u32(style::col::TextFaint), pairTitle.c_str());
+
+  // Labels sit on the exterior (left/down) side of the receding edge, never
+  // over a data layer. Showing its midpoint and endpoint remains readable
+  // even when the fixed 28-degree skew has flattened for a narrow card.
+  const int layerCount = static_cast<int>(sb.ternaryLayers.size());
+  const int middleLayer = (layerCount - 1) / 2;
+  for (int i = 0; i < layerCount; ++i) {
+    if (i != middleLayer && i != layerCount - 1) continue;
+    const float fraction = sb.ternaryLayers[static_cast<size_t>(i)].fractionC;
+    const ImVec2 tick = offset(frontBL, fraction);
+    char label[8];
+    std::snprintf(label, sizeof(label), "%.0f%%", fraction * 100.0f);
+    dl->AddLine(ImVec2(tick.x - 2.0f, tick.y - 2.0f),
+                ImVec2(tick.x + 2.0f, tick.y + 2.0f),
+                style::u32(slotColor(2), 0.72f));
+    const ImVec2 labelSize = ImGui::CalcTextSize(label);
+    const float labelX =
+        std::clamp(tick.x - labelSize.x - gap * 0.42f, origin.x,
+                   std::max(origin.x, canvasMax.x - labelSize.x));
+    const float labelY =
+        std::clamp(tick.y + 2.0f, origin.y,
+                   std::max(origin.y, canvasMax.y - labelSize.y));
+    dl->AddText(ImVec2(labelX, labelY), style::u32(style::col::TextDim), label);
+  }
+  const float cTitleWidth = std::max(1.0f, backBL.x - origin.x - gap);
+  const std::string cTitle = ellipsizeText("C " + c.name, cTitleWidth);
+  const ImVec2 cTitleSize = ImGui::CalcTextSize(cTitle.c_str());
+  const float cTitleX =
+      std::clamp(backBL.x - cTitleSize.x - gap * 0.45f, origin.x,
+                 std::max(origin.x, canvasMax.x - cTitleSize.x));
+  const float cTitleY =
+      std::clamp(backBL.y + fontSize + gap * 0.45f, origin.y,
+                 std::max(origin.y, canvasMax.y - cTitleSize.y));
+  dl->AddText(ImVec2(cTitleX, cTitleY), style::u32(slotColor(2)),
+              cTitle.c_str());
+
+  if (hoveredLayer >= 0) {
+    const TernaryLayerSweep& layer =
+        sb.ternaryLayers[static_cast<size_t>(hoveredLayer)];
+    const sol::SweepPoint& point = layer.points[hoveredPoint];
+    const double abTotal = point.fractions[0] + point.fractions[1];
+    const int fractionA =
+        abTotal > 1e-9
+            ? static_cast<int>(std::lround(point.fractions[0] / abTotal * 100.0))
+            : 0;
+    const std::string tip =
+        c.name + " " +
+        std::to_string(static_cast<int>(std::lround(layer.fractionC * 100.0f))) +
+        "% layer  |  A:B " + std::to_string(fractionA) + ":" +
+        std::to_string(100 - fractionA) + "  ->  " +
+        formatUnits(point.prediction.gramsPerMillilitre, molarMass, sb.units);
+    ImGui::SetTooltip("%s", tip.c_str());
+  }
+
   dl->PopClipRect();
 }
 
@@ -1609,6 +1948,26 @@ void drawSolubilitySuite(AppState& st) {
     ImGui::SliderFloat(temperatureLabelInline ? "Temperature (C)" : "##temperature",
                        &sb.temperatureC, -20.0f, 150.0f, "%.1f");
 
+    // pH only exists as a control for a solute that can ionise. Showing a pH
+    // slider next to naphthalene would be theatre.
+    if (sb.soluteValid && (sb.solute.ionization.ionClass == sol::IonClass::Base ||
+                           sb.solute.ionization.ionClass == sol::IonClass::Acid)) {
+      ImGui::Spacing();
+      checkboxWithResponsiveLabel("pH set by the solute itself", "Self-buffered##ph_auto",
+                                  &sb.pHAuto);
+      if (sb.pHAuto) {
+        textDisabledWrapped("Saturated solution sets pH %.1f (pKa ~%.1f, %s).",
+                            sb.prediction.ionicPath ? sb.prediction.pH : 7.0,
+                            sb.solute.ionization.pKa,
+                            sb.solute.ionization.siteLabel.empty()
+                                ? "estimated"
+                                : sb.solute.ionization.siteLabel.c_str());
+      } else {
+        const bool pHLabelInline = prepareTrailingLabel("pH");
+        ImGui::SliderFloat(pHLabelInline ? "pH" : "##ph", &sb.pH, 0.0f, 14.0f, "%.1f");
+      }
+    }
+
     // Common-ion controls remain conditional on a recognised 1:1 salt.
     if (sb.soluteValid && !sb.solute.canonicalSmiles.empty() &&
         sol::findSalt(sb.solute.canonicalSmiles) != nullptr) {
@@ -1666,7 +2025,8 @@ void drawSolubilitySuite(AppState& st) {
   if (canPredict) {
     sb.prediction = sol::predict(sb.solute, components, static_cast<double>(sb.temperatureC),
                                  activeBackground(sb),
-                                 static_cast<double>(sb.backgroundMolarity));
+                                 static_cast<double>(sb.backgroundMolarity),
+                                 requestedPH(sb));
     sb.statusMessage = "Predicted " + formatUnits(sb.prediction.gramsPerMillilitre,
                                                   sb.solute.molarMass, sb.units) +
                        ".";
@@ -1682,6 +2042,7 @@ void drawSolubilitySuite(AppState& st) {
     recomputeSweepIfNeeded(sb, chosen);
   } else {
     sb.sweep.clear();
+    sb.ternaryLayers.clear();
     sb.sweepSignature.clear();
   }
 
@@ -1693,7 +2054,10 @@ void drawSolubilitySuite(AppState& st) {
     const bool headingFont = style::pushFont(style::fonts::semibold());
     ImGui::TextUnformatted("Composition response");
     style::popFont(headingFont);
-    textDisabledWrapped("Drag directly on the graph to set the working blend.");
+    textDisabledWrapped(
+        sb.solventCount == 3
+            ? "Drag the active curve to set A:B. Scroll or click a layer to set solvent C."
+            : "Drag directly on the graph to set the working blend.");
 
     constexpr ImGuiTableFlags controlFlags =
         ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings;
@@ -1742,7 +2106,7 @@ void drawSolubilitySuite(AppState& st) {
       style::popFont(emptyFont);
       ImGui::TextWrapped("Draw a molecular structure or switch the Solute card to SMILES. "
                          "Then choose two solvents to unlock the interactive ratio graph, or "
-                         "three solvents for a ternary map.");
+                         "three solvents for a layered composition cube.");
     } else if (!canPredict) {
       ImGui::Spacing();
       widgets::badge("NEEDS SOLVENT", style::col::Teal);
