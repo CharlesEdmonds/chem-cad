@@ -3,6 +3,7 @@
 add_library(chemcad_sol STATIC
   solvent.cpp
   solubility.cpp
+  selection.cpp
   ionization.cpp
   anchors.cpp
   kirkwood_buff.cpp
