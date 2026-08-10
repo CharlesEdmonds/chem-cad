@@ -207,9 +207,11 @@ float boundaryDensity(float distance) {
 }
 
 void eachCellBounds(ivec3 cell, out uint begin, out uint end) {
-  uint flat = flatCell(cell);
-  begin = cellOffsets[flat];
-  end = begin + cellCounts[flat];
+  // Not `flat`: that is an interpolation qualifier, and NVIDIA's compiler
+  // rejects it as a variable name even in a compute shader.
+  uint index = flatCell(cell);
+  begin = cellOffsets[index];
+  end = begin + cellCounts[index];
 }
 )GLSL";
 

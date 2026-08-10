@@ -28,6 +28,12 @@ foreach(test_src IN LISTS CHEMCAD_TEST_SOURCES)
   if(test_name STREQUAL "test_ui_interaction" OR test_name MATCHES "_panel$")
     target_link_libraries(${test_name} PRIVATE chemcad_ui imgui_lib)
   endif()
+  # The GPU fluid suite creates its own hidden OpenGL 4.3 context so it can
+  # exercise the compute backend on real hardware; everything else stays
+  # headless and window-system free.
+  if(test_name STREQUAL "test_fluid_gpu")
+    target_link_libraries(${test_name} PRIVATE glfw)
+  endif()
   target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/src)
   chemcad_copy_runtime_dlls(${test_name})
   add_test(NAME ${test_name} COMMAND ${test_name})
