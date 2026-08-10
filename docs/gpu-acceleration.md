@@ -10,9 +10,9 @@ The compute passes perform:
 
 - counting-sort uniform-grid construction: parallel cell counts, a prefix pass, and parallel scatter;
 - Wendland C2 number-density gathering over the 27 neighbouring cells;
-- colour-field normal and curvature evaluation;
+- colour-field gradient with the Bonet-Lok kernel-gradient correction, and the curvature that follows from it;
 - harmonic-pair physical viscosity;
-- calibrated Akinci cohesion plus the same phase-pair interfacial-tension matrix and density correction as the CPU solver;
+- Continuum Surface Force interfacial tension, `sigma * kappa * grad c`, with the interface thresholds compiled into the shader prelude from `fluid::kInterfaceGradientFloor` and `fluid::kInterfaceCorrectionDeterminant` so the two paths cannot disagree about where an interface is;
 - PCISPH prediction, wall-density correction, non-negative pressure update, and corrected symmetric pressure force;
 - frame, Coriolis, Euler, and centrifugal acceleration;
 - speed/displacement clamping, four-pass analytic-SDF contact projection, and integration.
@@ -21,15 +21,15 @@ The vessel profile and boundary-density lookup table are sampled from `fluid::Ve
 
 ## Work retained on the CPU
 
-Substep selection, CFL/acceleration/transport bounds, PCISPH convergence and stall decisions, frame-motion evaluation, pressure-stiffness calibration, and Young-Laplace interface calibration remain on the CPU. They are low-volume control work, contain useful validated reference code, and do not justify a second GPU implementation. A four-word reduction buffer carries only maximum speed, acceleration, compression, deficit, rejection, and clamp counters back to the CPU; particle state does not make a per-substep round trip.
+Substep selection, CFL/acceleration/transport bounds, PCISPH convergence and stall decisions, frame-motion evaluation, and pressure-stiffness calibration remain on the CPU. They are low-volume control work, contain useful validated reference code, and do not justify a second GPU implementation. A four-word reduction buffer carries only maximum speed, acceleration, compression, deficit, rejection, and clamp counters back to the CPU; particle state does not make a per-substep round trip.
 
 The optional XSPH display-only velocity smoothing mode is not ported. It defaults to zero. Requesting a non-zero `SolverConfig::xsphSmoothing` makes GPU setup unavailable so the caller uses the CPU solver rather than silently changing the requested model.
 
 ## Numerical equivalence and determinism
 
-Both paths use the same kernel equations, support radius, density-contrast pressure operator, phase masses, harmonic viscosity, surface-tension pair table, boundary-density correction, substep ladder, iteration limits, pressure relaxation, and transport clamps.
+Both paths use the same kernel equations, support radius, density-contrast pressure operator, phase masses, harmonic viscosity, surface-tension model, boundary-density correction, substep ladder, iteration limits, pressure relaxation, and transport clamps. Interfacial tension needs no calibration on either path: `sigma` enters in N/m and `tests/test_fluid_solver.cpp` holds the CPU implementation to `dp = 2 sigma / R` directly.
 
-The GPU path is not bit-identical to the CPU path. GLSL accumulates in 32-bit float, while the CPU reference performs reductions in double, and atomic counting-sort scatter does not promise the CPU solver's ascending-particle neighbour order. These differences can move the last few bits and the exact iteration at which a tolerance is crossed. They do not deliberately change the physical model. Reproducibility tests and calibration continue to use `fluid::Solver`.
+The GPU path is not bit-identical to the CPU path. GLSL accumulates in 32-bit float, while the CPU reference performs reductions in double, and atomic counting-sort scatter does not promise the CPU solver's ascending-particle neighbour order. These differences can move the last few bits and the exact iteration at which a tolerance is crossed. They do not deliberately change the physical model. Reproducibility tests continue to use `fluid::Solver`.
 
 ## Requirements and fallback
 

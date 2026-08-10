@@ -66,7 +66,8 @@ struct Scratch {
 
 layout(std430, binding = 0) buffer ParticleBuffer { Particle particles[]; };
 layout(std430, binding = 1) buffer PhaseBuffer { vec4 phaseValues[]; };
-layout(std430, binding = 2) buffer SigmaBuffer { float sigmaPairs[]; };
+// Binding 2 is deliberately vacant: the interfacial-tension table left the GPU
+// with the pairwise cohesion term. Renumbering the rest would only churn.
 layout(std430, binding = 3) buffer ProfileBuffer { vec2 profile[]; };
 layout(std430, binding = 4) buffer BoundaryBuffer { float boundaryTable[]; };
 layout(std430, binding = 5) buffer CountBuffer { uint cellCounts[]; };
@@ -92,7 +93,7 @@ uniform float wallFriction;
 uniform float maxSpeed;
 uniform float displacementLimit;
 uniform float pressureRelaxation;
-uniform float cohesionGain;
+uniform float surfaceTension;
 uniform vec3 frameUniform;
 uniform vec3 frameOmega;
 uniform vec3 frameAlpha;
@@ -132,15 +133,8 @@ float wendlandGradOverR(float radius) {
   return gradient / radius;
 }
 
-float cohesionC(float radius) {
-  if (radius <= 0.0 || radius >= support || support <= 0.0) return 0.0;
-  float hr = support - radius;
-  float hr3r3 = hr * hr * hr * radius * radius * radius;
-  float value = radius > 0.5 * support
-                    ? hr3r3
-                    : 2.0 * hr3r3 - pow(support, 6.0) / 64.0;
-  return 32.0 / (PI * pow(support, 9.0)) * value;
-}
+// Interfacial tension is a Continuum Surface Force on the colour field, so no
+// cohesion kernel appears here; see the CPU solver for the derivation.
 
 struct BoundaryResult {
   float squaredDistance;
@@ -306,13 +300,16 @@ void main() {
 }
 )GLSL";
 
+// Mirrors fluid::computeSurfaceGeometry exactly, including the Bonet-Lok
+// kernel-gradient correction. Any divergence between the two would show up as
+// a different interfacial tension on machines that take the GPU path.
 const char* kNormalShader = R"GLSL(
 void main() {
   uint i = gl_GlobalInvocationID.x;
   if (i >= particleCount) return;
   vec3 position = particles[i].positionPhase.xyz;
   ivec3 centre = cellOf(position);
-  vec3 normal = vec3(0.0);
+  vec3 gradient = vec3(0.0);
   for (int z = -1; z <= 1; ++z) for (int y = -1; y <= 1; ++y)
     for (int x = -1; x <= 1; ++x) {
       ivec3 cell = centre + ivec3(x, y, z);
@@ -326,11 +323,37 @@ void main() {
         if (radius <= 0.0 || radius >= support) continue;
         float scale = (particles[j].colourNormal.x - particles[i].colourNormal.x) /
                       particles[j].velocityDelta.w * wendlandGradOverR(radius);
-        normal += scale * difference;
+        gradient += scale * difference;
       }
     }
-  float normalLength = length(normal);
-  particles[i].colourNormal.yzw = normalLength > TINY ? normal / normalLength : vec3(0.0);
+
+  // Correct only where there is a gradient to correct: building L for the bulk
+  // would be most of the cost of this pass for none of its value.
+  if (length(gradient) >= MIN_COLOUR_GRADIENT / support) {
+    mat3 correction = mat3(0.0);
+    for (int z = -1; z <= 1; ++z) for (int y = -1; y <= 1; ++y)
+      for (int x = -1; x <= 1; ++x) {
+        ivec3 cell = centre + ivec3(x, y, z);
+        if (any(lessThan(cell, ivec3(0))) || any(greaterThanEqual(cell, gridDims))) continue;
+        uint begin, end; eachCellBounds(cell, begin, end);
+        for (uint entry = begin; entry < end; ++entry) {
+          uint j = sortedIndices[entry];
+          if (i == j || particles[j].velocityDelta.w <= 0.0) continue;
+          vec3 difference = position - particles[j].positionPhase.xyz;
+          float radius = length(difference);
+          if (radius <= 0.0 || radius >= support) continue;
+          float weight = -wendlandGradOverR(radius) / particles[j].velocityDelta.w;
+          correction += weight * outerProduct(difference, difference);
+        }
+      }
+    if (determinant(correction) > MIN_CORRECTION_DETERMINANT) {
+      gradient = inverse(correction) * gradient;
+    }
+  }
+  // The UNNORMALISED gradient: the Continuum Surface Force needs its magnitude
+  // as the surface delta, and the curvature pass normalises where it needs a
+  // direction. Storing only the unit vector would throw that magnitude away.
+  particles[i].colourNormal.yzw = gradient;
 }
 )GLSL";
 
@@ -338,12 +361,16 @@ const char* kCurvatureShader = R"GLSL(
 void main() {
   uint i = gl_GlobalInvocationID.x;
   if (i >= particleCount) return;
-  float colour = particles[i].colourNormal.x;
-  if (!(colour > 0.05 && colour < 0.95)) { curvature[i] = 0.0; return; }
+  curvature[i] = 0.0;
+  float floorValue = MIN_COLOUR_GRADIENT / support;
+  vec3 gradientI = particles[i].colourNormal.yzw;
+  float lengthI = length(gradientI);
+  if (lengthI < floorValue) return;
+  vec3 ni = gradientI / lengthI;
   vec3 position = particles[i].positionPhase.xyz;
-  vec3 ni = particles[i].colourNormal.yzw;
   ivec3 centre = cellOf(position);
-  float value = 0.0;
+  mat3 jacobian = mat3(0.0);
+  mat3 correction = mat3(0.0);
   for (int z = -1; z <= 1; ++z) for (int y = -1; y <= 1; ++y)
     for (int x = -1; x <= 1; ++x) {
       ivec3 cell = centre + ivec3(x, y, z);
@@ -353,14 +380,24 @@ void main() {
         uint j = sortedIndices[entry];
         float neighbourDelta = particles[j].velocityDelta.w;
         if (i == j || neighbourDelta <= 0.0) continue;
+        // Neighbours that actually have a normal. A bulk particle has none, and
+        // folding its zero vector in would report every flat patch as curved.
+        vec3 gradientJ = particles[j].colourNormal.yzw;
+        float lengthJ = length(gradientJ);
+        if (lengthJ < floorValue) continue;
         vec3 difference = position - particles[j].positionPhase.xyz;
         float radius = length(difference);
         if (radius <= 0.0 || radius >= support) continue;
-        vec3 gradient = wendlandGradOverR(radius) * difference;
-        value -= dot(particles[j].colourNormal.yzw - ni, gradient) / neighbourDelta;
+        float weight = -wendlandGradOverR(radius) / neighbourDelta;
+        correction += weight * outerProduct(difference, difference);
+        // Rows index the normal component, columns the derivative direction,
+        // and grad W has the opposite sign to the accumulation above.
+        jacobian -= weight * outerProduct(gradientJ / lengthJ - ni, difference);
       }
     }
-  curvature[i] = value;
+  if (!(determinant(correction) > MIN_CORRECTION_DETERMINANT)) return;
+  mat3 corrected = inverse(correction) * jacobian;
+  curvature[i] = -(corrected[0][0] + corrected[1][1] + corrected[2][2]);
 }
 )GLSL";
 
@@ -409,27 +446,15 @@ void main() {
           viscous += (pairForceScale / massI) *
                      (velocity - particles[j].velocityDelta.xyz);
         }
-        if (surfaceEnabled != 0 && phaseJ != phaseI) {
-          float coefficient = sigmaPairs[phaseI * phaseCount + phaseJ] * cohesionGain;
-          if (coefficient > 0.0) {
-            float densityCorrection = 2.0 * sqrt(phaseValues[phaseI].y * phaseValues[phaseJ].y) /
-                                      max(TINY, rhoI + rhoJ);
-            vec3 pairShape = -cohesionC(radius) / radius * difference;
-            float colourI = particles[i].colourNormal.x;
-            float colourJ = particles[j].colourNormal.x;
-            if ((colourI > 0.05 && colourI < 0.95) ||
-                (colourJ > 0.05 && colourJ < 0.95)) {
-              vec3 curvatureI = curvature[i] * particles[i].colourNormal.yzw;
-              vec3 curvatureJ = curvature[j] * particles[j].colourNormal.yzw;
-              float volumeKernel = wendlandW(radius) /
-                  sqrt(particles[i].velocityDelta.w * particles[j].velocityDelta.w);
-              pairShape -= volumeKernel * (curvatureI - curvatureJ);
-            }
-            surface += coefficient * massJ * densityCorrection * pairShape;
-          }
-        }
       }
     }
+  // Continuum Surface Force: sigma * kappa * grad c / rho, a purely local term
+  // once the colour gradient and its divergence are resident.
+  float colourI = particles[i].colourNormal.x;
+  if (surfaceEnabled != 0 && surfaceTension > 0.0 && rhoI > TINY &&
+      colourI > 0.05 && colourI < 0.95) {
+    surface = (surfaceTension * curvature[i] / rhoI) * particles[i].colourNormal.yzw;
+  }
   particles[i].accelerationPressure.xyz = acceleration + viscous + surface;
 }
 )GLSL";
@@ -617,6 +642,13 @@ void main() {
 
 std::string shaderSource(const char* body) {
   std::string source(kCommonShader);
+  // Compiled in from the single definition in fluid/solver.hpp rather than
+  // written out here, so the GPU cannot decide an interface is somewhere the
+  // CPU does not.
+  source += "const float MIN_COLOUR_GRADIENT = " +
+            std::to_string(fluid::kInterfaceGradientFloor) + ";\n";
+  source += "const float MIN_CORRECTION_DETERMINANT = " +
+            std::to_string(fluid::kInterfaceCorrectionDeterminant) + ";\n";
   source += body;
   return source;
 }
@@ -708,7 +740,6 @@ struct FluidGpuSolver::Impl {
   fluid::SolverConfig config;
   std::vector<fluid::PhaseMaterial> phases;
   std::vector<double> mass;
-  std::vector<float> sigma;
   fluid::Solver setupSolver;
   fluid::InterfaceModel interfaceModel;
   fluid::Solver::Stats stats;
@@ -743,7 +774,6 @@ struct FluidGpuSolver::Impl {
 
   StorageBuffer particles;
   StorageBuffer phaseBuffer;
-  StorageBuffer sigmaBuffer;
   StorageBuffer profileBuffer;
   StorageBuffer boundaryBuffer;
   StorageBuffer counts;
@@ -811,7 +841,6 @@ struct FluidGpuSolver::Impl {
   void bindBuffers() const {
     particles.bind(0);
     phaseBuffer.bind(1);
-    sigmaBuffer.bind(2);
     profileBuffer.bind(3);
     boundaryBuffer.bind(4);
     counts.bind(5);
@@ -882,17 +911,8 @@ struct FluidGpuSolver::Impl {
       gpuPhases[i].values[3] = i < activeStiffness.size()
                                   ? static_cast<float>(activeStiffness[i]) : 0.0f;
     }
-    // An empty surface-tension table still needs a bound, non-zero-sized SSBO
-    // or the shader's binding is undefined, so a single zero stands in for it.
-    static constexpr float kNoSigma = 0.0f;
-    const void* sigmaSource = sigma.empty() ? static_cast<const void*>(&kNoSigma)
-                                            : static_cast<const void*>(sigma.data());
-    const std::size_t sigmaBytes =
-        sigma.empty() ? sizeof(float) : sigma.size() * sizeof(float);
     return phaseBuffer.resize(gpuPhases.size() * sizeof(GpuPhase)) &&
-           phaseBuffer.upload(gpuPhases.data(), gpuPhases.size() * sizeof(GpuPhase)) &&
-           sigmaBuffer.resize(std::max<std::size_t>(sizeof(float), sigmaBytes)) &&
-           sigmaBuffer.upload(sigmaSource, sigmaBytes);
+           phaseBuffer.upload(gpuPhases.data(), gpuPhases.size() * sizeof(GpuPhase));
   }
 
   bool ensureStiffness(double step) {
@@ -946,7 +966,7 @@ void FluidGpuSolver::configure(const fluid::SolverConfig& config) {
       impl_->config.resolution.spacing != config.resolution.spacing;
   impl_->config = config;
   impl_->setupSolver.configure(config);
-  if (resolutionChanged) impl_->interfaceModel = {};
+  impl_->interfaceModel = impl_->setupSolver.interfaceModel();
   impl_->mass.resize(impl_->phases.size());
   for (std::size_t i = 0; i < impl_->phases.size(); ++i) {
     impl_->mass[i] = impl_->phases[i].restDensity *
@@ -971,30 +991,12 @@ void FluidGpuSolver::setPhases(
   for (std::size_t i = 0; i < phases.size(); ++i) {
     impl_->mass[i] = phases[i].restDensity * impl_->config.resolution.particleVolume();
   }
-  const std::size_t count = phases.size();
-  impl_->sigma.assign(count * count, 0.0f);
-  if (sigmaPairs.size() == count * count) {
-    for (std::size_t i = 0; i < count; ++i) for (std::size_t j = 0; j < count; ++j) {
-      impl_->sigma[i * count + j] = i == j ? 0.0f : static_cast<float>(
-          std::max(0.0, 0.5 * (sigmaPairs[i * count + j] + sigmaPairs[j * count + i])));
-    }
-  } else if (sigmaPairs.size() == count * (count - 1) / 2) {
-    std::size_t pair = 0;
-    for (std::size_t i = 0; i < count; ++i) for (std::size_t j = i + 1; j < count; ++j) {
-      const float value = static_cast<float>(std::max(0.0, sigmaPairs[pair++]));
-      impl_->sigma[i * count + j] = value;
-      impl_->sigma[j * count + i] = value;
-    }
-  }
-  impl_->activeStiffness.assign(count, 0.0);
-  impl_->stiffnessStep = -1.0;
-  impl_->interfaceModel = {};
-  impl_->stateResident = false;
-}
-
-void FluidGpuSolver::calibrateInterface(const fluid::VesselBoundary& boundary) {
-  impl_->setupSolver.calibrateInterface(boundary);
+  // setupSolver owns the validation and symmetrisation of the tension table;
+  // reading its model back keeps one definition of what sigma means.
   impl_->interfaceModel = impl_->setupSolver.interfaceModel();
+  impl_->activeStiffness.assign(phases.size(), 0.0);
+  impl_->stiffnessStep = -1.0;
+  impl_->stateResident = false;
 }
 
 bool FluidGpuSolver::upload(const fluid::Particles& source,
@@ -1122,9 +1124,8 @@ int FluidGpuSolver::advance(const fluid::VesselBoundary& boundary,
       impl_->buildGrid();
       impl_->dispatchParticles(impl_->density);
       impl_->dispatchParticles(impl_->colour);
-      const bool surface = impl_->config.enableSurfaceTension &&
-                           impl_->interfaceModel.calibrated &&
-                           impl_->interfaceModel.cohesionGain > 0.0 &&
+      const double surfaceTension = impl_->interfaceModel.interfacialTension();
+      const bool surface = impl_->config.enableSurfaceTension && surfaceTension > 0.0 &&
                            impl_->phases.size() > 1;
       if (surface) {
         impl_->dispatchParticles(impl_->normal);
@@ -1143,7 +1144,7 @@ int FluidGpuSolver::advance(const fluid::VesselBoundary& boundary,
       impl_->force.setInt("frameRotating", frame.rotating ? 1 : 0);
       impl_->force.setInt("enableCoriolis", impl_->config.enableCoriolis ? 1 : 0);
       impl_->force.setInt("surfaceEnabled", surface ? 1 : 0);
-      impl_->force.setFloat("cohesionGain", static_cast<float>(impl_->interfaceModel.cohesionGain));
+      impl_->force.setFloat("surfaceTension", static_cast<float>(surfaceTension));
       impl_->force.dispatch(groupsFor(impl_->particleCount));
       ComputeProgram::memoryBarrier();
       impl_->dispatchParticles(impl_->pressureReset);

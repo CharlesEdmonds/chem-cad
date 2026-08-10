@@ -339,7 +339,7 @@ TEST_CASE("simulation setup order is exception-free and preserves phase charges"
     CHECK(simulation.totalVolumeMl() == doctest::Approx(60.0));
   }
 
-  SUBCASE("surface-tension calibration cannot escape setup") {
+  SUBCASE("a surface-tension table survives setup and charges") {
     Simulation simulation;
     CHECK_NOTHROW(simulation.setResolution(10.0e-3));
     CHECK_NOTHROW(simulation.setPhases(

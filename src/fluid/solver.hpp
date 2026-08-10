@@ -19,12 +19,12 @@
 //   * Physical dynamic viscosity with a harmonic pair mean, so the stress at
 //     the interface is limited by the less viscous liquid rather than by an
 //     arithmetic average.
-//   * Interfacial tension from the colour-field curvature of the same
-//     density-contrast paper (eqs. 22-24), with a cohesion term after Akinci,
-//     Akinci & Teschner (ACM TOG 32(6), 2013). Its coefficient is resolution
-//     dependent and is CALIBRATED against the Young-Laplace law
-//     (dp = 2 sigma / R) for the working spacing -- it is never set equal to a
-//     measured interfacial tension, which would be dimensionally wrong.
+//   * Interfacial tension by the Continuum Surface Force (Brackbill, Kothe &
+//     Zemach, JCP 100, 1992; SPH form after Morris, IJNMF 33, 2000) on the
+//     colour field: f = sigma kappa grad c. |grad c| integrates to the jump in
+//     c across the interface, which is 1, so this reproduces dp = 2 sigma / R
+//     with sigma in N/m and nothing to fit. tests/test_fluid_solver.cpp holds
+//     it to that law directly.
 //
 // Determinism: every reduction accumulates in double over ascending particle
 // index, neighbour loops gather (never scatter), and no random number touches
@@ -44,7 +44,7 @@
 namespace chemcad::fluid {
 
 // Tunables with their justification. Defaults are the values validated by
-// tests/test_fluid_solver.cpp; changing one invalidates the calibration cache.
+// tests/test_fluid_solver.cpp.
 struct SolverConfig {
   Resolution resolution;
   double densityTolerance = 5.0e-3;  // maximum compression (delta/delta0 - 1)
@@ -86,15 +86,35 @@ struct QualityProfile {
   }
 };
 
-// Per-phase-pair interfacial tension, and the calibration that turns it into
-// the solver's cohesion coefficient at this resolution.
+// Interfacial tension, in SI, as the caller measured it.
+//
+// It is a TWO-PHASE model: the colour field the CSF term differentiates is
+// binary, phase 0 against everything else. setPhases rejects a tension table
+// spanning more than two phases rather than silently applying it to a colour
+// field that cannot represent it.
 struct InterfaceModel {
   // sigma[i * phaseCount + j], N/m, symmetric, diagonal unused.
   std::vector<double> sigma;
-  // Calibration factor from the Young-Laplace test: coefficient = sigma * gain.
-  double cohesionGain = 0.0;
-  bool calibrated = false;
+
+  // The single interfacial tension this two-phase model carries, N/m.
+  double interfacialTension() const { return sigma.size() >= 2 ? sigma[1] : 0.0; }
 };
+
+// Thresholds the Continuum Surface Force uses to decide where an interface is
+// and when its kernel-gradient correction is trustworthy. They live in the
+// header because the GPU mirror in src/gfx/fluid_gpu.cpp compiles them into its
+// shader prelude, and two copies of a threshold are two thresholds.
+//
+// The first is a floor on |grad c| in units of 1/support: below it a particle
+// has no interface normal worth having. It gates on the GRADIENT rather than on
+// the colour value because the tension is carried by |grad c|, and a colour
+// band clips its tails -- measured, a 0.05..0.95 band discarded a quarter of the
+// surface delta. The second is the smallest determinant of the Bonet-Lok
+// correction matrix that may be inverted; below it the neighbourhood is
+// genuinely one-sided (a wall, a free surface) and the uncorrected gradient is
+// the safer answer.
+inline constexpr double kInterfaceGradientFloor = 0.01;
+inline constexpr double kInterfaceCorrectionDeterminant = 0.05;
 
 class Solver {
  public:
@@ -116,12 +136,14 @@ class Solver {
   // and rendering (both read-only views into the particle arrays).
   double restNumberDensity() const { return delta0_; }
 
-  // Young-Laplace calibration of the cohesion coefficient. The cached result
-  // is invalidated only by resolution, material, or interfacial-tension changes;
-  // ordinary steps and repeated calls are no-ops.
-  void calibrateInterface(const VesselBoundary& boundary);
   const InterfaceModel& interfaceModel() const { return interface_; }
-  const std::string& interfaceCalibrationError() const { return calibrationError_; }
+
+  // Interfacial tension the solver's own force field actually produces for a
+  // free droplet of this radius, recovered from the radial force balance rather
+  // than assumed. Young-Laplace says it should equal sigma; a test says so out
+  // loud. Costs one static droplet evaluation, so it belongs in tests and
+  // diagnostics, never in a frame.
+  double measuredInterfacialTension(double dropletRadiusM) const;
 
   // Diagnostic counters from the last advance. Density deficit is deliberately
   // separate: pressure is non-negative and cannot fill a free-surface neighbour
@@ -147,7 +169,6 @@ class Solver {
     unsigned workerCount = 1;             // static gather partitions used by this advance
     double pressureStiffnessSubstepS = 0.0; // quantised dt used by active stiffness
     std::uint64_t pressureStiffnessCalibrations = 0; // solver lifetime total
-    std::uint64_t interfaceCalibrations = 0;         // solver lifetime total
   };
   const Stats& stats() const { return stats_; }
 
@@ -166,9 +187,7 @@ class Solver {
   std::vector<StiffnessCacheEntry> stiffnessCache_;
   std::uint64_t pressureStiffnessCalibrations_ = 0;
   double pressureStiffnessSubstepS_ = 0.0;
-  std::uint64_t interfaceCalibrations_ = 0;
   Stats stats_;
-  std::string calibrationError_;
 
   // Scratch arrays, kept across calls so a step allocates nothing.
   std::vector<float> predictedX_, predictedY_, predictedZ_;

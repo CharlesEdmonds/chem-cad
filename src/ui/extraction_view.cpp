@@ -959,8 +959,8 @@ struct FluidBuildResult {
 };
 
 // Starts a background build. The panel keeps drawing the analytic schematic
-// until it lands, which is what stops a cold interfacial calibration from
-// freezing the workspace for seconds the first time it is opened.
+// until it lands, which is what stops the vessel SDF build and the first charge
+// from stalling the workspace the first time it is opened.
 void startFluidBuild(SolubilityState& s) {
   if (s.fluidBuildPending || s.fluidTasks == nullptr) return;
 
@@ -982,8 +982,8 @@ void startFluidBuild(SolubilityState& s) {
       [request] {
         FluidBuildResult result;
         try {
-          // Configured fully before it is published, so a failed calibration
-          // can never hand the panel a half-built Simulation.
+          // Configured fully before it is published, so a failed setup can
+          // never hand the panel a half-built Simulation.
           auto candidate = std::make_shared<fluid::Simulation>();
           candidate->setVessel(request.vessel, request.vesselVolumeMl);
           candidate->setQuality(request.quality);
@@ -2608,9 +2608,8 @@ void drawExtractionLab(AppState& st) {
 
 // Called once at startup so the first visit to the workspace finds the
 // simulation already built. The build is the same one the panel would start;
-// doing it early means the interfacial calibration, which is only expensive
-// the first time a machine sees a given resolution and material pair, is paid
-// on a worker thread while the user is still looking at the sketch canvas.
+// doing it early pays for the vessel SDF, the boundary tables and the initial
+// charge on a worker thread while the user is still on the sketch canvas.
 void warmExtractionPhysics(AppState& st) {
   SolubilityState& s = st.solubility;
   s.fluidTasks = &st.tasks;

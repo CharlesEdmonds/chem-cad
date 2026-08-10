@@ -16,13 +16,9 @@
 // with q = r/H and e = (x_i - x_j)/r. Both normalisations are the standard 3D
 // ones and match the reference implementation in SPlisHSPlasH's SPHKernels.h.
 //
-// Cohesion kernel for surface tension (Akinci, Akinci & Teschner 2013,
-// "Versatile Surface Tension and Adhesion for SPH Fluids", eq. 2):
-//   C(r) = 32/(pi H^9) * { (H-r)^3 r^3                 , H/2 < r <= H
-//                        { 2 (H-r)^3 r^3 - H^6/64      , 0 < r <= H/2
-// Its coefficient is resolution dependent and MUST be calibrated against the
-// Young-Laplace law rather than set equal to a measured interfacial tension;
-// see solver.hpp.
+// Interfacial tension does not appear here: it is a Continuum Surface Force on
+// the colour field (see solver.hpp), which needs the same Wendland gradient
+// above and no kernel of its own.
 
 #include <cmath>
 
@@ -62,17 +58,6 @@ inline double cubicGradMagnitude(double r, double h) {
   if (q <= 0.5) return k * q * (3.0 * q - 2.0);
   const double oneMinusQ = 1.0 - q;
   return -k * oneMinusQ * oneMinusQ;
-}
-
-// Akinci 2013 cohesion spline.
-inline double cohesionC(double r, double h) {
-  if (r <= 0.0 || r >= h || h <= 0.0) return 0.0;
-  const double k = 32.0 / (kPi * std::pow(h, 9.0));
-  const double hr = h - r;
-  const double hr3r3 = hr * hr * hr * r * r * r;
-  if (r > 0.5 * h) return k * hr3r3;
-  const double h6 = std::pow(h, 6.0);
-  return k * (2.0 * hr3r3 - h6 / 64.0);
 }
 
 // Number density of a perfect infinite rest lattice of spacing dx under this

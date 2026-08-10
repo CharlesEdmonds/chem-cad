@@ -28,7 +28,6 @@ class FluidGpuSolver {
   const fluid::SolverConfig& config() const;
   void setPhases(const std::vector<fluid::PhaseMaterial>& phases,
                  const std::vector<double>& sigmaPairs);
-  void calibrateInterface(const fluid::VesselBoundary& boundary);
 
   // Upload is explicit because a newly charged or reset particle set may have
   // the same size as the previous one. Once uploaded, state remains resident

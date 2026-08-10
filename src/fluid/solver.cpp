@@ -7,20 +7,13 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <iomanip>
-#include <ios>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
-#include <type_traits>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "core/paths.hpp"
 #include "fluid/kernels.hpp"
 
 namespace chemcad::fluid {
@@ -592,54 +585,168 @@ void computeColourField(Particles& p, const PairCache& cache) {
   });
 }
 
-void computeColourGeometry(Particles& p, const PairCache& cache,
-                           std::vector<double>& curvature) {
+// ------------------------------------------------------------ surface tension
+// Continuum Surface Force (Brackbill, Kothe & Zemach, JCP 100, 1992; SPH form
+// after Morris, Int. J. Numer. Meth. Fluids 33, 2000) on the smoothed phase
+// indicator c:
+//
+//   f = sigma * kappa * grad c,      kappa = -div (grad c / |grad c|)
+//
+// The integral of |grad c| along the interface normal is exactly the jump in c,
+// which is 1, so this reproduces the Young-Laplace jump dp = 2 sigma / R with
+// sigma in N/m and NOTHING to calibrate.
+//
+// What was here before was a pairwise Akinci cohesion whose coefficient was
+// resolution dependent and had to be fitted against a relaxed test droplet.
+// That fit never converged. Measured statically it turned out to be fitting a
+// quantity that could not be positive: the cohesion -- an ATTRACTION -- was
+// applied between UNLIKE phases, which pulls the two liquids into each other,
+// and the Young-Laplace probe reads -0.36 N/m per unit coefficient for it. The
+// old loop only ever produced a positive answer by reading transient noise off
+// a PCISPH pressure field that is reset every substep. Both the term and its
+// calibration are gone; CSF is the standard model, and it is self-scaling.
+struct SurfaceField {
+  std::vector<double> gradient;   // |grad c|, 1/m
+  std::vector<double> curvature;  // kappa, 1/m; zero outside the interface
+  std::vector<Vec3d> raw;         // uncorrected colour gradient, scratch
+};
+
+// Symmetric 3x3 inverse with a conditioning guard, for the SPH kernel-gradient
+// correction (Bonet & Lok, CMAME 180, 1999). The correction matrix
+//     L_i = sum_j V_j (grad W_ij) (x) (r_j - r_i)
+// is the identity for a complete isotropic neighbourhood; inverting it makes
+// the discrete gradient exact for a linear field. That exactness is not
+// cosmetic here: uncorrected, |grad c| integrates to 0.93 instead of 1 and the
+// curvature lands 6% low, which together put the pressure jump 13% under
+// Young-Laplace. Near a wall or a free surface the neighbourhood is genuinely
+// one-sided, L is near-singular, and the uncorrected gradient is the safer
+// answer -- hence the determinant guard rather than a pseudo-inverse.
+struct Mat3 {
+  double m[3][3]{};
+};
+
+bool invertSymmetric(const Mat3& a, Mat3& out) {
+  const double c00 = a.m[1][1] * a.m[2][2] - a.m[1][2] * a.m[1][2];
+  const double c01 = a.m[0][2] * a.m[1][2] - a.m[0][1] * a.m[2][2];
+  const double c02 = a.m[0][1] * a.m[1][2] - a.m[0][2] * a.m[1][1];
+  const double determinant = a.m[0][0] * c00 + a.m[0][1] * c01 + a.m[0][2] * c02;
+  // L is dimensionless and unity for a complete neighbourhood, so this is an
+  // absolute test, not a scaled one.
+  if (!(determinant > kInterfaceCorrectionDeterminant)) return false;
+  const double c11 = a.m[0][0] * a.m[2][2] - a.m[0][2] * a.m[0][2];
+  const double c12 = a.m[0][2] * a.m[0][1] - a.m[0][0] * a.m[1][2];
+  const double c22 = a.m[0][0] * a.m[1][1] - a.m[0][1] * a.m[0][1];
+  const double inverse = 1.0 / determinant;
+  out.m[0][0] = c00 * inverse;
+  out.m[0][1] = out.m[1][0] = c01 * inverse;
+  out.m[0][2] = out.m[2][0] = c02 * inverse;
+  out.m[1][1] = c11 * inverse;
+  out.m[1][2] = out.m[2][1] = c12 * inverse;
+  out.m[2][2] = c22 * inverse;
+  return true;
+}
+
+void computeSurfaceGeometry(Particles& p, const PairCache& cache, double support,
+                            SurfaceField& field) {
   const std::size_t n = p.size();
   computeColourField(p, cache);
+  field.gradient.assign(n, 0.0);
+  field.curvature.assign(n, 0.0);
+  field.raw.assign(n, Vec3d{});
+  const double gradientFloor = kInterfaceGradientFloor / support;
 
-  // Solenthaler and Pajarola, SCA 2008, eqs. 22-24. Frozen per-substep kernel
-  // gradients are shared with PCISPH below; their static support is the usual
-  // PCISPH neighbour approximation and keeps every gather allocation-free.
+  // Difference form of the SPH gradient: it cancels the constant part, so a
+  // truncated neighbourhood cannot manufacture a gradient out of a uniform
+  // colour field.
   parallelFor(n, [&](std::size_t begin, std::size_t end) {
     for (std::size_t i = begin; i < end; ++i) {
-      Vec3d normal{};
+      Vec3d gradient{};
       for (uint32_t pair = cache.offsets[i]; pair < cache.offsets[i + 1]; ++pair) {
         const std::size_t j = cache.indices[pair];
         if (i == j || p.delta[j] <= 0.0f) continue;
-        const double scale =
-            (static_cast<double>(p.colour[j]) - p.colour[i]) /
-            static_cast<double>(p.delta[j]) * static_cast<double>(cache.gradOverR[pair]);
-        normal.x += scale * cache.dx[pair];
-        normal.y += scale * cache.dy[pair];
-        normal.z += scale * cache.dz[pair];
+        const double scale = (static_cast<double>(p.colour[j]) - p.colour[i]) /
+                             static_cast<double>(p.delta[j]) *
+                             static_cast<double>(cache.gradOverR[pair]);
+        gradient.x += scale * cache.dx[pair];
+        gradient.y += scale * cache.dy[pair];
+        gradient.z += scale * cache.dz[pair];
       }
-      normal = normalized(normal);
-      p.nx[i] = static_cast<float>(normal.x);
-      p.ny[i] = static_cast<float>(normal.y);
-      p.nz[i] = static_cast<float>(normal.z);
+      field.raw[i] = gradient;
     }
   });
 
-  curvature.resize(n);
-  std::fill(curvature.begin(), curvature.end(), 0.0);
+  // Correct the gradient only where there is one to correct. The interface is a
+  // thin shell of the fluid, so building and inverting L for the bulk would be
+  // most of the cost of this pass for none of its value.
   parallelFor(n, [&](std::size_t begin, std::size_t end) {
     for (std::size_t i = begin; i < end; ++i) {
-      // Surface tension acts only in the narrow colour-field band. Skipping
-      // bulk particles is the continuum-surface-force narrow-band treatment,
-      // not a change to interface forces.
-      if (!(p.colour[i] > 0.05f && p.colour[i] < 0.95f)) continue;
+      Vec3d gradient = field.raw[i];
+      if (length(gradient) >= gradientFloor) {
+        Mat3 correction;
+        for (uint32_t pair = cache.offsets[i]; pair < cache.offsets[i + 1]; ++pair) {
+          const std::size_t j = cache.indices[pair];
+          if (i == j || p.delta[j] <= 0.0f) continue;
+          // grad W_ij (x) (r_j - r_i) = -gradOverR * d (x) d, and gradOverR is
+          // negative, so this accumulates a positive semi-definite matrix.
+          const double weight = -static_cast<double>(cache.gradOverR[pair]) /
+                                static_cast<double>(p.delta[j]);
+          const double d[3]{cache.dx[pair], cache.dy[pair], cache.dz[pair]};
+          for (int a = 0; a < 3; ++a) {
+            for (int b = 0; b < 3; ++b) correction.m[a][b] += weight * d[a] * d[b];
+          }
+        }
+        if (Mat3 inverse; invertSymmetric(correction, inverse)) {
+          gradient = {inverse.m[0][0] * field.raw[i].x + inverse.m[0][1] * field.raw[i].y +
+                          inverse.m[0][2] * field.raw[i].z,
+                      inverse.m[1][0] * field.raw[i].x + inverse.m[1][1] * field.raw[i].y +
+                          inverse.m[1][2] * field.raw[i].z,
+                      inverse.m[2][0] * field.raw[i].x + inverse.m[2][1] * field.raw[i].y +
+                          inverse.m[2][2] * field.raw[i].z};
+        }
+      }
+      field.gradient[i] = length(gradient);
+      const Vec3d unit = normalized(gradient);
+      p.nx[i] = static_cast<float>(unit.x);
+      p.ny[i] = static_cast<float>(unit.y);
+      p.nz[i] = static_cast<float>(unit.z);
+    }
+  });
+
+  // Divergence of the unit normal, over neighbours that actually have one. A
+  // bulk neighbour has no normal at all, and folding its zero vector in would
+  // report every flat patch as curving away (Morris' reliability rule). That
+  // leaves a one-sided neighbourhood, which is precisely what the same
+  // correction matrix -- rebuilt over the retained neighbours -- undoes.
+  parallelFor(n, [&](std::size_t begin, std::size_t end) {
+    for (std::size_t i = begin; i < end; ++i) {
+      if (field.gradient[i] < gradientFloor) continue;
       const Vec3d ni{p.nx[i], p.ny[i], p.nz[i]};
-      double kappa = 0.0;
+      Mat3 jacobian;
+      Mat3 correction;
       for (uint32_t pair = cache.offsets[i]; pair < cache.offsets[i + 1]; ++pair) {
         const std::size_t j = cache.indices[pair];
-        if (i == j || p.delta[j] <= 0.0f) continue;
-        const Vec3d nj{p.nx[j], p.ny[j], p.nz[j]};
-        const Vec3d grad{static_cast<double>(cache.gradOverR[pair]) * cache.dx[pair],
-                         static_cast<double>(cache.gradOverR[pair]) * cache.dy[pair],
-                         static_cast<double>(cache.gradOverR[pair]) * cache.dz[pair]};
-        kappa -= dot(nj - ni, grad) / static_cast<double>(p.delta[j]);
+        if (i == j || p.delta[j] <= 0.0f || field.gradient[j] < gradientFloor) continue;
+        const double weight = -static_cast<double>(cache.gradOverR[pair]) /
+                              static_cast<double>(p.delta[j]);
+        const double d[3]{cache.dx[pair], cache.dy[pair], cache.dz[pair]};
+        const double difference[3]{static_cast<double>(p.nx[j]) - ni.x,
+                                   static_cast<double>(p.ny[j]) - ni.y,
+                                   static_cast<double>(p.nz[j]) - ni.z};
+        for (int a = 0; a < 3; ++a) {
+          for (int b = 0; b < 3; ++b) {
+            correction.m[a][b] += weight * d[a] * d[b];
+            // grad W has the opposite sign to the d (x) d accumulation above.
+            jacobian.m[a][b] -= weight * difference[a] * d[b];
+          }
+        }
       }
-      curvature[i] = kappa;
+      Mat3 inverse;
+      if (!invertSymmetric(correction, inverse)) continue;
+      double divergence = 0.0;
+      for (int a = 0; a < 3; ++a) {
+        for (int b = 0; b < 3; ++b) divergence += jacobian.m[a][b] * inverse.m[b][a];
+      }
+      field.curvature[i] = -divergence;
     }
   });
 }
@@ -648,65 +755,35 @@ void addSurfaceAcceleration(Particles& p, const PairCache& cache,
                             const std::vector<PhaseMaterial>& phases,
                             const std::vector<double>& mass,
                             const InterfaceModel& interfaceModel, double support,
-                            std::vector<double>& curvature) {
-  if (!interfaceModel.calibrated || interfaceModel.cohesionGain <= 0.0 || phases.size() < 2) {
-    std::fill(p.colour.begin(), p.colour.end(), 0.0f);
-    std::fill(p.nx.begin(), p.nx.end(), 0.0f);
-    std::fill(p.ny.begin(), p.ny.end(), 0.0f);
-    std::fill(p.nz.begin(), p.nz.end(), 0.0f);
+                            SurfaceField& field) {
+  const double sigma = interfaceModel.interfacialTension();
+  if (!(sigma > 0.0) || phases.size() < 2) {
+    computeColourField(p, cache);
     return;
   }
 
-  computeColourGeometry(p, cache, curvature);
+  computeSurfaceGeometry(p, cache, support, field);
   const std::size_t phaseCount = phases.size();
   parallelFor(p.size(), [&](std::size_t begin, std::size_t end) {
     for (std::size_t i = begin; i < end; ++i) {
-      const std::size_t phaseI = p.phase[i];
-      if (phaseI >= phaseCount || p.delta[i] <= 0.0f) continue;
-      const Vec3d ni{p.nx[i], p.ny[i], p.nz[i]};
-      Vec3d acceleration{};
-      for (uint32_t pair = cache.offsets[i]; pair < cache.offsets[i + 1]; ++pair) {
-        const std::size_t j = cache.indices[pair];
-        if (i == j || p.phase[j] >= phaseCount || p.phase[j] == phaseI ||
-            p.delta[j] <= 0.0f) {
-          continue;
-        }
-        const std::size_t phaseJ = p.phase[j];
-        const double coefficient =
-            interfaceModel.sigma[phaseI * phaseCount + phaseJ] * interfaceModel.cohesionGain;
-        if (coefficient <= 0.0) continue;
-        const double radiusSquared =
-            static_cast<double>(cache.dx[pair]) * cache.dx[pair] +
-            static_cast<double>(cache.dy[pair]) * cache.dy[pair] +
-            static_cast<double>(cache.dz[pair]) * cache.dz[pair];
-        if (radiusSquared <= kTiny) continue;
-        const double radius = std::sqrt(radiusSquared);
-        const double rhoi = mass[phaseI] * static_cast<double>(p.delta[i]);
-        const double rhoj = mass[phaseJ] * static_cast<double>(p.delta[j]);
-        const double densityCorrection =
-            2.0 * std::sqrt(phases[phaseI].restDensity * phases[phaseJ].restDensity) /
-            std::max(kTiny, rhoi + rhoj);
-        const double pairScale = -cohesionC(radius, support) / radius;
-        Vec3d pairShape{pairScale * cache.dx[pair], pairScale * cache.dy[pair],
-                        pairScale * cache.dz[pair]};
-        if ((p.colour[i] > 0.05f && p.colour[i] < 0.95f) ||
-            (p.colour[j] > 0.05f && p.colour[j] < 0.95f)) {
-          const Vec3d curvatureI = curvature[i] * ni;
-          const Vec3d curvatureJ =
-              curvature[j] * Vec3d{p.nx[j], p.ny[j], p.nz[j]};
-          const double volumeKernel =
-              static_cast<double>(cache.kernel[pair]) /
-              std::sqrt(static_cast<double>(p.delta[i]) * static_cast<double>(p.delta[j]));
-          pairShape = pairShape - volumeKernel * (curvatureI - curvatureJ);
-        }
-        acceleration =
-            acceleration + (coefficient * mass[phaseJ] * densityCorrection) * pairShape;
-      }
-      p.ax[i] = static_cast<float>(static_cast<double>(p.ax[i]) + acceleration.x);
-      p.ay[i] = static_cast<float>(static_cast<double>(p.ay[i]) + acceleration.y);
-      p.az[i] = static_cast<float>(static_cast<double>(p.az[i]) + acceleration.z);
+      const std::size_t phase = p.phase[i];
+      if (phase >= phaseCount || p.delta[i] <= 0.0f || field.curvature[i] == 0.0) continue;
+      const double density = mass[phase] * static_cast<double>(p.delta[i]);
+      if (density <= kTiny) continue;
+      // grad c = |grad c| * n, so this is sigma * kappa * grad c / rho.
+      const double scale = sigma * field.curvature[i] * field.gradient[i] / density;
+      p.ax[i] = static_cast<float>(static_cast<double>(p.ax[i]) + scale * p.nx[i]);
+      p.ay[i] = static_cast<float>(static_cast<double>(p.ay[i]) + scale * p.ny[i]);
+      p.az[i] = static_cast<float>(static_cast<double>(p.az[i]) + scale * p.nz[i]);
     }
   });
+}
+
+SurfaceField& surfaceScratch() {
+  // Same ownership as pairScratch: one solver per worker thread, so thread-local
+  // storage keeps the two band arrays across substeps without allocating.
+  thread_local SurfaceField field;
+  return field;
 }
 
 void computePressureForce(const Particles& p, const PairCache& cache, double support,
@@ -781,14 +858,10 @@ void Solver::configure(const SolverConfig& config) {
       mass_[i] = phases_[i].restDensity * config_.resolution.particleVolume();
     }
     stiffnessCache_.clear();
-    interface_.cohesionGain = 0.0;
-    interface_.calibrated = false;
   }
   if (!mass_.empty()) ensurePressureStiffness(resolutionSubstepCeiling(config_));
   stats_ = {};
   stats_.pressureStiffnessCalibrations = pressureStiffnessCalibrations_;
-  stats_.interfaceCalibrations = interfaceCalibrations_;
-  calibrationError_.clear();
 }
 
 void Solver::setPhases(const std::vector<PhaseMaterial>& phases,
@@ -826,6 +899,15 @@ void Solver::setPhases(const std::vector<PhaseMaterial>& phases,
   } else if (!sigmaPairs.empty()) {
     throw std::invalid_argument("interfacial tension table has the wrong size");
   }
+  // The cohesion term reads a colour field that only separates phase 0 from
+  // everything else, and its Young-Laplace gain is a single scalar measured for
+  // one pair's masses and rest densities. A third phase would be given a
+  // tension the solver cannot represent, so it is refused rather than applied
+  // at the wrong magnitude.
+  if (n > 2 && std::any_of(nextSigma.begin(), nextSigma.end(),
+                           [](double sigma) { return sigma > 0.0; })) {
+    throw std::invalid_argument("interfacial tension is a two-phase model");
+  }
 
   const bool materialsChanged = !sameCalibrationMaterials(phases_, phases);
   const bool sigmaChanged = interface_.sigma != nextSigma;
@@ -839,12 +921,6 @@ void Solver::setPhases(const std::vector<PhaseMaterial>& phases,
   ensurePressureStiffness(resolutionSubstepCeiling(config_));
   stats_ = {};
   stats_.pressureStiffnessCalibrations = pressureStiffnessCalibrations_;
-  stats_.interfaceCalibrations = interfaceCalibrations_;
-  if (materialsChanged || sigmaChanged) {
-    interface_.cohesionGain = 0.0;
-    interface_.calibrated = false;
-    calibrationError_.clear();
-  }
 }
 
 void Solver::ensurePressureStiffness(double substepS) {
@@ -874,7 +950,6 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
   const auto advanceStarted = std::chrono::steady_clock::now();
   stats_ = {};
   stats_.pressureStiffnessCalibrations = pressureStiffnessCalibrations_;
-  stats_.interfaceCalibrations = interfaceCalibrations_;
   if (dt <= 0.0 || particles.empty()) return 0;
   if (phases_.empty()) throw std::logic_error("setPhases must precede advance");
   for (uint8_t phase : particles.phase) {
@@ -1056,7 +1131,7 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
 
       if (config_.enableSurfaceTension) {
         addSurfaceAcceleration(particles, pairs, phases_, mass_, interface_, support,
-                               densityError_);
+                               surfaceScratch());
       } else {
         computeColourField(particles, pairs);
       }
@@ -1342,7 +1417,6 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
   stats_.maxSpeed = std::sqrt(maximumSpeedSquared);
   stats_.substepS = lastSubstep;
   stats_.pressureStiffnessCalibrations = pressureStiffnessCalibrations_;
-  stats_.interfaceCalibrations = interfaceCalibrations_;
   const double substepCount = static_cast<double>(stats_.substeps);
   stats_.neighbourMilliseconds /= substepCount;
   stats_.gridMilliseconds /= substepCount;
@@ -1360,301 +1434,96 @@ int Solver::advance(Particles& particles, const VesselBoundary& boundary,
 
 namespace {
 
-// ------------------------------------------------------ calibration cache
-// The Young-Laplace calibration relaxes a test droplet of roughly ten thousand
-// particles for 96 steps: seconds of work, and far more than the vessel charge
-// it is preparing. Its result depends only on the numbers hashed below -- the
-// trial runs at unit interfacial tension and the response is linear, and the
-// vessel is not consulted at all -- so it is memoised in process and persisted
-// under the user's cache directory. Changing solvent, volume or resolution then
-// costs nothing, and only the very first run on a machine ever pays for it.
+// -------------------------------------------------- Young-Laplace verification
+// The CSF model above needs no calibration, but "needs no calibration" is a
+// claim, and an untested claim about surface tension is exactly what shipped
+// last time. This measures what the solver's own force field actually does to a
+// droplet, so a test can hold it against dp = 2 sigma / R.
 //
-// The file name carries the algorithm version: BUMP IT whenever the calibration
-// changes, or entries computed by the old algorithm will be served for the new.
-constexpr const char* kCalibrationCacheFile = "fluid_interface_calibration_v1.txt";
+// Mechanical equilibrium says dp/dr equals the radial surface force per unit
+// volume, so the pressure jump follows from the force field alone -- no pressure
+// solve, no relaxation, no waiting for a droplet to stop ringing:
+//
+//   dp = -integral f_r dr = -sum_i F_r,i / (4 pi r_i^2)
+//
+// Weighting each particle by its own shell area rather than by one nominal
+// 4 pi R^2 keeps the result exact for an interface of finite thickness.
 
-void hashRaw(std::uint64_t& hash, const void* data, std::size_t size) {
-  const auto* bytes = static_cast<const unsigned char*>(data);
-  for (std::size_t i = 0; i < size; ++i) {
-    hash ^= bytes[i];
-    hash *= 0x100000001b3ULL;  // FNV-1a
-  }
-}
-
-template <typename T>
-void hashValue(std::uint64_t& hash, const T& value) {
-  static_assert(std::is_trivially_copyable_v<T>);
-  hashRaw(hash, &value, sizeof value);
-}
-
-// Everything the relaxation reads. Missing one here would silently serve a
-// calibration computed for different physics.
-std::uint64_t calibrationKey(const SolverConfig& config, const std::vector<double>& mass,
-                             double restNumberDensity, std::size_t phaseCount) {
-  std::uint64_t hash = 0xcbf29ce484222325ULL;
-  hashValue(hash, config.resolution.spacing);
-  hashValue(hash, config.resolution.support());
-  hashValue(hash, config.maxSubstepS);
-  hashValue(hash, config.maxPressureIterations);
-  hashValue(hash, config.maxSpeed);
-  hashValue(hash, restNumberDensity);
-  hashValue(hash, phaseCount);
-  for (double m : mass) hashValue(hash, m);
-  return hash;
-}
-
-class CalibrationCache {
- public:
-  static CalibrationCache& instance() {
-    static CalibrationCache cache;
-    return cache;
-  }
-
-  bool lookup(std::uint64_t key, double& gain) {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    loadOnce();
-    const auto entry = entries_.find(key);
-    if (entry == entries_.end()) return false;
-    gain = entry->second;
-    return true;
-  }
-
-  void store(std::uint64_t key, double gain) {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    loadOnce();
-    if (!entries_.emplace(key, gain).second) return;
-    if (path_.empty()) return;
-    // Append one line rather than rewriting: a second ChemCAD process may be
-    // calibrating at the same time, and appending keeps the loser of that race
-    // with a readable file instead of a truncated one.
-    std::ofstream out(path_, std::ios::app);
-    if (!out) return;
-    out << std::hex << key << ' ' << std::hexfloat << gain << '\n';
-  }
-
- private:
-  void loadOnce() {
-    if (loaded_) return;
-    loaded_ = true;
-    // A cache is an optimisation, never a dependency: any filesystem problem
-    // degrades to computing the calibration in memory.
-    try {
-      path_ = core::cacheDir() / kCalibrationCacheFile;
-    } catch (const std::exception&) {
-      path_.clear();
-      return;
-    }
-    std::ifstream in(path_);
-    if (!in) return;
-    std::uint64_t key = 0;
-    double gain = 0.0;
-    while (in >> std::hex >> key >> gain) {
-      if (std::isfinite(gain) && gain > 0.0) entries_.emplace(key, gain);
-    }
-  }
-
-  std::mutex mutex_;
-  bool loaded_ = false;
-  std::filesystem::path path_;
-  std::unordered_map<std::uint64_t, double> entries_;
+struct TensionMeasurement {
+  double sigma = 0.0;   // N/m the model produces at this droplet radius
+  double radius = 0.0;  // m, equimolar radius of the inner phase
 };
+
+TensionMeasurement measureDropletTension(double nominalRadius, const Resolution& resolution,
+                                         const std::vector<PhaseMaterial>& phases,
+                                         const std::vector<double>& mass,
+                                         const InterfaceModel& model) {
+  const double dx = resolution.spacing;
+  const double support = resolution.support();
+  if (phases.size() < 2 || mass.size() < 2 || !(dx > 0.0) || !(nominalRadius > support)) {
+    return {};
+  }
+  // The outer phase carries a full colour-field stencil (one support) plus the
+  // stencil of the gradient the curvature term differentiates (one more), with a
+  // margin so its own free surface never reaches the interface.
+  const double outerRadius = nominalRadius + 3.0 * support;
+
+  Particles droplet;
+  const int extent = static_cast<int>(std::ceil(outerRadius / dx));
+  const std::size_t span = static_cast<std::size_t>(2 * extent + 1);
+  droplet.reserve(span * span * span / 2);
+  std::size_t insideCount = 0;
+  for (int z = -extent; z <= extent; ++z) {
+    for (int y = -extent; y <= extent; ++y) {
+      for (int x = -extent; x <= extent; ++x) {
+        const Vec3d q{x * dx, y * dx, z * dx};
+        const double r = length(q);
+        if (r > outerRadius) continue;
+        const bool inside = r <= nominalRadius;
+        droplet.add(static_cast<float>(q.x), static_cast<float>(q.y),
+                    static_cast<float>(q.z), inside ? uint8_t{0} : uint8_t{1});
+        if (inside) ++insideCount;
+      }
+    }
+  }
+  if (insideCount == 0 || insideCount == droplet.size()) return {};
+  // Equimolar radius. The lattice gives every particle exactly one cell of
+  // volume, so this is the radius of the sphere the inner phase truly occupies
+  // and is the R that appears in the Young-Laplace law.
+  const double radius =
+      std::cbrt(3.0 * static_cast<double>(insideCount) * dx * dx * dx / (4.0 * kPi));
+
+  NeighbourGrid grid;
+  grid.build(droplet, support);
+  PairCache cache;
+  buildPairCache(droplet, grid, support, nullptr, cache);
+  computeNumberDensity(droplet, cache, nullptr);
+  // Deliberately the production entry point, not a copy of its arithmetic: a
+  // verification that re-derives the force it is verifying verifies nothing.
+  SurfaceField field;
+  addSurfaceAcceleration(droplet, cache, phases, mass, model, support, field);
+
+  const std::size_t phaseCount = phases.size();
+  double pressureJump = 0.0;
+  for (std::size_t i = 0; i < droplet.size(); ++i) {
+    const std::size_t phaseI = droplet.phase[i];
+    if (phaseI >= phaseCount || droplet.delta[i] <= 0.0f) continue;
+    const Vec3d position = positionOf(droplet, i);
+    const double distance = length(position);
+    if (!(distance > 0.5 * dx)) continue;
+    const Vec3d acceleration{droplet.ax[i], droplet.ay[i], droplet.az[i]};
+    pressureJump -=
+        mass[phaseI] * dot(acceleration, position) / (4.0 * kPi * distance * distance * distance);
+  }
+  return {0.5 * pressureJump * radius, radius};
+}
 
 }  // namespace
 
-void Solver::calibrateInterface(const VesselBoundary& boundary) {
-  (void)boundary;
-  if (interface_.calibrated) return;
-  ++interfaceCalibrations_;
-  stats_.interfaceCalibrations = interfaceCalibrations_;
-  interface_.cohesionGain = 0.0;
-  interface_.calibrated = false;
-  calibrationError_.clear();
-
-  const bool hasSurfaceTension =
-      std::any_of(interface_.sigma.begin(), interface_.sigma.end(),
-                  [](double sigma) { return sigma > 0.0; });
-  if (phases_.size() < 2 || !hasSurfaceTension) {
-    // A one-phase or sigma=0 model has no interface to calibrate. Treat this as
-    // a successful no-op so callers do not repeatedly perform meaningless work.
-    interface_.calibrated = true;
-    return;
-  }
-
-  const std::uint64_t cacheKey =
-      calibrationKey(config_, mass_, delta0_, phases_.size());
-  if (double cached = 0.0; CalibrationCache::instance().lookup(cacheKey, cached)) {
-    interface_.cohesionGain = cached;
-    interface_.calibrated = true;
-    return;
-  }
-
-  try {
-    const double dx = config_.resolution.spacing;
-    const double support = config_.resolution.support();
-    double radius = 3.0 * support;
-    // Pressure samples must be farther than 2 H from the diffuse interface.
-    // Grow the sphere until that resolved core contains a useful 3-D stencil.
-    for (;;) {
-      std::size_t coreCount = 0;
-      const int radiusExtent = static_cast<int>(std::ceil(radius / dx));
-      for (int z = -radiusExtent; z <= radiusExtent; ++z) {
-        for (int y = -radiusExtent; y <= radiusExtent; ++y) {
-          for (int x = -radiusExtent; x <= radiusExtent; ++x) {
-            if (length({x * dx, y * dx, z * dx}) < radius - 2.0 * support) {
-              ++coreCount;
-            }
-          }
-        }
-      }
-      if (coreCount >= 27) break;
-      radius += 0.5 * support;
-    }
-    const double outerRadius = radius + 3.5 * support;
-    Particles droplet;
-    const int extent = static_cast<int>(std::ceil(outerRadius / dx));
-    for (int z = -extent; z <= extent; ++z) {
-      for (int y = -extent; y <= extent; ++y) {
-        for (int x = -extent; x <= extent; ++x) {
-          const Vec3d q{x * dx, y * dx, z * dx};
-          if (length(q) <= outerRadius) {
-            droplet.add(static_cast<float>(q.x), static_cast<float>(q.y),
-                        static_cast<float>(q.z),
-                        static_cast<uint8_t>(length(q) <= radius ? 0 : 1));
-          }
-        }
-      }
-    }
-
-    NeighbourGrid calibrationGrid;
-    std::vector<double> curvature;
-    PairCache calibrationPairs;
-    std::vector<float> px(droplet.size()), py(droplet.size()), pz(droplet.size());
-    std::vector<float> pvx(droplet.size()), pvy(droplet.size()), pvz(droplet.size());
-    std::vector<float> fx(droplet.size()), fy(droplet.size()), fz(droplet.size());
-    std::vector<double> error(droplet.size());
-    InterfaceModel trialModel = interface_;
-    trialModel.sigma.assign(phases_.size() * phases_.size(), 0.0);
-    trialModel.sigma[1] = 1.0;
-    trialModel.sigma[phases_.size()] = 1.0;
-    // Akinci et al. 2013 make the cohesion coefficient resolution-dependent.
-    // A small trial avoids distorting the calibration sphere; linear response
-    // then maps it to the Young-Laplace coefficient.
-    constexpr double kTrialCoefficient = 0.01;
-    trialModel.cohesionGain = kTrialCoefficient;
-    trialModel.calibrated = true;
-
-    const double calibrationDt = std::min(config_.maxSubstepS, 0.05 * std::sqrt(support));
-    const std::vector<double> calibrationStiffness =
-        calibratePressureStiffness(mass_, dx, support, calibrationDt);
-    constexpr int kRelaxationSteps = 96;
-    const int calibrationIterations = std::min(config_.maxPressureIterations, 6);
-    for (int step = 0; step < kRelaxationSteps; ++step) {
-      calibrationGrid.build(droplet, support);
-      buildPairCache(droplet, calibrationGrid, support, nullptr, calibrationPairs);
-      computeNumberDensity(droplet, calibrationPairs, nullptr);
-      std::fill(droplet.ax.begin(), droplet.ax.end(), 0.0f);
-      std::fill(droplet.ay.begin(), droplet.ay.end(), 0.0f);
-      std::fill(droplet.az.begin(), droplet.az.end(), 0.0f);
-      addSurfaceAcceleration(droplet, calibrationPairs, phases_, mass_, trialModel, support,
-                             curvature);
-      std::fill(droplet.pressure.begin(), droplet.pressure.end(), 0.0f);
-      std::fill(fx.begin(), fx.end(), 0.0f);
-      std::fill(fy.begin(), fy.end(), 0.0f);
-      std::fill(fz.begin(), fz.end(), 0.0f);
-
-      for (int iteration = 0; iteration < calibrationIterations; ++iteration) {
-        // Both loops are index-local: every iteration writes only its own slot
-        // and reads neighbours' committed values, so the static partitioning is
-        // deterministic. Leaving them serial while the rest of the solver is
-        // parallel made calibration dominate the first Extraction frame.
-        parallelFor(droplet.size(), [&](std::size_t begin, std::size_t end) {
-          for (std::size_t i = begin; i < end; ++i) {
-            const double mi = phaseMass(mass_, droplet, i);
-            const Vec3d v =
-                velocityOf(droplet, i) +
-                calibrationDt *
-                    Vec3d{droplet.ax[i] + fx[i] / mi, droplet.ay[i] + fy[i] / mi,
-                          droplet.az[i] + fz[i] / mi};
-            const Vec3d q = positionOf(droplet, i) + calibrationDt * v;
-            px[i] = static_cast<float>(q.x);
-            py[i] = static_cast<float>(q.y);
-            pz[i] = static_cast<float>(q.z);
-            pvx[i] = static_cast<float>(v.x);
-            pvy[i] = static_cast<float>(v.y);
-            pvz[i] = static_cast<float>(v.z);
-          }
-        });
-        parallelFor(droplet.size(), [&](std::size_t begin, std::size_t end) {
-          for (std::size_t i = begin; i < end; ++i) {
-            double delta = 0.0;
-            const Vec3d qi{px[i], py[i], pz[i]};
-            calibrationGrid.forEachCandidate(i, [&](std::size_t j) {
-              const double r = length(qi - Vec3d{px[j], py[j], pz[j]});
-              if (r < support) delta += wendlandW(r, support);
-            });
-            error[i] = (delta - delta0_) / delta0_;
-            const std::size_t phase = droplet.phase[i];
-            droplet.pressure[i] = static_cast<float>(
-                std::max(0.0, static_cast<double>(droplet.pressure[i]) +
-                                  calibrationStiffness[phase] * error[i]));
-          }
-        });
-        computePressureForce(droplet, calibrationPairs, support, px, py, pz, delta0_, error,
-                             fx, fy, fz);
-      }
-
-      for (std::size_t i = 0; i < droplet.size(); ++i) {
-        Vec3d velocity{pvx[i], pvy[i], pvz[i]};
-        const double speed = length(velocity);
-        if (speed > config_.maxSpeed) velocity = (config_.maxSpeed / speed) * velocity;
-        const Vec3d position = positionOf(droplet, i) + calibrationDt * velocity;
-        droplet.px[i] = static_cast<float>(position.x);
-        droplet.py[i] = static_cast<float>(position.y);
-        droplet.pz[i] = static_cast<float>(position.z);
-        droplet.vx[i] = static_cast<float>(0.95 * velocity.x);
-        droplet.vy[i] = static_cast<float>(0.95 * velocity.y);
-        droplet.vz[i] = static_cast<float>(0.95 * velocity.z);
-      }
-    }
-
-    double insidePressure = 0.0;
-    double outsidePressure = 0.0;
-    std::size_t insideCount = 0;
-    std::size_t outsideCount = 0;
-    for (std::size_t i = 0; i < droplet.size(); ++i) {
-      const double r = length(positionOf(droplet, i));
-      if (droplet.phase[i] == 0 && r < radius - 2.0 * support) {
-        insidePressure += droplet.pressure[i];
-        ++insideCount;
-      } else if (droplet.phase[i] == 1 && r > radius + 2.0 * support &&
-                 r < outerRadius - support) {
-        outsidePressure += droplet.pressure[i];
-        ++outsideCount;
-      }
-    }
-    if (insideCount > 0) insidePressure /= static_cast<double>(insideCount);
-    if (outsideCount > 0) outsidePressure /= static_cast<double>(outsideCount);
-    const double pressureJump = insidePressure - outsidePressure;
-    const double sigmaEffective = 0.5 * pressureJump * radius;
-    if (insideCount == 0 || outsideCount == 0 || !(sigmaEffective > 1.0e-12) ||
-        !std::isfinite(sigmaEffective)) {
-      calibrationError_ = "Young-Laplace calibration produced no resolved pressure jump";
-      return;
-    }
-    // For the trial coefficient c_t, sigma_eff = dp*R/2. Therefore the
-    // coefficient reproducing dp=2*sigma/R is c = sigma*c_t/sigma_eff.
-    interface_.cohesionGain = kTrialCoefficient / sigmaEffective;
-    interface_.calibrated = true;
-    CalibrationCache::instance().store(cacheKey, interface_.cohesionGain);
-  } catch (const std::exception& error) {
-    calibrationError_ = error.what();
-    interface_.cohesionGain = 0.0;
-    interface_.calibrated = false;
-  } catch (...) {
-    calibrationError_ = "unknown Young-Laplace calibration failure";
-    interface_.cohesionGain = 0.0;
-    interface_.calibrated = false;
-  }
+double Solver::measuredInterfacialTension(double dropletRadiusM) const {
+  if (phases_.size() < 2 || !(dropletRadiusM > 0.0)) return 0.0;
+  return measureDropletTension(dropletRadiusM, config_.resolution, phases_, mass_, interface_)
+      .sigma;
 }
 
 }  // namespace chemcad::fluid

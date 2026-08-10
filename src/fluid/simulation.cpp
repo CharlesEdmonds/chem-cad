@@ -41,11 +41,6 @@ double vesselHeight(sol::Vessel vessel, double ratedVolumeMl) {
   return sol::columnHeightM(sizing);
 }
 
-bool hasPositiveSurfaceTension(const std::vector<double>& sigmaPairs) {
-  return std::any_of(sigmaPairs.begin(), sigmaPairs.end(),
-                     [](double sigma) { return sigma > 0.0; });
-}
-
 }  // namespace
 
 struct Simulation::Impl {
@@ -122,25 +117,6 @@ struct Simulation::Impl {
     boundary.build(vessel, vesselHeightM, resolution.support(), resolution.spacing);
   }
 
-  bool calibrateIfNeeded() {
-    if (!solver.config().enableSurfaceTension || phases.size() <= 1 ||
-        !hasPositiveSurfaceTension(sigmaPairs)) {
-      return true;
-    }
-    try {
-      // Akinci et al. (ACM TOG 32(6), 2013) require a resolution-dependent
-      // cohesion coefficient. Solver calibrates that coefficient against the
-      // Young-Laplace pressure jump instead of equating it to sigma in N/m.
-      solver.calibrateInterface(boundary);
-      return true;
-    } catch (const std::exception& error) {
-      statusIssue = std::string("Surface tension disabled: ") + error.what();
-    } catch (...) {
-      statusIssue = "Surface tension disabled: interface calibration failed";
-    }
-    return false;
-  }
-
   void applyQuality(const QualityProfile& nextQuality) {
     quality = nextQuality;
     resolution.spacing = quality.spacing;
@@ -154,7 +130,6 @@ struct Simulation::Impl {
     if (!phases.empty()) solver.setPhases(phases, sigmaPairs);
     rebuildBoundary();
     statusIssue.clear();
-    calibrateIfNeeded();
     if (!phases.empty()) {
       charge(true);
     } else {
@@ -446,7 +421,6 @@ void Simulation::setVessel(sol::Vessel vessel, double ratedVolumeMl) {
     impl_->vesselHeightM = vesselHeight(impl_->vessel, impl_->ratedVolumeMl);
     impl_->rebuildBoundary();
     impl_->statusIssue.clear();
-    impl_->calibrateIfNeeded();
     if (!impl_->phases.empty()) {
       impl_->charge(true);
     } else {
@@ -546,7 +520,6 @@ void Simulation::setPhases(const std::vector<PhaseMaterial>& phases,
     impl_->sigmaPairs = sigmaPairs;
     impl_->rebuildBoundary();
     impl_->statusIssue.clear();
-    impl_->calibrateIfNeeded();
     impl_->charge(true);
   } catch (const std::exception& error) {
     impl_->statusIssue = std::string("Phase setup failed: ") + error.what();
