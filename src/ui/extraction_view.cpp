@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -13,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1010,6 +1012,10 @@ void startFluidBuild(SolubilityState& s) {
           return;
         }
         s.fluid = std::move(result.simulation);
+        // Every rebuild gets it: a Simulation is replaced whenever the vessel,
+        // the solvents or the resolution change, and a device left behind on
+        // the old one would quietly stop being used.
+        s.fluid->setAccelerator(s.fluidAccelerator);
         FluidBoundaryState& state = fluidBoundaryState(s);
         state.unavailable = false;
         state.reason.clear();
@@ -2615,6 +2621,25 @@ void warmExtractionPhysics(AppState& st) {
   s.fluidTasks = &st.tasks;
   seedDefaultPhases(s.funnel);
   if (!s.fluid && !s.fluidBuildPending) startFluidBuild(s);
+}
+
+// The physics worker may hold a second OpenGL context, which it releases when
+// its thread exits -- that is, when the last reference to the Simulation goes.
+// AppState is a stack local in main() and outlives glfwTerminate(), so waiting
+// for its destructor would destroy every context while another thread still
+// had one current. Drain the in-flight build first: a queued build holds its
+// own reference and would keep the simulation alive past this point.
+void shutdownExtractionPhysics(AppState& st) {
+  SolubilityState& s = st.solubility;
+  while (st.tasks.busy()) {
+    st.tasks.pump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  st.tasks.pump();
+  if (s.fluid) s.fluid->waitForIdle();
+  s.fluid.reset();
+  s.fluidTasks = nullptr;
+  s.fluidBuildPending = false;
 }
 
 }  // namespace chemcad::ui

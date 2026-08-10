@@ -507,6 +507,13 @@ void main() {
       uint begin, end; eachCellBounds(cell, begin, end);
       for (uint entry = begin; entry < end; ++entry) {
         uint j = sortedIndices[entry];
+        // PCISPH freezes the neighbour set for the whole correction loop and
+        // its stiffness is derived on that assumption (Solenthaler & Pajarola
+        // 2009). The 27-cell block is a SUPERSET of the committed neighbours,
+        // so without this test the device counts pairs the reference solver
+        // never sees, over-reads its own density error and under-corrects: it
+        // measured 1.5-7.8% worst-frame compression against the CPU's 1.0%.
+        if (distance(original, particles[j].positionPhase.xyz) >= support) continue;
         float radius = length(predicted - scratchData[j].predictedPositionError.xyz);
         if (radius < support) density += wendlandW(radius);
       }
@@ -537,7 +544,8 @@ void main() {
   uint i = gl_GlobalInvocationID.x;
   if (i >= particleCount) return;
   vec3 position = scratchData[i].predictedPositionError.xyz;
-  ivec3 centre = cellOf(particles[i].positionPhase.xyz);
+  vec3 original = particles[i].positionPhase.xyz;
+  ivec3 centre = cellOf(original);
   float deltaI = max(TINY, delta0 * (1.0 + scratchData[i].predictedPositionError.w));
   vec3 force = vec3(0.0);
   for (int z = -1; z <= 1; ++z) for (int y = -1; y <= 1; ++y)
@@ -548,6 +556,10 @@ void main() {
       for (uint entry = begin; entry < end; ++entry) {
         uint j = sortedIndices[entry];
         if (i == j) continue;
+        // The same frozen set the density prediction uses: the force and the
+        // error it corrects have to be taken over the same pairs or the
+        // correction does not converge to the error it measured.
+        if (distance(original, particles[j].positionPhase.xyz) >= support) continue;
         vec3 difference = position - scratchData[j].predictedPositionError.xyz;
         float radiusSquared = dot(difference, difference);
         if (radiusSquared <= TINY || radiusSquared >= support * support) continue;

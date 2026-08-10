@@ -174,6 +174,11 @@ struct SolubilityState {
   // which requires a copyable payload.
   std::shared_ptr<fluid::Simulation> fluid;
   app::TaskRunner* fluidTasks = nullptr;  // borrowed from AppState each frame
+  // Optional device accelerator, installed once by the shell and handed to
+  // every Simulation the panel builds. Null on a machine whose driver cannot
+  // give the physics thread a compute context, which is not an error: the CPU
+  // solver is the reference implementation, not a fallback.
+  std::shared_ptr<fluid::Accelerator> fluidAccelerator;
   bool fluidBuildPending = false;
   std::size_t fluidBuildSignature = 0;
   int extractionLastDrawnFrame = -1;

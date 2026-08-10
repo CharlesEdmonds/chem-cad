@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "fluid/accelerator.hpp"
 #include "fluid/diagnostics.hpp"
 #include "fluid/frame.hpp"
 #include "fluid/solver.hpp"
@@ -74,6 +75,15 @@ class Simulation {
   void setResolution(double spacingM);   // rebuilds and recharges, preserving quality budget
   void setQuality(const QualityProfile&); // atomically applies spacing and pressure budget
   void setPhases(const std::vector<PhaseMaterial>&, const std::vector<double>& sigmaPairs);
+
+  // Installs an optional device accelerator for the integration step. The
+  // physics worker binds it on its own thread and uses it only for charges
+  // large enough to be worth the dispatch traffic; everything else, and
+  // anything the device refuses, stays on fluid::Solver. Passing nullptr
+  // returns the simulation to the CPU. Safe to call at any time.
+  void setAccelerator(std::shared_ptr<Accelerator>);
+  // Whether the last completed step actually ran on the device.
+  bool acceleratorActive() const;
 
   // Charges the vessel: lays a lattice of particles, dense phase at the
   // bottom, and clears all motion. Deterministic.

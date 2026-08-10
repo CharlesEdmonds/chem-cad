@@ -6,7 +6,8 @@ add_library(chemcad_gfx STATIC
   compute.cpp
   camera3d.cpp
   fluid_renderer.cpp
-  fluid_gpu.cpp)
+  fluid_gpu.cpp
+  fluid_accelerator.cpp)
 target_include_directories(chemcad_gfx PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(chemcad_gfx
   PUBLIC chemcad_core chemcad_fluid

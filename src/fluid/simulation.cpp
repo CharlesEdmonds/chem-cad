@@ -85,6 +85,26 @@ struct Simulation::Impl {
   std::shared_ptr<const Solver::Stats> publishedStats =
       std::make_shared<const Solver::Stats>();
   std::string publishedIssue;
+  std::string publishedAcceleratorNote;
+  bool publishedAcceleratorActive = false;
+
+  // Optional device accelerator. `accelerator` is installed from another thread
+  // under stepMutex; everything after it is touched only by the worker, which
+  // is the only thread allowed to hold the device context.
+  std::shared_ptr<Accelerator> accelerator;
+  bool acceleratorBound = false;
+  bool acceleratorRetired = false;
+  bool acceleratorResident = false;
+  // Rises when the device misses the requested density tolerance and falls when
+  // it meets it; see advanceOnDevice for the budget it is spent against.
+  int acceleratorMisses = 0;
+  // Bumped by every change to the charge, the materials, the resolution or the
+  // vessel. The device re-uploads when its copy falls behind, which is simpler
+  // and harder to get wrong than invalidating from six separate setters.
+  uint64_t chargeRevision = 0;
+  uint64_t acceleratorRevision = 0;
+  std::atomic<bool> acceleratorRunning{false};
+  std::string acceleratorNote;
 
   Impl() {
     resolution.spacing = quality.spacing;
@@ -115,6 +135,10 @@ struct Simulation::Impl {
 
   void rebuildBoundary() {
     boundary.build(vessel, vesselHeightM, resolution.support(), resolution.spacing);
+    // Every path that changes the vessel, the resolution, the materials or the
+    // charge passes through here, which makes this the one place a device copy
+    // has to be told it is stale.
+    ++chargeRevision;
   }
 
   void applyQuality(const QualityProfile& nextQuality) {
@@ -232,6 +256,71 @@ struct Simulation::Impl {
     requestedMotion.shakeRemainingS = motion.shakeRemainingS;
   }
 
+  // Runs one step on the device, or reports that the CPU solver must. Worker
+  // thread only, under stepMutex, which is what keeps the context on one thread
+  // and the particle arrays from moving underneath a download.
+  bool advanceOnDevice(const VesselMotion& motionForStep, double stepS) {
+    if (!accelerator || acceleratorRetired) return false;
+    if (!accelerator->worthwhile(particles.size())) {
+      // Not a failure and not sticky: the next charge may well be large enough.
+      acceleratorResident = false;
+      return false;
+    }
+    if (!acceleratorBound) {
+      if (!accelerator->bind()) {
+        acceleratorRetired = true;
+        acceleratorNote = accelerator->error();
+        return false;
+      }
+      acceleratorBound = true;
+      acceleratorNote = accelerator->description();
+    }
+    if (!acceleratorResident || acceleratorRevision != chargeRevision) {
+      if (!accelerator->configure(solver.config(), phases, sigmaPairs) ||
+          !accelerator->upload(particles, boundary)) {
+        acceleratorResident = false;
+        acceleratorNote = accelerator->error();
+        return false;
+      }
+      acceleratorResident = true;
+      acceleratorRevision = chargeRevision;
+    }
+    if (accelerator->advance(boundary, motionForStep, elapsed, stepS) <= 0 ||
+        !accelerator->download(particles)) {
+      // Re-upload from the CPU state next step rather than trusting whatever
+      // the device has: a failed advance may have left it half-integrated.
+      acceleratorResident = false;
+      acceleratorNote = accelerator->error();
+      return false;
+    }
+
+    // The device is fast, not trusted. Its pressure solve is non-deterministic
+    // -- the atomic counting-sort scatter reorders every neighbour sum -- and
+    // on the reference hardware it sometimes converges far worse than the CPU
+    // for the same charge: worst-frame compression measured 0.54% to 10.5%
+    // across runs where fluid::Solver was a repeatable 1.02%. A springy liquid
+    // is worse than a slow one, so the promise the caller made through
+    // densityTolerance is checked against what the device actually delivered.
+    //
+    // The budget rises on a miss and falls on a hit, so a single transient
+    // during a shake is absorbed while a device that is persistently or
+    // frequently out of tolerance is handed the charge back for good.
+    constexpr int kToleranceFactor = 4;
+    constexpr int kMissBudget = 30;
+    if (accelerator->stats().maxDensityCompression >
+        kToleranceFactor * solver.config().densityTolerance) {
+      acceleratorMisses += 2;
+      if (acceleratorMisses >= kMissBudget) {
+        acceleratorRetired = true;
+        acceleratorResident = false;
+        acceleratorNote = "handed back to the CPU solver: density tolerance not met";
+      }
+    } else if (acceleratorMisses > 0) {
+      --acceleratorMisses;
+    }
+    return true;
+  }
+
   bool integrate(double stepS) {
     std::lock_guard<std::mutex> lock(stepMutex);
     if (particles.empty()) {
@@ -250,7 +339,11 @@ struct Simulation::Impl {
       // Keep the shake armed for the interval that begins while its timer is
       // positive. The analytic p''(t) in frame.cpp is sampled by every solver
       // substep; no pointer finite difference enters the forcing term.
-      solver.advance(particles, boundary, motionForStep, elapsed, stepS);
+      const bool onDevice = advanceOnDevice(motionForStep, stepS);
+      acceleratorRunning.store(onDevice, std::memory_order_release);
+      if (!onDevice) {
+        solver.advance(particles, boundary, motionForStep, elapsed, stepS);
+      }
       elapsed += stepS;
       if (motion.shaking) {
         motion.shakeRemainingS =
@@ -351,6 +444,13 @@ struct Simulation::Impl {
       idle.notify_all();
     }
 
+    // The context was made current on this thread and must be released from it,
+    // before the window system that owns it is torn down.
+    if (acceleratorBound && accelerator) {
+      accelerator->unbind();
+      acceleratorBound = false;
+      acceleratorResident = false;
+    }
     {
       std::lock_guard<std::mutex> lock(workMutex);
       active = false;
@@ -400,11 +500,18 @@ struct Simulation::Impl {
     next->vessel = vessel;
     next->revision = ++revision;
 
-    auto nextStats = std::make_shared<const Solver::Stats>(solver.stats());
+    // Whichever solver ran the last step owns the numbers the status line
+    // reports; publishing the CPU solver's stale stats after a device step
+    // would quietly describe a solve that did not happen.
+    const bool onDevice = acceleratorRunning.load(std::memory_order_acquire);
+    auto nextStats = std::make_shared<const Solver::Stats>(
+        onDevice && accelerator ? accelerator->stats() : solver.stats());
     std::lock_guard<std::mutex> lock(publicationMutex);
     published = std::move(next);
     publishedStats = std::move(nextStats);
     publishedIssue = statusIssue;
+    publishedAcceleratorNote = acceleratorNote;
+    publishedAcceleratorActive = onDevice;
   }
 };
 
@@ -653,11 +760,15 @@ std::string Simulation::statusLine() const {
   std::shared_ptr<const Snapshot> state;
   std::shared_ptr<const Solver::Stats> stats;
   std::string issue;
+  std::string deviceNote;
+  bool deviceActive = false;
   {
     std::lock_guard<std::mutex> publicationLock(impl_->publicationMutex);
     state = impl_->published;
     stats = impl_->publishedStats;
     issue = impl_->publishedIssue;
+    deviceNote = impl_->publishedAcceleratorNote;
+    deviceActive = impl_->publishedAcceleratorActive;
   }
   if (!state || !stats) return "Fluid simulation unavailable";
 
@@ -701,7 +812,26 @@ std::string Simulation::statusLine() const {
   } else {
     text << "physics rate pending";
   }
+  if (!deviceNote.empty()) {
+    text << " | " << (deviceActive ? "GPU: " : "GPU unavailable: ") << deviceNote;
+  }
   return text.str();
+}
+
+void Simulation::setAccelerator(std::shared_ptr<Accelerator> accelerator) {
+  // Installed under stepMutex so it cannot land between the worker's residency
+  // check and its dispatch. The worker binds it lazily on its own thread; this
+  // call must not touch the device.
+  std::lock_guard<std::mutex> lock(impl_->stepMutex);
+  impl_->accelerator = std::move(accelerator);
+  impl_->acceleratorBound = false;
+  impl_->acceleratorRetired = false;
+  impl_->acceleratorResident = false;
+  impl_->acceleratorNote.clear();
+}
+
+bool Simulation::acceleratorActive() const {
+  return impl_->acceleratorRunning.load(std::memory_order_acquire);
 }
 
 }  // namespace chemcad::fluid

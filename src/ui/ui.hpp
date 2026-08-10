@@ -21,6 +21,11 @@ void drawExtractionLab(AppState&);  // ui/extraction_view.cpp
 // Starts the extraction physics build on a worker thread at startup so the
 // workspace is ready the first time it is opened. ui/extraction_view.cpp
 void warmExtractionPhysics(AppState&);
+// Tears the extraction physics down while the window system is still alive.
+// The physics worker may hold a second GL context, and AppState is a stack
+// local in main() that outlives glfwTerminate(), so this cannot wait for its
+// destructor. ui/extraction_view.cpp
+void shutdownExtractionPhysics(AppState&);
 void drawViewer3D(AppState&);       // ui/viewer3d_view.cpp
 void drawStatusBar(AppState&);      // ui/status_bar.cpp
 // Live performance instrumentation: per-zone CPU and GPU timings, a frame

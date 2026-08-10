@@ -38,6 +38,7 @@
 #include "chem/bridge.hpp"
 #include "core/paths.hpp"
 #include "core/profiler.hpp"
+#include "gfx/fluid_accelerator.hpp"
 #include "gfx/fluid_renderer.hpp"
 #include "gfx/gl_api.hpp"
 #include "ui/app_state.hpp"
@@ -353,13 +354,23 @@ int main(int, char**) {
     std::fprintf(stderr, "failed to initialise GLFW\n");
     return 1;
   }
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+  // The compute fluid backend needs OpenGL 4.3; the renderer and ImGui need
+  // 3.3. Ask for 4.3 and fall back, so an older GPU still gets an application
+  // instead of an error dialog -- it simply keeps the CPU solver.
+  int contextVersion = 43;
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
   glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);  // the app draws its own chrome
 
   GLFWwindow* window = glfwCreateWindow(1600, 1000, "ChemCAD", nullptr, nullptr);
+  if (!window) {
+    contextVersion = 33;
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    window = glfwCreateWindow(1600, 1000, "ChemCAD", nullptr, nullptr);
+  }
   if (!window) {
     std::fprintf(stderr, "failed to create a window\n");
     glfwTerminate();
@@ -380,6 +391,23 @@ int main(int, char**) {
   if (fluidGlAllowed &&
       chemcad::gfx::loadGl(reinterpret_cast<chemcad::gfx::GlProcLoader>(glfwGetProcAddress))) {
     fluidRenderer.initialise();
+  }
+
+  // A second, invisible context so the physics worker can run compute shaders.
+  // A GL context belongs to one thread at a time and the renderer keeps this
+  // one. Nothing is shared: the compute backend's buffers are private and its
+  // results come back as ordinary memory, so an independent context avoids the
+  // cross-thread object-lifetime rules that sharing would impose.
+  //
+  // CHEMCAD_NO_FLUID_GPU=1 keeps the solve on the CPU, which is the first thing
+  // to try when diagnosing a driver-specific physics problem.
+  const char* disableFluidGpu = std::getenv("CHEMCAD_NO_FLUID_GPU");
+  const bool fluidGpuAllowed = !(disableFluidGpu && *disableFluidGpu && *disableFluidGpu != '0');
+  GLFWwindow* physicsContext = nullptr;
+  if (fluidGpuAllowed && contextVersion >= 43 && chemcad::gfx::glLoaded()) {
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    physicsContext = glfwCreateWindow(16, 16, "ChemCAD physics", nullptr, nullptr);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
   }
 
 #ifdef _WIN32
@@ -413,6 +441,17 @@ int main(int, char**) {
 
   AppState state;
   wireCallbacks(state);
+  if (physicsContext != nullptr) {
+    // The callbacks run on the physics worker thread. glfwMakeContextCurrent is
+    // the one GLFW entry point documented as callable from any thread, which is
+    // exactly why the context handoff is a callback rather than a handle.
+    state.solubility.fluidAccelerator = chemcad::gfx::makeFluidAccelerator(
+        [physicsContext] {
+          glfwMakeContextCurrent(physicsContext);
+          return glfwGetCurrentContext() == physicsContext;
+        },
+        [] { glfwMakeContextCurrent(nullptr); });
+  }
   // The extraction workspace needs a particle simulation whose vessel SDF and
   // first charge are more work than a frame can absorb. Starting it here puts
   // that on a worker thread while the user is still on the sketch canvas, so
@@ -604,9 +643,16 @@ int main(int, char**) {
     chemcad::core::profiler().endFrame();
   }
 
+  // Before anything GLFW owns goes away. AppState is a stack local that
+  // outlives glfwTerminate(), and its physics worker may still hold the second
+  // context current on its own thread.
+  chemcad::ui::shutdownExtractionPhysics(state);
+  state.solubility.fluidAccelerator.reset();
+
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   ImGui::DestroyContext();
+  if (physicsContext != nullptr) glfwDestroyWindow(physicsContext);
   glfwDestroyWindow(window);
   glfwTerminate();
   return 0;

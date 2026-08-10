@@ -43,10 +43,22 @@ The backend requires:
 
 `gfx::probeCompute()` is safe before GL initialisation. No loader, no current context, an older driver, insufficient limits, allocation failure, or any shader compile/link failure leaves `FluidGpuSolver::available()` false. The caller must then continue with the existing CPU solver. This is also the normal behaviour of headless tests.
 
-Set `CHEMCAD_FLUID_GPU=0` (also accepts `false`, `off`, or `cpu`) before starting ChemCAD to force the CPU path. The environment check occurs before shader compilation.
+## Measured
 
-## Expected speedup
+RTX 2070 Max-Q, 610.74, separatory funnel, 120 mL of water over dichloromethane, Quality budget (0.5% density tolerance, up to 40 pressure iterations). `tests/test_fluid_gpu.cpp` produces these numbers on every run and asserts the contracts behind them.
 
-The estimate is analytical, not a measured benchmark of this unintegrated backend. The CPU measurements recorded beside the solver are approximately 5.3 ms per substep for 379 particles and 14.6 ms for 926 particles, with neighbour gathers and repeated pressure iterations dominating. Those gathers expose one independent invocation per particle and roughly 30-45 neighbours, a good fit for a Turing GPU. Dispatch and scalar readback overhead dominate small charges, while arithmetic dominates larger charges.
+| spacing | particles | speedup | GPU compression | CPU compression |
+| --- | --- | --- | --- | --- |
+| 6 mm | 556 | 1.3x | 0.48% | 10.5% (3 stalled solves) |
+| 3 mm | 4444 | 2.6x | 0.50% | 0.92% (5 stalled solves) |
 
-On an RTX 2070/2080-class Turing GPU, a reasonable initial expectation is 1.5-4x end-to-end solver speedup around the 900-particle balanced workload and 4-8x once several thousand particles keep the GPU occupied. Charges below roughly 256 particles may see little or no gain. These ranges include the many compute dispatches and one small convergence readback per pressure iteration; they intentionally do not quote the much larger raw ALU-throughput ratio. Actual numbers must be measured after the orchestrator integrates the runtime switch and snapshot cadence.
+Two things that measurement settled. Speedup below roughly 600 particles is dispatch and convergence-readback overhead rather than throughput, so `makeFluidAccelerator` leaves smaller charges on the CPU and the Interactive preset never reaches the device. And the device is not merely as accurate as the reference here but more so: it takes more pressure iterations per substep and reaches the requested tolerance, where the CPU solver's plateau detector gives up short of it.
+
+An earlier measurement that showed the GPU at 2-5x WORSE compression was an artefact of capping both solvers at 12 pressure iterations; that cap bound the GPU and not the CPU, so it compared one converged solve against one truncated one.
+
+## Runtime integration
+
+`fluid::Simulation` owns a dedicated physics worker, and an OpenGL context belongs to one thread at a time -- the renderer keeps the main one. The application therefore creates a second, invisible, unshared context and hands it to `gfx::makeFluidAccelerator`, which binds it on the worker thread the first time a charge is large enough to be worth the trip. Nothing is shared between the two contexts: the compute buffers are private and results come back as ordinary memory.
+
+The simulation re-uploads whenever the vessel, resolution, materials or charge change, falls back to `fluid::Solver` for any step the device declines, and names the device in its status line. `CHEMCAD_NO_FLUID_GPU=1` keeps the solve on the CPU. A machine without a 4.3 context gets a 3.3 one and the CPU solver, not an error.
+
