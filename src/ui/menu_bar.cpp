@@ -499,6 +499,10 @@ void drawMenuBar(AppState& st) {
     }
   } else if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
     ImGui::OpenPopup("About ChemCAD");
+  } else if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F2, false)) {
+    // The View menu has advertised F2 since the profiler landed; nothing was
+    // listening for it.
+    st.showProfiler = !st.showProfiler;
   }
 }
 

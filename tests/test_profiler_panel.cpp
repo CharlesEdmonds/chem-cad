@@ -250,3 +250,38 @@ TEST_CASE("the profiler panel draws and fits its page, empty and populated") {
   }
   core::profiler().reset();
 }
+
+TEST_CASE("F2 toggles the profiler, as the View menu says it does") {
+  // The menu item has carried an "F2" hint since the profiler landed and
+  // nothing was listening for the key. An advertised shortcut that does
+  // nothing is a defect the user meets before any of the physics.
+  HeadlessImGui gui(1600.0f, 900.0f, 1.0f);
+  ui::AppState state;
+  REQUIRE_FALSE(state.showProfiler);
+
+  const auto menuFrame = [&] {
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+    ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+    if (ImGui::Begin("Bench", nullptr,
+                     ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoTitleBar |
+                         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings)) {
+      ui::drawMenuBar(state);
+    }
+    ImGui::End();
+    ImGui::Render();
+  };
+  const auto pressF2 = [&] {
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_F2, true);
+    menuFrame();
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_F2, false);
+    menuFrame();
+  };
+
+  menuFrame();
+  pressF2();
+  CHECK(state.showProfiler);
+  pressF2();
+  CHECK_FALSE(state.showProfiler);
+}
