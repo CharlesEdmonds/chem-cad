@@ -251,7 +251,42 @@ TEST_CASE("hovering an atom and pressing an element key retypes it") {
   CHECK(chem::canonicalize(smiles) == chem::canonicalize("CCO"));
 }
 
-TEST_CASE("undo and redo restore the document through the canvas shortcuts") {
+namespace {
+
+// Runs one frame of the application shell: the menu bar owns every shortcut the
+// menus advertise, so this is where a document-level key has to be exercised.
+// The window deliberately does NOT contain the sketch canvas, which is the
+// whole point -- Ctrl+Z used to be handled only while the canvas had the hover
+// or the focus, so it silently did nothing on every other workspace while the
+// Edit menu went on offering it.
+void shellFrame(ui::AppState& st) {
+  ImGui::NewFrame();
+  ImGui::SetNextWindowPos(ImVec2(0, 0));
+  ImGui::SetNextWindowSize(ImVec2(kDisplayW, kDisplayH));
+  ImGui::Begin("Shell", nullptr,
+               ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoTitleBar |
+                   ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                   ImGuiWindowFlags_NoSavedSettings);
+  ui::drawMenuBar(st);
+  ImGui::End();
+  ImGui::Render();
+}
+
+void pressShellChord(ui::AppState& st, ImGuiKey key, bool shift) {
+  ImGuiIO& io = ImGui::GetIO();
+  io.AddKeyEvent(ImGuiMod_Ctrl, true);
+  if (shift) io.AddKeyEvent(ImGuiMod_Shift, true);
+  io.AddKeyEvent(key, true);
+  shellFrame(st);
+  io.AddKeyEvent(key, false);
+  if (shift) io.AddKeyEvent(ImGuiMod_Shift, false);
+  io.AddKeyEvent(ImGuiMod_Ctrl, false);
+  shellFrame(st);
+}
+
+}  // namespace
+
+TEST_CASE("undo and redo work from anywhere, not only over the canvas") {
   HeadlessImGui gui;
   ui::AppState st;
   st.tool = ui::Tool::Bond;
@@ -264,20 +299,48 @@ TEST_CASE("undo and redo restore the document through the canvas shortcuts") {
   clickAt(st, tip.x, tip.y);
   REQUIRE(totalAtoms(st) == 3);
 
-  ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl, true);
-  pressKey(st, ImGuiKey_Z);
-  ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl, false);
-  canvasFrame(st);
+  // Park the pointer off the canvas so nothing about this depends on hover.
+  mouseTo(-100.0f, -100.0f);
+  pressShellChord(st, ImGuiKey_Z, false);
   CHECK(totalAtoms(st) == afterFirst);
 
-  ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl, true);
-  ImGui::GetIO().AddKeyEvent(ImGuiMod_Shift, true);
-  pressKey(st, ImGuiKey_Z);
-  ImGui::GetIO().AddKeyEvent(ImGuiMod_Shift, false);
-  ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl, false);
-  canvasFrame(st);
+  pressShellChord(st, ImGuiKey_Z, true);
+  CHECK(totalAtoms(st) == 3);
+
+  // Ctrl+Y is the other redo the canvas used to own privately.
+  pressShellChord(st, ImGuiKey_Z, false);
+  REQUIRE(totalAtoms(st) == afterFirst);
+  pressShellChord(st, ImGuiKey_Y, false);
   CHECK(totalAtoms(st) == 3);
 }
+
+TEST_CASE("history restores leave no reference into the replaced document") {
+  // The two undo implementations each cleared half of what the other did: the
+  // menu's dropped the selection and kept stale hover refs, the canvas's did
+  // the reverse. Both are references into a document whose atom ids have just
+  // been replaced wholesale.
+  HeadlessImGui gui;
+  ui::AppState st;
+  st.tool = ui::Tool::Bond;
+  canvasFrame(st);
+  clickAt(st, 700.0f, 500.0f);
+  REQUIRE(totalAtoms(st) == 2);
+
+  const ImVec2 tip = screenOf(st, 0, 1);
+  mouseTo(tip.x, tip.y);
+  canvasFrame(st);
+  REQUIRE(st.hoverAtom.valid());
+  st.sel.atoms.push_back(st.hoverAtom);
+  REQUIRE_FALSE(st.sel.empty());
+
+  mouseTo(-100.0f, -100.0f);
+  pressShellChord(st, ImGuiKey_Z, false);
+  CHECK(st.sel.empty());
+  CHECK_FALSE(st.hoverAtom.valid());
+  CHECK_FALSE(st.hoverBond.valid());
+}
+
+
 
 TEST_CASE("eraser removes the hovered atom and its bonds") {
   HeadlessImGui gui;

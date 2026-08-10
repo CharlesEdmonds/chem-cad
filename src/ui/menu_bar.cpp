@@ -9,6 +9,7 @@
 #include <GLFW/glfw3.h>
 
 #include "chem/bridge.hpp"
+#include "ui/edit_actions.hpp"
 #include "ui/file_dialog.hpp"
 #include "ui/icons.hpp"
 #include "ui/theme.hpp"
@@ -34,22 +35,6 @@ core::Molecule flatten(const core::Document& document) {
   return result;
 }
 
-void offsetForPaste(const core::Document& document, core::Molecule& molecule) {
-  if (molecule.empty()) return;
-  bool hasExisting = false;
-  float maxX = -std::numeric_limits<float>::infinity();
-  for (const auto& fragment : document.molecules) {
-    for (const auto& atom : fragment.atoms()) {
-      maxX = std::max(maxX, atom.pos.x);
-      hasExisting = true;
-    }
-  }
-  if (!hasExisting) return;
-  float minX = std::numeric_limits<float>::infinity();
-  for (const auto& atom : molecule.atoms()) minX = std::min(minX, atom.pos.x);
-  for (auto& atom : molecule.mutableAtoms()) atom.pos.x += maxX - minX + 1.5f;
-}
-
 void newDocument(AppState& st) {
   if (st.doc.empty() && st.projectPath.empty()) return;
   st.snapshot();
@@ -58,58 +43,6 @@ void newDocument(AppState& st) {
   st.projectPath.clear();
   st.touch();
   st.statusMessage = "New document";
-}
-
-void undo(AppState& st) {
-  if (st.undo.undo(st.doc)) {
-    st.sel.clear();
-    st.touch();
-    st.statusMessage = "Undo";
-  }
-}
-
-void redo(AppState& st) {
-  if (st.undo.redo(st.doc)) {
-    st.sel.clear();
-    st.touch();
-    st.statusMessage = "Redo";
-  }
-}
-
-void copySmiles(AppState& st) {
-  try {
-    core::Molecule molecule = flatten(st.doc);
-    if (molecule.empty()) {
-      st.statusMessage = "Nothing to copy";
-      return;
-    }
-    st.clipboardSmiles = chem::toSmiles(molecule);
-    ImGui::SetClipboardText(st.clipboardSmiles.c_str());
-    st.statusMessage = "SMILES copied";
-  } catch (const std::exception& e) {
-    st.statusMessage = std::string("Copy failed: ") + e.what();
-  }
-}
-
-void pasteSmiles(AppState& st) {
-  std::string smiles = st.clipboardSmiles;
-  if (const char* system = ImGui::GetClipboardText(); system && *system) smiles = system;
-  if (smiles.empty()) {
-    st.statusMessage = "Clipboard does not contain SMILES";
-    return;
-  }
-  try {
-    core::Molecule molecule = chem::fromSmiles(smiles);
-    offsetForPaste(st.doc, molecule);
-    st.snapshot();
-    st.doc.molecules.push_back(std::move(molecule));
-    st.sel.clear();
-    st.touch();
-    st.clipboardSmiles = std::move(smiles);
-    st.statusMessage = "Pasted SMILES";
-  } catch (const std::exception& e) {
-    st.statusMessage = std::string("Paste failed: ") + e.what();
-  }
 }
 
 void cleanUp(AppState& st) {
@@ -124,29 +57,6 @@ void cleanUp(AppState& st) {
   } catch (const std::exception& e) {
     st.statusMessage = std::string("Clean up failed: ") + e.what();
   }
-}
-
-void deleteSelected(AppState& st) {
-  if (st.sel.empty()) return;
-  st.snapshot();
-  for (int molIndex = static_cast<int>(st.doc.molecules.size()) - 1; molIndex >= 0;
-       --molIndex) {
-    core::Molecule& molecule = st.doc.molecules[static_cast<size_t>(molIndex)];
-    for (const BondRef& ref : st.sel.bonds) {
-      if (ref.mol == molIndex) molecule.removeBond(ref.id);
-    }
-    for (const AtomRef& ref : st.sel.atoms) {
-      if (ref.mol == molIndex) molecule.removeAtom(ref.id);
-    }
-  }
-  std::erase_if(st.doc.molecules, [](const core::Molecule& molecule) {
-    return molecule.empty();
-  });
-  st.sel.clear();
-  st.hoverAtom = {};
-  st.hoverBond = {};
-  st.touch();
-  st.statusMessage = "Selection deleted";
 }
 
 void clearStructure(AppState& st) {
@@ -326,19 +236,22 @@ void drawMenuBar(AppState& st) {
 
     if (ImGui::BeginMenu("Edit")) {
       if (iconMenuItem(icons::Icon::Undo, "Undo", "Ctrl+Z", false, st.undo.canUndo()))
-        undo(st);
+        undoDocument(st);
       if (iconMenuItem(icons::Icon::Redo, "Redo", "Ctrl+Shift+Z", false,
                        st.undo.canRedo()))
-        redo(st);
+        redoDocument(st);
       ImGui::Separator();
-      if (iconMenuItem(icons::Icon::Copy, "Copy SMILES", "Ctrl+C", false,
+      // "Copy structure", not "Copy SMILES": it takes the selection when there
+      // is one, and the whole document only when there is not.
+      if (iconMenuItem(icons::Icon::Copy, "Copy structure", "Ctrl+C", false,
                        !st.doc.empty()))
-        copySmiles(st);
-      if (iconMenuItem(icons::Icon::Link, "Paste SMILES", "Ctrl+V")) pasteSmiles(st);
+        copySelectionAsSmiles(st);
+      if (iconMenuItem(icons::Icon::Link, "Paste SMILES", "Ctrl+V"))
+        pasteSmilesFromClipboard(st);
       ImGui::Separator();
       if (iconMenuItem(icons::Icon::Trash, "Delete selection", "Del", false,
                        !st.sel.empty(), true))
-        deleteSelected(st);
+        deleteSelection(st);
       ImGui::EndMenu();
     }
 
@@ -458,8 +371,14 @@ void drawMenuBar(AppState& st) {
     ImGui::EndPopup();
   }
 
+  // One place, for every shortcut the menus advertise. They were split between
+  // here and the sketch canvas, and the canvas half only fired while the canvas
+  // had the hover or the focus -- so Ctrl+Z did nothing on the Extraction tab
+  // while the Edit menu went on offering it. A menu that names a key is a
+  // promise that the key works wherever the menu does.
   const ImGuiIO& io = ImGui::GetIO();
-  if (!io.WantTextInput && io.KeyCtrl) {
+  if (io.WantTextInput) return;
+  if (io.KeyCtrl) {
     if (ImGui::IsKeyPressed(ImGuiKey_N, false)) {
       newDocument(st);
     } else if (ImGui::IsKeyPressed(ImGuiKey_O, false)) {
@@ -472,6 +391,18 @@ void drawMenuBar(AppState& st) {
       } else {
         st.saveProject(st.projectPath);
       }
+    } else if (ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+      if (io.KeyShift) {
+        redoDocument(st);
+      } else {
+        undoDocument(st);
+      }
+    } else if (ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
+      redoDocument(st);
+    } else if (ImGui::IsKeyPressed(ImGuiKey_C, false)) {
+      copySelectionAsSmiles(st);
+    } else if (ImGui::IsKeyPressed(ImGuiKey_V, false)) {
+      pasteSmilesFromClipboard(st);
     } else if (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_M, false) &&
                !st.doc.empty()) {
       openDialog(dialog, dialogAction, DialogAction::ExportMol, st);
@@ -497,11 +428,11 @@ void drawMenuBar(AppState& st) {
     } else if (ImGui::IsKeyPressed(ImGuiKey_F, false)) {
       st.cam.fit(st.doc, st.canvasSize);
     }
-  } else if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+    return;
+  }
+  if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
     ImGui::OpenPopup("About ChemCAD");
-  } else if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F2, false)) {
-    // The View menu has advertised F2 since the profiler landed; nothing was
-    // listening for it.
+  } else if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) {
     st.showProfiler = !st.showProfiler;
   }
 }
