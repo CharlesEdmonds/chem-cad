@@ -284,7 +284,105 @@ void pressShellChord(ui::AppState& st, ImGuiKey key, bool shift) {
   shellFrame(st);
 }
 
+// The same, for a key the menus advertise without any modifier.
+void pressShellKey(ui::AppState& st, ImGuiKey key) {
+  ImGuiIO& io = ImGui::GetIO();
+  io.AddKeyEvent(key, true);
+  shellFrame(st);
+  io.AddKeyEvent(key, false);
+  shellFrame(st);
+}
+
+// The shell, plus a text field holding the keyboard. ImGui recomputes
+// `WantTextInput` during Render from whatever owns the keyboard, so it cannot
+// be faked by assignment -- the guard has to be exercised against a field that
+// is genuinely active. drawMenuBar runs before the field here, exactly as the
+// real shell does, and therefore reads the flag Render left behind last frame.
+// Returns the field's centre so a caller can click into it.
+ImVec2 fieldFrame(ui::AppState& st, char* buffer, int size) {
+  ImGui::NewFrame();
+  ImGui::SetNextWindowPos(ImVec2(0, 0));
+  ImGui::SetNextWindowSize(ImVec2(kDisplayW, kDisplayH));
+  ImGui::Begin("Shell", nullptr,
+               ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoTitleBar |
+                   ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                   ImGuiWindowFlags_NoSavedSettings);
+  ui::drawMenuBar(st);
+  ImGui::InputText("##field", buffer, static_cast<size_t>(size));
+  const ImVec2 min = ImGui::GetItemRectMin();
+  const ImVec2 max = ImGui::GetItemRectMax();
+  ImGui::End();
+  ImGui::Render();
+  return ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+}
+
 }  // namespace
+
+TEST_CASE("Del deletes the selection from anywhere the Edit menu offers it") {
+  // Del was the half of the shortcut split that got missed. Undo, redo, copy
+  // and paste were consolidated into the shell handler; delete was left in the
+  // canvas, gated on the canvas holding the hover or the focus, while the Edit
+  // menu went on advertising "Del" from every workspace.
+  HeadlessImGui gui;
+  ui::AppState st;
+  st.tool = ui::Tool::Bond;
+  canvasFrame(st);
+  clickAt(st, 700.0f, 500.0f);
+  const ImVec2 tip = screenOf(st, 0, 1);
+  clickAt(st, tip.x, tip.y);
+  const size_t before = totalAtoms(st);
+  REQUIRE(before == 3);
+
+  mouseTo(tip.x, tip.y);
+  canvasFrame(st);
+  REQUIRE(st.hoverAtom.valid());
+  st.sel.atoms.push_back(st.hoverAtom);
+
+  // Park the pointer off the canvas: the canvas can neither be hovered nor
+  // focused, which is exactly the state in which this used to do nothing.
+  mouseTo(-100.0f, -100.0f);
+  pressShellKey(st, ImGuiKey_Delete);
+  CHECK(totalAtoms(st) == before - 1);
+  CHECK(st.sel.empty());
+  CHECK_FALSE(st.hoverAtom.valid());
+  CHECK_FALSE(st.hoverBond.valid());
+}
+
+TEST_CASE("a text field keeps Del instead of losing the selection to it") {
+  // The guard that makes a global Del safe. Without WantTextInput, editing the
+  // SMILES box and hitting Del would silently delete the sketch selection.
+  HeadlessImGui gui;
+  ui::AppState st;
+  st.tool = ui::Tool::Bond;
+  canvasFrame(st);
+  clickAt(st, 700.0f, 500.0f);
+  const size_t before = totalAtoms(st);
+  REQUIRE(before == 2);
+
+  mouseTo(700.0f, 500.0f);
+  canvasFrame(st);
+  REQUIRE(st.hoverAtom.valid());
+  st.sel.atoms.push_back(st.hoverAtom);
+
+  char buffer[64] = "CCO";
+  ImGuiIO& io = ImGui::GetIO();
+  const ImVec2 field = fieldFrame(st, buffer, sizeof(buffer));
+  mouseTo(field.x, field.y);
+  fieldFrame(st, buffer, sizeof(buffer));
+  io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+  fieldFrame(st, buffer, sizeof(buffer));
+  io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+  fieldFrame(st, buffer, sizeof(buffer));
+  REQUIRE(io.WantTextInput);
+
+  io.AddKeyEvent(ImGuiKey_Delete, true);
+  fieldFrame(st, buffer, sizeof(buffer));
+  io.AddKeyEvent(ImGuiKey_Delete, false);
+  fieldFrame(st, buffer, sizeof(buffer));
+
+  CHECK(totalAtoms(st) == before);
+  CHECK_FALSE(st.sel.empty());
+}
 
 TEST_CASE("undo and redo work from anywhere, not only over the canvas") {
   HeadlessImGui gui;

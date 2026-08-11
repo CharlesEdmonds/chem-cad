@@ -430,7 +430,16 @@ void drawMenuBar(AppState& st) {
     }
     return;
   }
-  if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+  // Del is advertised by the Edit menu, which is reachable from every
+  // workspace, but it used to be handled only by the sketch canvas and only
+  // while the canvas held the hover or the focus -- the same half of the split
+  // that left Ctrl+Z dead on the Extraction tab. Backspace comes with it as the
+  // undocumented alias it has always been. `WantTextInput` above is what makes
+  // this safe: neither key reaches here while a field is being edited.
+  if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
+      ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
+    deleteSelection(st);
+  } else if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
     ImGui::OpenPopup("About ChemCAD");
   } else if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) {
     st.showProfiler = !st.showProfiler;

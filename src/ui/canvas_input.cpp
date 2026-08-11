@@ -486,19 +486,15 @@ void handleKeyboard(AppState& st) {
                         ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
   if (!eligible) return;
 
-  // Undo, redo, copy and paste are document actions, not canvas gestures, and
-  // the Edit menu offers them from every workspace. They are handled once, in
-  // drawMenuBar, so that the shortcut does the same thing whether or not the
-  // sketch canvas happens to have the focus. What stays here needs the canvas:
-  // a tool to cancel, a hovered atom to retype, a hovered bond to reorder.
+  // Undo, redo, copy, paste and delete are document actions, not canvas
+  // gestures, and the Edit menu offers them from every workspace. They are
+  // handled once, in drawMenuBar, so that the shortcut does the same thing
+  // whether or not the sketch canvas happens to have the focus. What stays here
+  // needs the canvas: a tool to cancel, a hovered atom to retype, a hovered
+  // bond to reorder.
   if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
     st.tool = Tool::Select;
     st.sel.clear();
-    return;
-  }
-  if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
-      ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
-    deleteSelection(st);
     return;
   }
 
