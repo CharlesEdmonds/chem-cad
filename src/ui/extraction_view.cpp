@@ -821,16 +821,29 @@ std::string fluidPresetTradeText(const SolubilityState& s,
                                  size_t presetIndex) {
   const size_t preset = std::min(presetIndex, kFluidPresets.size() - 1);
   const uint64_t estimatedParticles = estimatedParticleCount(s, preset);
-  char text[192];
-  std::snprintf(
+  char text[256];
+  const int written = std::snprintf(
       text, sizeof(text),
       "%s | dx %.0f mm | compression limit %.1f%% | ~%llu particles",
       kFluidPresets[preset].choiceLabel,
       kFluidPresets[preset].quality.spacing * 1000.0,
       kFluidPresets[preset].quality.densityTolerance * 100.0,
       static_cast<unsigned long long>(estimatedParticles));
+  // rememberFluidRate has been recording this per preset all along so the
+  // picker could show an observed cost next to the extrapolated particle count
+  // (solubility_state.hpp). An observed rate beats an estimate; the count it
+  // was measured at travels with it, because the charge may have changed since.
+  if (written > 0 && written < static_cast<int>(sizeof(text)) &&
+      s.fluidPresetRealTimeFactorValid[preset]) {
+    std::snprintf(text + written, sizeof(text) - static_cast<size_t>(written),
+                  " | measured %.2fx at ~%llu",
+                  s.fluidPresetRealTimeFactor[preset],
+                  static_cast<unsigned long long>(
+                      s.fluidPresetMeasuredParticles[preset]));
+  }
   return text;
 }
+
 template <typename T>
 void hashFluidValue(size_t& seed, const T& value) {
   seed ^= std::hash<T>{}(value) + 0x9e3779b9u + (seed << 6u) + (seed >> 2u);
@@ -1047,6 +1060,20 @@ fluid::Simulation* availableFluid(SolubilityState& s) {
   return s.fluid.get();
 }
 
+// Why the particle solver cannot be driven right now, in the user's terms.
+// Deferred construction is NOT a failure: the panel only builds the simulation
+// once the workspace is demonstrably on top, and calling that "unavailable"
+// reports a fault where there is none.
+const char* fluidAbsenceReason(SolubilityState& s) {
+  const FluidBoundaryState& state = fluidBoundaryState(s);
+  if (state.unavailable)
+    return state.reason.empty() ? "The fluid solver reported an unknown error."
+                                : state.reason.c_str();
+  if (s.fluid) return "The particle solver has not published a frame yet.";
+  if (s.fluidBuildPending) return "The particle solver is still being built.";
+  return "The particle solver starts once the Extraction workspace is on top.";
+}
+
 int resizeStringInput(ImGuiInputTextCallbackData* data) {
   if (data->EventFlag != ImGuiInputTextFlags_CallbackResize) return 0;
   auto* value = static_cast<std::string*>(data->UserData);
@@ -1211,10 +1238,12 @@ void drawFluidDiagnostics(SolubilityState& s, float height) {
         realTimeFactor = simulation->realTimeFactor();
       });
   if (!readable || !snapshot) {
-    const FluidBoundaryState& state = fluidBoundaryState(s);
-    widgets::emptyState(
-        icons::Icon::Warning, "Physics unavailable",
-        state.reason.empty() ? "Fluid setup did not complete." : state.reason.c_str());
+    // A solver that has not been built yet is not a broken one. Claiming a
+    // fault here sent users looking for a problem that did not exist.
+    const bool failed = fluidBoundaryState(s).unavailable;
+    widgets::emptyState(failed ? icons::Icon::Warning : icons::Icon::Timer,
+                        failed ? "Physics unavailable" : "Physics starting",
+                        fluidAbsenceReason(s));
     return;
   }
 
@@ -1542,6 +1571,12 @@ void drawShakeControls(SolubilityState& s) {
     const bool shakeRequested =
         animatedShakeButton(shaking, textButtonSize("Shake"));
     ImGui::EndDisabled();
+    // ImGui suppresses hover on a disabled item, so the button cannot carry
+    // its own explanation here; without one, a greyed Shake is indistinguishable
+    // from a broken one.
+    if (simulation == nullptr &&
+        ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("%s", fluidAbsenceReason(s));
     if (shakeRequested && simulation) {
       const std::array<double, 3> axis = selectedShakeAxis(s.shakeAxis);
       const double amplitudeM = static_cast<double>(s.shakeAmplitudeCm) * 0.01;
@@ -1586,8 +1621,15 @@ void drawShakeControls(SolubilityState& s) {
                          15.0f, "%.0f cm", "Half-stroke of the driven oscillation");
     ImGui::EndTable();
   }
-  if (!std::isfinite(realTimeFactor))
+  if (simulation == nullptr) {
+    // The rate message is about a solver that exists; when there is none, the
+    // whole shake row is inert and that is what has to be said.
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("Shake is unavailable: %s", fluidAbsenceReason(s));
+    ImGui::PopTextWrapPos();
+  } else if (!std::isfinite(realTimeFactor)) {
     ImGui::TextDisabled("Physics rate appears after the first completed step.");
+  }
 
   if (widgets::onlyWhen(
           shaking && s.fluidShakeProgressValid,
@@ -1675,6 +1717,12 @@ void drawRunTab(SolubilityState& s, float height) {
     widgets::endCard();
   }
 }
+
+// Defined with the partition maths further down: removing a phase renumbers
+// every phase after it, so a manual aqueous pick made against the old numbering
+// has to be dropped rather than silently re-pointed at a different liquid.
+void forgetAqueousPick();
+
 void drawPhaseTable(SolubilityState& s, bool& changed, float height) {
   sol::Simulation& sim = s.funnel;
   constexpr widgets::Column columns[] = {
@@ -1689,16 +1737,19 @@ void drawPhaseTable(SolubilityState& s, bool& changed, float height) {
                                ImVec2(0.0f, height)))
     return;
 
+  // Turns the cell just drawn into a click target. The cursor is deliberately
+  // NOT restored afterwards: widgets::dataCell opens the next cell with
+  // TableNextColumn, which repositions it anyway, and a bare SetCursorScreenPos
+  // with no item behind it is what ImGui reports as "code uses SetCursorPos()
+  // to extend window/parent boundaries" -- an assert in a debug build.
   auto cellActivator = [](const char* id) {
     const ImVec2 min = ImGui::GetItemRectMin();
     const ImVec2 max = ImGui::GetItemRectMax();
-    const ImVec2 restore = ImGui::GetCursorScreenPos();
     ImGui::SetCursorScreenPos(min);
     ImGui::InvisibleButton(id, ImVec2(max.x - min.x, max.y - min.y));
     const bool activated = ImGui::IsItemClicked();
     if (ImGui::IsItemHovered())
       ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-    ImGui::SetCursorScreenPos(restore);
     return activated;
   };
 
@@ -1724,8 +1775,10 @@ void drawPhaseTable(SolubilityState& s, bool& changed, float height) {
 
     widgets::dataCell("");
     const ImVec2 cellMin = ImGui::GetItemRectMin();
-    const ImVec2 restore = ImGui::GetCursorScreenPos();
     const float controlSize = ImGui::GetFontSize();
+    // Same reason as cellActivator: the row is closed by dataRow/endDataTable,
+    // both of which reposition the cursor, so restoring it here would only
+    // trip ImGui's parent-boundary check.
     ImGui::SetCursorScreenPos(cellMin);
     ImGui::InvisibleButton("##phase_swatch", ImVec2(controlSize, controlSize));
     const ImVec2 swatchMin = ImGui::GetItemRectMin();
@@ -1740,11 +1793,19 @@ void drawPhaseTable(SolubilityState& s, bool& changed, float height) {
         style::metrics().radiusSm, 0, style::metrics().hairline);
     if (ImGui::IsItemClicked()) ImGui::OpenPopup("##phase_editor");
     ImGui::SameLine(0.0f, style::metrics().gap * 0.25f);
+    // Emptying the table is not a thing the panel can honour: drawExtractionLab
+    // re-seeds its default charge whenever no phase is left, so removing the
+    // last one would look like the button swapped the liquid for a different
+    // pair rather than removing it.
+    const bool lastPhase = sim.phases.size() <= 1;
+    ImGui::BeginDisabled(lastPhase);
     if (widgets::iconButton("##remove_phase", icons::Icon::Trash,
                             ImVec2(controlSize, controlSize), false,
                             "Remove phase"))
       removeIndex = static_cast<int>(i);
-    ImGui::SetCursorScreenPos(restore);
+    ImGui::EndDisabled();
+    if (lastPhase && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("The vessel needs at least one charged phase.");
 
     if (ImGui::BeginPopup("##phase_editor")) {
       ImGui::TextUnformatted("Edit charged phase");
@@ -1792,6 +1853,7 @@ void drawPhaseTable(SolubilityState& s, bool& changed, float height) {
 
   if (removeIndex >= 0) {
     sim.phases.erase(sim.phases.begin() + removeIndex);
+    forgetAqueousPick();
     changed = true;
   }
 }
@@ -1904,18 +1966,29 @@ float soluteMassMgUi = 100.0f;
 // sits in a normal water/organic pair -- halogenated solvents sink).
 int aqueousPick = -1;
 
+void forgetAqueousPick() { aqueousPick = -1; }
+
 struct PartitionContext {
   bool valid = false;
   int aqueousIndex = 0;
   double volAq = 0.0;
   double volOrg = 0.0;
-  double K = 1.0;  // 10^logP
+  // Fraction of the solute that one equilibration against `volOrg` of fresh
+  // organic leaves in the aqueous layer, V_aq / (D V_org + V_aq). Read out of
+  // sol::partition rather than re-derived from 10^logP here: partition() bounds
+  // D to six decades, so deriving it twice made the wash chart and the split
+  // bar report different distributions for a solute with |logP| > 6.
+  double aqueousRemainder = 1.0;
   std::string organicLabel;
 };
 
 PartitionContext partitionContext(const SolubilityState& s) {
   PartitionContext ctx;
   if (!s.soluteValid || s.funnel.phases.size() < 2) return ctx;
+  // A solute whose logP failed to resolve has no distribution to report; the
+  // callers' onlyWhen() lines then explain the absence instead of the panel
+  // printing "nan%" across the wash chart.
+  if (!std::isfinite(s.solute.logP)) return ctx;
   const sol::Simulation& sim = s.funnel;
   const size_t count = sim.phases.size();
 
@@ -1932,13 +2005,23 @@ PartitionContext partitionContext(const SolubilityState& s) {
                          ? aqueousPick
                          : autoIndex;
   ctx.volAq = sim.phases[static_cast<size_t>(ctx.aqueousIndex)].volumeMl;
+  int organicCount = 0;
   for (size_t i = 0; i < count; ++i) {
     if (static_cast<int>(i) == ctx.aqueousIndex) continue;
     ctx.volOrg += sim.phases[i].volumeMl;
-    if (ctx.organicLabel.empty()) ctx.organicLabel = sim.phases[i].label;
+    if (++organicCount == 1) ctx.organicLabel = sim.phases[i].label;
   }
-  ctx.K = std::pow(10.0, s.solute.logP);
+  // Every non-aqueous layer is pooled into one organic volume, so naming that
+  // pool after the first of them would put the whole extracted mass in a layer
+  // that only holds part of it.
+  if (organicCount > 1)
+    ctx.organicLabel = "Organic (" + std::to_string(organicCount) + " phases)";
   ctx.valid = ctx.volAq > 0.0 && ctx.volOrg > 0.0;
+  if (ctx.valid) {
+    const sol::Partition unitMass =
+        sol::partition(1.0, s.solute.logP, ctx.volAq, ctx.volOrg);
+    ctx.aqueousRemainder = std::clamp(unitMass.mgAqueous, 0.0, 1.0);
+  }
   return ctx;
 }
 
@@ -1990,6 +2073,9 @@ void consumeExtractionImport(SolubilityState& s) {
   const bool recharged = rechargeFluid(s);
   s.funnelRunning = false;
   soluteMassMgUi = static_cast<float>(imp.soluteMassMg);
+  // The charge is a different pair of liquids now, so a pick made against the
+  // old one would keep pointing at a phase index that means something else.
+  forgetAqueousPick();
   if (recharged)
     s.statusMessage =
         "Imported " + a->name + " + " + b->name + " from the Solubility Suite";
@@ -2062,12 +2148,12 @@ void drawSoluteDistribution(const SolubilityState& s) {
 // ------------------------------------------------ multi-stage extraction
 // The classic counter-current question: how many washes to strip the solute?
 // Each wash with fresh organic removes the same fraction, so the aqueous
-// remainder after n washes is q^n with q = V_aq / (K V_org + V_aq).
+// remainder after n washes is q^n with q = V_aq / (D V_org + V_aq).
 
 void drawMultiStageExtraction(const SolubilityState& s, float height) {
   const PartitionContext ctx = partitionContext(s);
   if (!ctx.valid) return;
-  const double q = ctx.volAq / (ctx.K * ctx.volOrg + ctx.volAq);
+  const double q = ctx.aqueousRemainder;
   const double perWash = 1.0 - q;
   const layout::Frame frame =
       layout::measure(ImVec2(ImGui::GetContentRegionAvail().x, height));
@@ -2193,7 +2279,8 @@ void drawStageToolbar(SolubilityState& s) {
   ImGui::SameLine();
   widgets::toolbarSeparator();
   ImGui::SameLine();
-  ImGui::BeginDisabled(s.extractionRenderMode != ExtractionRenderMode::Fluid3D);
+  const bool reframable = s.extractionRenderMode == ExtractionRenderMode::Fluid3D;
+  ImGui::BeginDisabled(!reframable);
   if (widgets::actionButton("##reframe_stage", icons::Icon::Crosshair, "Re-frame",
                             ImVec2(0.0f, 0.0f), false,
                             "Fit the vessel to the stage; double-clicking the stage "
@@ -2201,6 +2288,14 @@ void drawStageToolbar(SolubilityState& s) {
     s.fluidReframeRequested = true;
   }
   ImGui::EndDisabled();
+  // A disabled item is never "hovered", so actionButton's own tooltip cannot
+  // reach the user here -- and a greyed control whose reason is unreadable is
+  // indistinguishable from a broken one.
+  if (!reframable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip(
+        "Re-frame moves the 3D camera. The schematic is a fixed section with no "
+        "camera, and always fits the vessel to the stage.");
+  }
   widgets::endToolbar();
 
   // Grab is no longer a mode: the left button always shakes, in both views, and
@@ -2208,7 +2303,7 @@ void drawStageToolbar(SolubilityState& s) {
   const char* hint =
       s.extractionRenderMode == ExtractionRenderMode::Schematic2D
           ? "Drag to shake -- fling it off the stage and let go to watch it "
-            "swing back | particle cut: |y| < 1.5 particle radii."
+            "swing back | particle cut: |y| < 0.75 particle spacings."
           : "Drag to shake -- fling it off the stage and let go to watch it "
             "swing back | right-drag orbit | wheel zoom | double-click re-frame.";
   const std::string fitted =
