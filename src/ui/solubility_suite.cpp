@@ -660,11 +660,12 @@ void drawTernarySweepPlot(SolubilityState& sb, const sol::Solvent& a,
     return;
   }
 
-  static int view = 0;
+  int view = std::clamp(sb.ternaryView, 0, 1);
   static const icons::Icon kViews[] = {icons::Icon::Grid, icons::Icon::Cube};
   static const char* kTooltips[] = {"Composition triangle", "3D landscape"};
   widgets::segmentedIcons("##ternary_view", kViews, kTooltips, 2, view,
                           ImGui::GetFontSize() * 6.0f);
+  sb.ternaryView = view;
 
   std::vector<double> points;
   std::vector<double> values;

@@ -135,6 +135,13 @@ struct SolubilityState {
   // ------------------------------------------------------------- display
   int units = 0;        // 0 g/mL, 1 mg/mL, 2 g/100 mL, 3 mol/L
   bool logScale = false;  // composition graph height: linear or log10
+  // Which face of the three-solvent response is on screen: 0 the composition
+  // triangle, 1 the 3D landscape. Panel state, not a function-local static,
+  // for the same reason as `extractionTab` below: it is user-visible, one
+  // static would be shared by every document, and a headless test has to be
+  // able to read which view is live -- the triangle is the only one of the two
+  // that accepts a click as a composition, so which one is up is behaviour.
+  int ternaryView = 0;
 
   // -------------------------------------------------------- ratio sweep
   std::vector<sol::SweepPoint> sweep;

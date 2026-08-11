@@ -378,41 +378,64 @@ std::vector<double> radialNodes(int n, int l, double maximumRadius) {
   return nodes;
 }
 
-std::vector<double> isoCrossings(int n, int l, double angularMagnitude,
-                                 double target, double maximumRadius) {
-  std::vector<double> crossings;
-  if (angularMagnitude <= std::numeric_limits<double>::epsilon()) return crossings;
-  const int radialNodeCount = n - l - 1;
-  const int samples = std::max(320, (radialNodeCount + 1) * 128);
-  auto field = [&](double radius) {
-    return std::abs(radialHydrogenic(n, l, radius)) * angularMagnitude - target;
-  };
-  double previousRadius = 0.0;
-  double previous = field(previousRadius);
-  for (int index = 1; index <= samples; ++index) {
+// |R_nl(r)| sampled once per orbital. The radial factor is the same in every
+// angular direction, so the iso surface for a direction is found by walking
+// this profile for a level of target / |Y_lm|, instead of re-evaluating the
+// hydrogenic radial function some sixteen hundred times over.
+struct RadialProfile {
+  std::vector<double> radii;
+  std::vector<double> magnitude;
+};
+
+RadialProfile sampleRadialProfile(int n, int l, double maximumRadius) {
+  RadialProfile profile;
+  // One shell per radial lobe, so denser sampling for the deeper shells.
+  const int samples = std::max(512, (n - l) * 384);
+  profile.radii.reserve(static_cast<std::size_t>(samples) + 1);
+  profile.magnitude.reserve(static_cast<std::size_t>(samples) + 1);
+  for (int index = 0; index <= samples; ++index) {
     const double fraction = static_cast<double>(index) / static_cast<double>(samples);
+    // Quadratic spacing: the interesting structure crowds towards the nucleus.
     const double radius = maximumRadius * fraction * fraction;
-    const double current = field(radius);
-    if ((previous < 0.0 && current >= 0.0) || (previous >= 0.0 && current < 0.0)) {
-      double low = previousRadius;
-      double high = radius;
-      double lowValue = previous;
-      for (int iteration = 0; iteration < 32; ++iteration) {
-        const double middle = (low + high) * 0.5;
-        const double middleValue = field(middle);
-        if ((lowValue < 0.0) == (middleValue < 0.0)) {
-          low = middle;
-          lowValue = middleValue;
-        } else {
-          high = middle;
-        }
-      }
-      crossings.push_back((low + high) * 0.5);
-    }
-    previousRadius = radius;
-    previous = current;
+    profile.radii.push_back(radius);
+    profile.magnitude.push_back(std::abs(radialHydrogenic(n, l, radius)));
   }
-  return crossings;
+  return profile;
+}
+
+// Amplitude of the outermost lobe of |R_nl|, the anchor the iso level is a
+// fraction of. See orbital() for why the global maximum will not do.
+double outermostLobeAmplitude(const RadialProfile& profile) {
+  double amplitude = 0.0;
+  const std::size_t count = profile.magnitude.size();
+  for (std::size_t index = 0; index + 1 < count; ++index) {
+    const double previous = index == 0 ? -1.0 : profile.magnitude[index - 1];
+    const double current = profile.magnitude[index];
+    if (current > 0.0 && current > previous && current >= profile.magnitude[index + 1]) {
+      amplitude = current;
+    }
+  }
+  return amplitude > 0.0 ? amplitude : (count > 0 ? profile.magnitude[0] : 0.0);
+}
+
+// Radii where |R_nl| crosses `level`, one per iso shell along a ray. Writes up
+// to `capacity` of them into `out` and returns how many, so the caller can keep
+// every direction's shells in one buffer instead of a vector apiece.
+int isoCrossings(const RadialProfile& profile, double level, double* out, int capacity) {
+  if (!out || capacity <= 0 || !(level > 0.0) || !std::isfinite(level)) return 0;
+  int found = 0;
+  for (std::size_t index = 1; index < profile.magnitude.size() && found < capacity;
+       ++index) {
+    const double previous = profile.magnitude[index - 1] - level;
+    const double current = profile.magnitude[index] - level;
+    if ((previous < 0.0) == (current < 0.0)) continue;
+    // |R| is smooth and the grid is fine, so a linear crossing is already at
+    // sub-pixel accuracy; bisecting here would cost a hundred times as much.
+    const double t = previous / (previous - current);
+    out[found++] = profile.radii[index - 1] +
+                   t * (profile.radii[index] - profile.radii[index - 1]);
+  }
+  return found;
 }
 
 void beginChartTooltip() {
@@ -685,7 +708,19 @@ int ternary(const char* id, const double* points, const double* values, int coun
     minimum = std::min(minimum, values[index]);
     maximum = std::max(maximum, values[index]);
   }
-  if (validSampleCount == 0 || nearlyEqual(minimum, maximum)) return -1;
+  // A response that does not vary is a COLOURING problem, not an input problem.
+  // The triangle, its labels, the marker and the hit test below owe nothing to
+  // the value range, so returning early here used to withdraw the composition
+  // click a panel advertises -- and it withdrew it exactly when the model was
+  // least informative (an insoluble solute reads the same everywhere). Flatten
+  // the colour scale instead and keep the chart usable.
+  if (validSampleCount == 0 || nearlyEqual(minimum, maximum)) {
+    const double level = validSampleCount > 0 ? minimum : 0.0;
+    minimum = level;
+    // A unit span, not an epsilon one: dividing the rounding noise in the
+    // interpolated value by DBL_EPSILON would turn a flat field into confetti.
+    maximum = level + 1.0;
+  }
   const double span = std::max(maximum - minimum, std::numeric_limits<double>::epsilon());
   auto interpolate = [&](double wa, double wb, double wc) {
     if (!points || !values || count <= 0) return 0.5;
@@ -1165,12 +1200,16 @@ void orbital(const char* id, int n, int l, int m, ImVec2 size, Orbit& orbit,
   const int thetaSteps = 28;
   const int phiSteps = 56;
   const double maximumRadius = std::max(8.0, 5.5 * n * n);
-  double radialMaximum = 0.0;
-  for (int sample = 0; sample <= 1024; ++sample) {
-    const double fraction = static_cast<double>(sample) / 1024.0;
-    const double radius = maximumRadius * fraction * fraction;
-    radialMaximum = std::max(radialMaximum, std::abs(radialHydrogenic(n, l, radius)));
-  }
+  // The iso threshold is a fraction of the OUTERMOST radial lobe's amplitude,
+  // not of the global maximum of |R_nl|. For every s orbital the global maximum
+  // sits on the r = 0 cusp and dwarfs the shells around it -- 3s peaks outside
+  // its second node at 6.7% of R(0), 5s at far less -- so a global anchor puts
+  // the whole radial structure below the slider's entire 0.02..0.95 range and
+  // 1s, 2s, 3s, 4s and 5s all collapse onto the same lone sphere. Anchoring on
+  // the outermost lobe keeps every shell of the chosen n reachable, which is
+  // what makes the Cutaway control able to expose radial structure at all.
+  const RadialProfile profile = sampleRadialProfile(n, l, maximumRadius);
+  const double radialAnchor = outermostLobeAmplitude(profile);
   double angularMaximum = 0.0;
   for (int theta = 0; theta <= thetaSteps; ++theta) {
     for (int phi = 0; phi < phiSteps; ++phi) {
@@ -1180,24 +1219,34 @@ void orbital(const char* id, int n, int l, int m, ImVec2 size, Orbit& orbit,
     }
   }
   const double iso = std::clamp(static_cast<double>(style.isoLevel), 0.02, 0.95);
-  const double target = std::max(radialMaximum * angularMaximum * iso,
+  const double target = std::max(radialAnchor * angularMaximum * iso,
                                  std::numeric_limits<double>::epsilon());
 
-  struct AngularVertex {
-    double harmonic = 0.0;
-    std::vector<double> radii;
-  };
-  std::vector<AngularVertex> angular(
-      static_cast<std::size_t>((thetaSteps + 1) * phiSteps));
+  // One entry and one exit per radial lobe bounds the shells along any ray.
+  const int stride = 2 * (n - l);
+  const std::size_t directions =
+      static_cast<std::size_t>((thetaSteps + 1) * phiSteps);
+  std::vector<double> harmonics(directions, 0.0);
+  std::vector<int> shellCounts(directions, 0);
+  // Flat, because a vector per direction is sixteen hundred heap allocations
+  // every frame for a surface that is rebuilt on every frame.
+  std::vector<double> shellRadii(directions * static_cast<std::size_t>(stride), 0.0);
   int branches = 0;
   for (int thetaIndex = 0; thetaIndex <= thetaSteps; ++thetaIndex) {
     const double theta = kPi * thetaIndex / thetaSteps;
     for (int phiIndex = 0; phiIndex < phiSteps; ++phiIndex) {
       const double phi = 2.0 * kPi * phiIndex / phiSteps;
-      AngularVertex& vertex = angular[static_cast<std::size_t>(thetaIndex * phiSteps + phiIndex)];
-      vertex.harmonic = realSphericalHarmonic(l, m, theta, phi);
-      vertex.radii = isoCrossings(n, l, std::abs(vertex.harmonic), target, maximumRadius);
-      branches = std::max(branches, static_cast<int>(vertex.radii.size()));
+      const std::size_t direction =
+          static_cast<std::size_t>(thetaIndex * phiSteps + phiIndex);
+      const double harmonic = realSphericalHarmonic(l, m, theta, phi);
+      harmonics[direction] = harmonic;
+      const double harmonicMagnitude = std::abs(harmonic);
+      if (harmonicMagnitude > std::numeric_limits<double>::epsilon()) {
+        shellCounts[direction] = isoCrossings(
+            profile, target / harmonicMagnitude,
+            &shellRadii[direction * static_cast<std::size_t>(stride)], stride);
+      }
+      branches = std::max(branches, shellCounts[direction]);
     }
   }
 
@@ -1206,8 +1255,12 @@ void orbital(const char* id, int n, int l, int m, ImVec2 size, Orbit& orbit,
     const float theta = kPi * thetaIndex / thetaSteps;
     for (int phiIndex = 0; phiIndex < phiSteps; ++phiIndex) {
       const float phi = 2.0f * kPi * phiIndex / phiSteps;
-      const AngularVertex& vertex = angular[static_cast<std::size_t>(thetaIndex * phiSteps + phiIndex)];
-      for (double radius : vertex.radii) {
+      const std::size_t direction =
+          static_cast<std::size_t>(thetaIndex * phiSteps + phiIndex);
+      for (int shell = 0; shell < shellCounts[direction]; ++shell) {
+        const double radius =
+            shellRadii[direction * static_cast<std::size_t>(stride) +
+                       static_cast<std::size_t>(shell)];
         fitPoints.push_back(spherical(static_cast<float>(radius / maximumRadius), theta, phi));
       }
     }
@@ -1252,30 +1305,35 @@ void orbital(const char* id, int n, int l, int m, ImVec2 size, Orbit& orbit,
         const int phiNext = (phiIndex + 1) % phiSteps;
         const float phi0 = 2.0f * kPi * phiIndex / phiSteps;
         const float phi1 = 2.0f * kPi * (phiIndex + 1) / phiSteps;
-        const AngularVertex* vertices[] = {
-            &angular[static_cast<std::size_t>(thetaIndex * phiSteps + phiIndex)],
-            &angular[static_cast<std::size_t>(thetaIndex * phiSteps + phiNext)],
-            &angular[static_cast<std::size_t>((thetaIndex + 1) * phiSteps + phiNext)],
-            &angular[static_cast<std::size_t>((thetaIndex + 1) * phiSteps + phiIndex)]};
+        const std::size_t corners4[] = {
+            static_cast<std::size_t>(thetaIndex * phiSteps + phiIndex),
+            static_cast<std::size_t>(thetaIndex * phiSteps + phiNext),
+            static_cast<std::size_t>((thetaIndex + 1) * phiSteps + phiNext),
+            static_cast<std::size_t>((thetaIndex + 1) * phiSteps + phiIndex)};
         bool complete = true;
-        for (const AngularVertex* vertex : vertices) {
-          if (branch >= static_cast<int>(vertex->radii.size())) complete = false;
+        for (std::size_t direction : corners4) {
+          if (branch >= shellCounts[direction]) complete = false;
         }
         if (!complete) continue;
-        const float radii[] = {
-            static_cast<float>(vertices[0]->radii[branch] / maximumRadius),
-            static_cast<float>(vertices[1]->radii[branch] / maximumRadius),
-            static_cast<float>(vertices[2]->radii[branch] / maximumRadius),
-            static_cast<float>(vertices[3]->radii[branch] / maximumRadius)};
+        double shells[4];
+        for (int corner = 0; corner < 4; ++corner) {
+          shells[corner] = shellRadii[corners4[corner] * static_cast<std::size_t>(stride) +
+                                      static_cast<std::size_t>(branch)];
+        }
+        const float radii[] = {static_cast<float>(shells[0] / maximumRadius),
+                               static_cast<float>(shells[1] / maximumRadius),
+                               static_cast<float>(shells[2] / maximumRadius),
+                               static_cast<float>(shells[3] / maximumRadius)};
         const Vec3 corners[] = {spherical(radii[0], theta0, phi0),
                                 spherical(radii[1], theta0, phi1),
                                 spherical(radii[2], theta1, phi1),
                                 spherical(radii[3], theta1, phi0)};
         if (style.cutaway && representativeDepth(projection, corners, 4) > 0.0f) continue;
-        const double averageRadius = (vertices[0]->radii[branch] + vertices[1]->radii[branch] +
-                                      vertices[2]->radii[branch] + vertices[3]->radii[branch]) * 0.25;
-        const double harmonic = (vertices[0]->harmonic + vertices[1]->harmonic +
-                                 vertices[2]->harmonic + vertices[3]->harmonic) * 0.25;
+        const double averageRadius =
+            (shells[0] + shells[1] + shells[2] + shells[3]) * 0.25;
+        const double harmonic =
+            (harmonics[corners4[0]] + harmonics[corners4[1]] + harmonics[corners4[2]] +
+             harmonics[corners4[3]]) * 0.25;
         const bool positive = radialHydrogenic(n, l, averageRadius) * harmonic >= 0.0;
         const Vec3 normal = cross(corners[1] - corners[0], corners[3] - corners[0]);
         Primitive quad;
@@ -1404,30 +1462,35 @@ void orbital(const char* id, int n, int l, int m, ImVec2 size, Orbit& orbit,
 const char* orbitalName(int n, int l, int m) {
   if (n < 1 || l < 0 || l >= n || l > 3 || std::abs(m) > l) return "invalid";
   static thread_local char name[32];
-  const char* suffix = "";
-  if (l == 0) suffix = "s";
+  // Real (tesseral) combinations, in the conventional spectroscopic order:
+  // m = 0 is the axial member, +|m| the cosine partner, -|m| the sine one.
+  static const char kFamily[] = {'s', 'p', 'd', 'f'};
+  const char* lobes = "";
   if (l == 1) {
-    if (m == 0) suffix = "p_z";
-    if (m == 1) suffix = "p_x";
-    if (m == -1) suffix = "p_y";
+    if (m == 0) lobes = "z";
+    if (m == 1) lobes = "x";
+    if (m == -1) lobes = "y";
   }
   if (l == 2) {
-    if (m == 0) suffix = "d_z2";
-    if (m == 1) suffix = "d_xz";
-    if (m == -1) suffix = "d_yz";
-    if (m == 2) suffix = "d_x2-y2";
-    if (m == -2) suffix = "d_xy";
+    if (m == 0) lobes = "z2";
+    if (m == 1) lobes = "xz";
+    if (m == -1) lobes = "yz";
+    if (m == 2) lobes = "x2-y2";
+    if (m == -2) lobes = "xy";
   }
   if (l == 3) {
-    if (m == 0) suffix = "f_z3";
-    if (m == 1) suffix = "f_xz2";
-    if (m == -1) suffix = "f_yz2";
-    if (m == 2) suffix = "f_z(x2-y2)";
-    if (m == -2) suffix = "f_xyz";
-    if (m == 3) suffix = "f_x(x2-3y2)";
-    if (m == -3) suffix = "f_y(3x2-y2)";
+    if (m == 0) lobes = "z3";
+    if (m == 1) lobes = "xz2";
+    if (m == -1) lobes = "yz2";
+    if (m == 2) lobes = "z(x2-y2)";
+    if (m == -2) lobes = "xyz";
+    if (m == 3) lobes = "x(x2-3y2)";
+    if (m == -3) lobes = "y(3x2-y2)";
   }
-  std::snprintf(name, sizeof(name), "%d%s", n, suffix);
+  // The header's contract is "3d z2": a space, not an underscore, because the
+  // string is a UI heading rather than an identifier.
+  std::snprintf(name, sizeof(name), "%d%c%s%s", n, kFamily[l],
+                lobes[0] ? " " : "", lobes);
   return name;
 }
 

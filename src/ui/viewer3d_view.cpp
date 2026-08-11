@@ -628,10 +628,7 @@ void drawOrbitalOverlay(const Viewer3DState& vs, ImVec2 min, ImVec2 max) {
                     style::u32(style::col::DataDim), orientation);
 
   char nodes[96];
-  const int radialNodes = vs.orbitalN - vs.orbitalL - 1;
-  std::snprintf(nodes, sizeof(nodes), "%d radial node%s  |  %d angular node%s",
-                radialNodes, radialNodes == 1 ? "" : "s", vs.orbitalL,
-                vs.orbitalL == 1 ? "" : "s");
+  formatOrbitalNodes(vs.orbitalN, vs.orbitalL, nodes, sizeof(nodes));
   drawList->AddText(font, fontSize,
                     ImVec2(min.x + metrics.gap,
                            max.y - metrics.gap - fontSize),
@@ -752,6 +749,18 @@ void drawOrbitalMode(Viewer3DState& vs, const layout::Frame& frame, ImVec2 origi
 }
 
 }  // namespace
+
+int orbitalRadialNodes(int n, int l) { return n - l - 1; }
+
+int orbitalAngularNodes(int l) { return l; }
+
+void formatOrbitalNodes(int n, int l, char* out, std::size_t size) {
+  if (!out || size == 0) return;
+  const int radial = orbitalRadialNodes(n, l);
+  const int angular = orbitalAngularNodes(l);
+  std::snprintf(out, size, "%d radial node%s  |  %d angular node%s", radial,
+                radial == 1 ? "" : "s", angular, angular == 1 ? "" : "s");
+}
 
 void drawViewer3D(AppState& st) {
   Viewer3DState& vs = st.viewer3d;

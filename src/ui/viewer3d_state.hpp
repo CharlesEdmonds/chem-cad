@@ -2,6 +2,7 @@
 // UI state for the molecule and atomic-orbital views. Kept separate from
 // AppState so both cameras and their controls survive mode changes.
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -49,5 +50,17 @@ struct Viewer3DState {
   float sketchRadius = 1.0f;
   bool hasSketch = false;
 };
+
+// Node census for a hydrogenic orbital, the pair the Orbitals overlay reports.
+// The radial factor has n - l - 1 spherical nodes and the angular factor has l
+// nodal surfaces, so the two always sum to n - 1 (Levine, *Quantum Chemistry*,
+// 7th ed., section 6.6). Split out of the draw call so the arithmetic is
+// checkable without scraping pixels.
+int orbitalRadialNodes(int n, int l);
+int orbitalAngularNodes(int l);
+
+// Formats that census the way the overlay shows it, e.g.
+// "1 radial node  |  2 angular nodes".
+void formatOrbitalNodes(int n, int l, char* out, std::size_t size);
 
 }  // namespace chemcad::ui

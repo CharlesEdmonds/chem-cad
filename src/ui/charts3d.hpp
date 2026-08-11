@@ -110,7 +110,10 @@ struct OrbitalStyle {
   bool showAxes = true;
   bool showNodes = true;      // nodal planes / radial nodes
   bool cutaway = false;       // slice the near half to expose radial structure
-  float isoLevel = 0.30f;     // fraction of the maximum |psi|
+  // Fraction of the OUTERMOST radial lobe's peak amplitude. Anchoring on that
+  // lobe rather than on max |psi| keeps every shell of a high-n orbital inside
+  // the slider's range; see orbital() for why the global maximum cannot work.
+  float isoLevel = 0.30f;
 };
 void orbital(const char* id, int n, int l, int m, ImVec2 size, Orbit& orbit,
              const OrbitalStyle& style);
