@@ -799,8 +799,26 @@ TEST_CASE("quality-profile timing reports the loaded interactive budget") {
     const unsigned availableForPhysics =
         hardwareWorkers > 1 ? hardwareWorkers - 1 : 1;
     CHECK(after.stats.workerCount <= availableForPhysics);
+    // This used to assert an absolute `realTimeFactor >= 0.8`, which is a
+    // property of the machine rather than of the profile. Identical code
+    // measured 1.28x, 0.78x and 0.62x on the same laptop within one session --
+    // ms/substep doubled from 4.3 to 8.4 purely from thermal throttling under
+    // load -- so the gate failed for reasons no commit could cause or fix.
+    //
+    // What the profile actually promises is that it is cheaper than the legacy
+    // settings, and `before` was measured on the same silicon in the same
+    // thermal state moments earlier, so a ratio cancels the machine out.
+    //
+    // Only Interactive is gated on wall clock. It is the preset that exists to
+    // keep up with a hand on the vessel, and it has the margin to be asserted
+    // on: 4% density tolerance against 0.5% cuts pressure iterations from 20 to
+    // 6 and measured 1.47x to 1.83x across three samples. Balanced saves the
+    // same fraction of ITERATIONS (17.6 to 10.7) but only 1.20x of wall clock,
+    // because neighbour search does not shrink with the tolerance -- too thin
+    // to assert. Its saving is already covered deterministically by the
+    // iteration-count check above.
     if (named.profile.spacing == fluid::QualityProfile::interactive().spacing) {
-      CHECK(after.realTimeFactor >= 0.8);
+      CHECK(after.realTimeFactor > before.realTimeFactor * 1.25);
     }
   }
 }
