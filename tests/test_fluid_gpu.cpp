@@ -16,6 +16,7 @@
 #include "gfx/compute.hpp"
 #include "gfx/fluid_accelerator.hpp"
 #include "gfx/fluid_gpu.hpp"
+#include "gfx/fluid_renderer.hpp"
 #include "gfx/gl_api.hpp"
 #include "sol/funnel.hpp"
 
@@ -437,4 +438,99 @@ TEST_CASE("Simulation runs a large charge on the device and a small one on the C
   }
 
   glfwMakeContextCurrent(context);
+}
+
+TEST_CASE("the stage backdrop can be made transparent without hiding the apparatus") {
+  // Grabbing the vessel grows the render target to the whole application window
+  // and draws it on the foreground list, so that the funnel can be carried off
+  // its dock. Every texel the apparatus does not cover was opaque backdrop, so
+  // that overlay blacked out the entire workspace behind it.
+  //
+  // This renders the same scene twice, changing only backgroundAlpha, and reads
+  // the pixels back. A screenshot cannot be taken here; the framebuffer can.
+  GlFixture& gl = GlFixture::instance();
+  if (!gl.ready()) {
+    std::cout << "[stage backdrop] skipped: " << gl.reason() << '\n';
+    return;
+  }
+  glfwMakeContextCurrent(gl.window());
+
+  gfx::FluidRenderer renderer;
+  renderer.initialise();
+  if (!renderer.ready()) {
+    std::cout << "[stage backdrop] skipped: " << renderer.error() << '\n';
+    return;
+  }
+
+  fluid::Simulation simulation;
+  simulation.setVessel(sol::Vessel::SeparatoryFunnel, 250.0);
+  simulation.setResolution(6.0e-3);
+  simulation.setPhases({phase("aqueous", 998.0, 1.0e-3, 60.0),
+                        phase("organic", 850.0, 0.6e-3, 60.0)},
+                       {0.030});
+  REQUIRE(simulation.charged());
+  const std::shared_ptr<const fluid::Snapshot> snapshot = simulation.snapshot();
+  REQUIRE(!snapshot->px.empty());
+
+  constexpr int kWidth = 256;
+  constexpr int kHeight = 256;
+  gfx::Camera3D camera;
+  camera.frame(snapshot->vesselHeightM, snapshot->maxRadiusM,
+               static_cast<float>(kWidth) / static_cast<float>(kHeight));
+
+  // Reads the composite texture back through a scratch framebuffer.
+  std::vector<unsigned char> pixels(static_cast<std::size_t>(kWidth) * kHeight * 4);
+  gfx::GLuint readFbo = 0;
+  gfx::glGenFramebuffers(1, &readFbo);
+  const auto readback = [&](float backgroundAlpha) {
+    gfx::FluidRenderSettings settings;
+    settings.backgroundAlpha = backgroundAlpha;
+    const std::uint32_t texture =
+        renderer.render(*snapshot, snapshot->pose, camera, kWidth, kHeight, settings);
+    REQUIRE(texture != 0);
+    gfx::glBindFramebuffer(gfx::GL_FRAMEBUFFER, readFbo);
+    gfx::glFramebufferTexture2D(gfx::GL_FRAMEBUFFER, gfx::GL_COLOR_ATTACHMENT0,
+                                gfx::GL_TEXTURE_2D, texture, 0);
+    const gfx::GLenum status = gfx::glCheckFramebufferStatus(gfx::GL_FRAMEBUFFER);
+    REQUIRE(status == gfx::GL_FRAMEBUFFER_COMPLETE);
+    ::glReadPixels(0, 0, kWidth, kHeight, gfx::GL_RGBA, gfx::GL_UNSIGNED_BYTE,
+                   pixels.data());
+    gfx::glBindFramebuffer(gfx::GL_FRAMEBUFFER, 0);
+    return pixels;
+  };
+  const auto alphaAt = [](const std::vector<unsigned char>& image, int x, int y) {
+    return image[(static_cast<std::size_t>(y) * kWidth + x) * 4 + 3];
+  };
+  const auto coveredPixels = [](const std::vector<unsigned char>& image) {
+    std::size_t covered = 0;
+    for (std::size_t i = 3; i < image.size(); i += 4) {
+      if (image[i] > 8) ++covered;
+    }
+    return covered;
+  };
+
+  const std::vector<unsigned char> docked = readback(1.0f);
+  const std::vector<unsigned char> carried = readback(0.0f);
+
+  // The docked stage is a window onto a bench: every texel is opaque, which is
+  // exactly why stretching it over the application hid the application.
+  CHECK(alphaAt(docked, 0, 0) == 255);
+  CHECK(alphaAt(docked, kWidth - 1, kHeight - 1) == 255);
+  CHECK(coveredPixels(docked) == static_cast<std::size_t>(kWidth) * kHeight);
+
+  // Carried, the corners are gone, so the workspace behind shows through.
+  CHECK(alphaAt(carried, 0, 0) == 0);
+  CHECK(alphaAt(carried, kWidth - 1, kHeight - 1) == 0);
+  CHECK(alphaAt(carried, kWidth - 1, 0) == 0);
+  CHECK(alphaAt(carried, 0, kHeight - 1) == 0);
+
+  // But the apparatus itself must survive: a transparent backdrop is not a
+  // transparent vessel. The glass and the liquid still cover a real fraction of
+  // the frame, and nothing like all of it.
+  const std::size_t carriedCover = coveredPixels(carried);
+  INFO("apparatus covers ", carriedCover, " of ", kWidth * kHeight, " texels");
+  CHECK(carriedCover > static_cast<std::size_t>(kWidth) * kHeight / 100);
+  CHECK(carriedCover < static_cast<std::size_t>(kWidth) * kHeight * 9 / 10);
+
+  gfx::glDeleteFramebuffers(1, &readFbo);
 }

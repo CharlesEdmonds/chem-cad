@@ -2522,6 +2522,12 @@ void drawFluidStage(AppState& st, SolubilityState& s) {
     stage.height = std::max(
         1, static_cast<int>(std::lround(targetSize.y * framebufferScale.y)));
     stage.snapshot = snapshot;
+    // Docked, the stage is a window onto a bench and wants its backdrop. In
+    // hand it is stretched to the whole application, so an opaque backdrop
+    // would black out every panel the funnel passes over -- which is the entire
+    // screen, since the target IS the viewport. Dropping the backdrop's alpha
+    // leaves the vessel and its contents composited over the workspace.
+    stage.settings.backgroundAlpha = overlay ? 0.0f : 1.0f;
 
     // Growing the target must not resize the apparatus, so the vertical field
     // of view narrows by exactly the height ratio -- that holds pixels-per-metre
@@ -2601,11 +2607,13 @@ void drawFluidStage(AppState& st, SolubilityState& s) {
           presentedMin.x < stageMinPx.x - 0.5f || presentedMin.y < stageMinPx.y - 0.5f;
       if (presentedOverlay) {
         // Over the whole application: the funnel has left its dock, so it is
-        // drawn on the foreground list, above every other panel, with a scrim
-        // that makes clear the bench is being held rather than operated.
+        // drawn on the foreground list, above every other panel. There is no
+        // scrim. One used to be painted here at 55% BgDeep across the entire
+        // presented rect -- and the presented rect while in hand IS the
+        // viewport -- so grabbing the vessel blacked out the workspace behind
+        // it. The stage's own backdrop is transparent in this mode, so what
+        // travels over the bench is the apparatus and nothing else.
         ImDrawList* front = ImGui::GetForegroundDrawList();
-        front->AddRectFilled(presentedMin, presentedMax,
-                             style::u32(style::col::BgDeep, 0.55f));
         front->AddImage(ImTextureRef(static_cast<ImTextureID>(stage.texture)),
                         presentedMin, presentedMax, ImVec2(0.0f, 1.0f),
                         ImVec2(1.0f, 0.0f));

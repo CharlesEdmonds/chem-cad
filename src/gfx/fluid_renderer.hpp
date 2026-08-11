@@ -50,6 +50,14 @@ struct FluidRenderSettings {
   float smoothingIterations = 4.0f;
   float absorptionScale = 1.0f;
   float backgroundTint[3] = {0.05f, 0.06f, 0.08f};
+  // Opacity of the stage backdrop, i.e. of every texel the apparatus does not
+  // cover. 1 is the docked stage, which wants a bench behind the glass. 0 makes
+  // the backdrop vanish so only the vessel and its contents are composited,
+  // which is what lets the funnel be carried across the application without
+  // the stage rectangle blacking out everything it passes over. The liquid
+  // still refracts `backgroundTint` either way -- a transparent backdrop is not
+  // a transparent liquid.
+  float backgroundAlpha = 1.0f;
 };
 
 class FluidRenderer {

@@ -434,6 +434,7 @@ uniform vec4 uPhaseB;
 uniform vec3 uAbsorptionA;
 uniform vec3 uAbsorptionB;
 uniform vec3 uBackground;
+uniform float uBackgroundAlpha;
 uniform float uAbsorptionScale;
 uniform float uExposure;
 uniform float uShowInterface;
@@ -472,7 +473,11 @@ void main() {
   vec4 surface = texelFetch(uSurface, pixel, 0);
   float depth = surface.x;
   if (depth <= 0.0) {
-    outColour = vec4(uBackground, 1.0);
+    // No liquid here, so this texel is pure backdrop. Its ALPHA is what decides
+    // whether the stage is a window onto a bench or a cut-out of the apparatus
+    // alone; the glass pass that follows composites with straight-alpha `over`
+    // and accumulates coverage, so a zero here survives all the way to ImGui.
+    outColour = vec4(uBackground, uBackgroundAlpha);
     return;
   }
 
@@ -894,6 +899,7 @@ struct FluidRenderer::Impl {
     GLint absorptionA = -1;
     GLint absorptionB = -1;
     GLint background = -1;
+    GLint backgroundAlpha = -1;
     GLint absorptionScale = -1;
     GLint exposure = -1;
     GLint showInterface = -1;
@@ -999,6 +1005,7 @@ struct FluidRenderer::Impl {
         glGetUniformLocation(shadeProgram, "uAbsorptionA"),
         glGetUniformLocation(shadeProgram, "uAbsorptionB"),
         glGetUniformLocation(shadeProgram, "uBackground"),
+        glGetUniformLocation(shadeProgram, "uBackgroundAlpha"),
         glGetUniformLocation(shadeProgram, "uAbsorptionScale"),
         glGetUniformLocation(shadeProgram, "uExposure"),
         glGetUniformLocation(shadeProgram, "uShowInterface")};
@@ -1442,6 +1449,8 @@ struct FluidRenderer::Impl {
     glUniform3f(shadeUniforms.absorptionB, absorptionB[0], absorptionB[1], absorptionB[2]);
     glUniform3f(shadeUniforms.background, settings.backgroundTint[0],
                 settings.backgroundTint[1], settings.backgroundTint[2]);
+    glUniform1f(shadeUniforms.backgroundAlpha,
+                std::clamp(settings.backgroundAlpha, 0.0f, 1.0f));
     glUniform1f(shadeUniforms.absorptionScale, std::max(0.0f, settings.absorptionScale));
     glUniform1f(shadeUniforms.exposure, std::max(0.0f, settings.exposure));
     glUniform1f(shadeUniforms.showInterface, settings.showInterface ? 1.0f : 0.0f);
