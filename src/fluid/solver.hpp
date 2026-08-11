@@ -100,21 +100,33 @@ struct InterfaceModel {
   double interfacialTension() const { return sigma.size() >= 2 ? sigma[1] : 0.0; }
 };
 
-// Thresholds the Continuum Surface Force uses to decide where an interface is
-// and when its kernel-gradient correction is trustworthy. They live in the
-// header because the GPU mirror in src/gfx/fluid_gpu.cpp compiles them into its
-// shader prelude, and two copies of a threshold are two thresholds.
+// Thresholds the Continuum Surface Force uses to decide where an interface is,
+// when its kernel-gradient correction is trustworthy, and how sharply it is
+// allowed to believe the interface curves. They live in the header because the
+// GPU mirror in src/gfx/fluid_gpu.cpp compiles them into its shader prelude,
+// and two copies of a threshold are two thresholds.
 //
-// The first is a floor on |grad c| in units of 1/support: below it a particle
-// has no interface normal worth having. It gates on the GRADIENT rather than on
-// the colour value because the tension is carried by |grad c|, and a colour
-// band clips its tails -- measured, a 0.05..0.95 band discarded a quarter of the
-// surface delta. The second is the smallest determinant of the Bonet-Lok
-// correction matrix that may be inverted; below it the neighbourhood is
-// genuinely one-sided (a wall, a free surface) and the uncorrected gradient is
-// the safer answer.
+// A floor on |grad c| in units of 1/support: below it a particle has no
+// interface normal worth having. It gates on the GRADIENT rather than on the
+// colour value because the tension is carried by |grad c|, and a colour band
+// clips its tails -- measured, a 0.05..0.95 band discarded a quarter of the
+// surface delta.
 inline constexpr double kInterfaceGradientFloor = 0.01;
-inline constexpr double kInterfaceCorrectionDeterminant = 0.05;
+
+// Smallest determinant of the Bonet-Lok correction matrix that may be inverted.
+// Below it the neighbourhood is genuinely one-sided -- a wall, a free surface,
+// a stray particle -- and inverting a near-singular L does not recover the
+// gradient, it multiplies whatever noise is in it. The uncorrected gradient is
+// the safer answer there.
+inline constexpr double kInterfaceCorrectionDeterminant = 0.25;
+
+// Largest curvature the model may act on, in units of 1/support. An SPH kernel
+// cannot resolve an interface radius smaller than its own smoothing length, so
+// a larger reported curvature is discretisation noise rather than geometry.
+// Without this bound the divergence estimate is unbounded, and sigma kappa
+// grad c turns a thin film or an isolated splash particle into an acceleration
+// of tens of g: a shaken vessel visibly detonates on release.
+inline constexpr double kMaxInterfaceCurvature = 2.0;
 
 class Solver {
  public:

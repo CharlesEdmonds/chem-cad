@@ -384,6 +384,78 @@ TEST_CASE("shaking conserves particles and the analytic wall contains them") {
                           config.contactRadiusFactor * config.resolution.spacing);
 }
 
+TEST_CASE("surface tension does not add energy to a thrown vessel") {
+  // Two regressions meet here, and the reason this is a COMPARISON rather than
+  // an absolute bound is that only one of them was mine.
+  //
+  // The Continuum Surface Force is sigma * kappa * grad c, and the curvature
+  // estimator is a divergence of unit vectors with no bound of its own. A thin
+  // film, a stray splash particle or a corner against the glass reports a
+  // curvature radius far below the kernel's smoothing length -- geometry the
+  // discretisation cannot carry -- and acting on it is unbounded acceleration.
+  // kMaxInterfaceCurvature bounds it.
+  //
+  // The violence a user actually reported turned out to be the other one: the
+  // hand follower clamped at 8 g, so flinging the vessel handed the liquid 7.3 g
+  // of coherent forcing. Measuring sigma = 0 against sigma = 0.04 separated the
+  // two: the interface accounted for well under a fifth of it. So the contract
+  // worth defending is not a speed, which depends on how hard the throw was; it
+  // is that switching interfacial tension ON must not make the vessel more
+  // energetic than leaving it off.
+  const std::vector<fluid::PhaseMaterial> phases{
+      phase("aqueous", 998.0, 1.0e-3, 40.0), phase("organic", 850.0, 0.6e-3, 40.0)};
+
+  const auto throwAndRelease = [&phases](double sigma) {
+    fluid::SolverConfig config = coarseConfig();
+    config.enableSurfaceTension = sigma > 0.0;
+    fluid::Solver solver;
+    solver.configure(config);
+    solver.setPhases(phases, {sigma});
+    fluid::VesselBoundary boundary = cylinder(config, 0.16);
+    fluid::Particles particles;
+    boundary.chargeLattice(phases, config.resolution.spacing, particles);
+
+    // The panel's own gesture: drag hard for ten frames, then let go and let
+    // the follower carry the vessel back to the bench.
+    fluid::HandFollower hand;
+    constexpr double kFrame = 1.0 / 60.0;
+    double time = 0.0;
+    double peak = 0.0;
+    double handPeak = 0.0;
+    const auto step = [&](const std::array<double, 3>& delta, bool held) {
+      hand.advance(delta, held, kFrame);
+      fluid::VesselMotion motion;
+      motion.manualOffset = hand.position;
+      motion.manualAcceleration = hand.acceleration;
+      solver.advance(particles, boundary, motion, time, kFrame);
+      time += kFrame;
+      peak = std::max(peak, solver.stats().maxSpeed);
+      handPeak = std::max(handPeak, norm(hand.acceleration));
+    };
+    for (int frame = 0; frame < 10; ++frame) step({0.045, 0.0, 0.0225}, true);
+    for (int frame = 0; frame < 180; ++frame) step({0.0, 0.0, 0.0}, false);
+
+    checkFiniteAndContained(particles, boundary,
+                            config.contactRadiusFactor * config.resolution.spacing);
+    CHECK(hand.atRest());
+    return std::pair<double, double>{peak, handPeak};
+  };
+
+  const auto [inertPeak, inertHand] = throwAndRelease(0.0);
+  const auto [tensePeak, tenseHand] = throwAndRelease(0.040);
+
+  // A hand cannot drive a funnel harder than the 50 mm at 3 Hz bench shake the
+  // solver is written against, which peaks at 1.8 g. Whatever the pointer does,
+  // the fluid must not be told otherwise.
+  const double limit = fluid::HandFollower{}.accelerationLimit;
+  CHECK(limit <= 2.5 * kGravity);
+  CHECK(inertHand <= limit * (1.0 + 1.0e-9));
+  CHECK(tenseHand <= limit * (1.0 + 1.0e-9));
+
+  INFO("peak speed inert=", inertPeak, " with tension=", tensePeak);
+  CHECK(tensePeak <= 1.5 * inertPeak);
+}
+
 TEST_CASE("off-axis shaking injects energy and interface, then both decay") {
   fluid::SolverConfig config = coarseConfig();
   config.wallFriction = 0.15;
@@ -397,8 +469,12 @@ TEST_CASE("off-axis shaking injects energy and interface, then both decay") {
   fluid::Particles particles;
   boundary.chargeLattice(phases, config.resolution.spacing, particles);
 
+  // 240 steps was enough to settle a solver whose interfacial tension did
+  // nothing. It now does, so the lattice charge relaxes its interface as well
+  // as its free surface, and the baseline this test divides by has to be taken
+  // after that has finished rather than during it.
   double time = 0.0;
-  runSteps(solver, particles, boundary, {}, 240, time);
+  runSteps(solver, particles, boundary, {}, 720, time);
 
   const double restingEnergy =
       kineticEnergy(particles, phases, config.resolution.particleVolume());

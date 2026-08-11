@@ -399,7 +399,11 @@ void main() {
     }
   if (!(determinant(correction) > MIN_CORRECTION_DETERMINANT)) return;
   mat3 corrected = inverse(correction) * jacobian;
-  curvature[i] = -(corrected[0][0] + corrected[1][1] + corrected[2][2]);
+  float value = -(corrected[0][0] + corrected[1][1] + corrected[2][2]);
+  // Same bound as the CPU: a curvature radius below the smoothing length is
+  // discretisation noise, and acting on it detonates the vessel.
+  float limit = MAX_INTERFACE_CURVATURE / support;
+  curvature[i] = clamp(value, -limit, limit);
 }
 )GLSL";
 
@@ -663,6 +667,8 @@ std::string shaderSource(const char* body) {
             std::to_string(fluid::kInterfaceGradientFloor) + ";\n";
   source += "const float MIN_CORRECTION_DETERMINANT = " +
             std::to_string(fluid::kInterfaceCorrectionDeterminant) + ";\n";
+  source += "const float MAX_INTERFACE_CURVATURE = " +
+            std::to_string(fluid::kMaxInterfaceCurvature) + ";\n";
   source += body;
   return source;
 }

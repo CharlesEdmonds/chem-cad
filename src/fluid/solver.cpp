@@ -746,7 +746,13 @@ void computeSurfaceGeometry(Particles& p, const PairCache& cache, double support
       for (int a = 0; a < 3; ++a) {
         for (int b = 0; b < 3; ++b) divergence += jacobian.m[a][b] * inverse.m[b][a];
       }
-      field.curvature[i] = -divergence;
+      // Clamped, not trusted. The estimator is a divergence of unit vectors and
+      // has no bound of its own; a thin film, a stray splash particle or a
+      // corner against the glass can report a curvature radius far below the
+      // kernel's smoothing length, which is geometry the discretisation cannot
+      // carry. Acting on it is what makes a released vessel detonate.
+      const double limit = kMaxInterfaceCurvature / support;
+      field.curvature[i] = std::clamp(-divergence, -limit, limit);
     }
   });
 }

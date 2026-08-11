@@ -87,7 +87,7 @@ std::array<double, 3> shakeDisplacement(const VesselMotion&, double timeS);
 // Two regimes, because holding a funnel and letting go of one are different
 // mechanical problems:
 //
-//   held     6.0 Hz, zeta 0.70 -- clamped in a hand. A 3 cm wiggle is ~4 g, a
+//   held     6.0 Hz, zeta 0.70 -- clamped in a hand. A 3 cm wiggle is felt, a
 //                                 steady drag is almost nothing.
 //   released 1.2 Hz, zeta 0.85 -- nothing constrains it. The vessel keeps the
 //                                 momentum of the throw and coasts back to the
@@ -95,6 +95,20 @@ std::array<double, 3> shakeDisplacement(const VesselMotion&, double timeS);
 //
 // `excursionLimit` is deliberately far larger than the vessel: it is allowed to
 // be thrown clean off the stage and swing back.
+//
+// `accelerationLimit` is what the FLUID feels, and it is a physical bound, not
+// a safety net. The reference bench shake this solver is written against --
+// 50 mm at 3 Hz -- peaks at A(2 pi f)^2 = 17.8 m/s^2, or 1.8 g, and that is
+// about as hard as a hand can drive a funnel. The limit sat at 8 g, so flinging
+// the vessel across the stage handed the liquid 7.3 g of coherent forcing:
+// measured, the contents left at 2 m/s and looked detonated. Above roughly 2 g
+// the clamp is not protecting the solve, it is inventing forcing the user never
+// applied.
+//
+// It binds the spring too. A 0.6 m throw at 1.2 Hz wants omega^2 x = 34 m/s^2
+// coming home, so the clamp is what turns the last part of a long return from a
+// snap into a glide -- and the vessel is drawn from the same integration, so
+// what the user sees and what the liquid feels stay the same motion.
 struct HandFollower {
   std::array<double, 3> hand{0.0, 0.0, 0.0};          // commanded hand position, m
   std::array<double, 3> position{0.0, 0.0, 0.0};      // vessel position, m
@@ -106,7 +120,7 @@ struct HandFollower {
   double releasedHz = 1.2;
   double releasedDampingRatio = 0.85;
   double excursionLimit = 0.60;                  // m, per axis
-  double accelerationLimit = 8.0 * 9.80665;      // m/s^2, magnitude
+  double accelerationLimit = 2.0 * 9.80665;      // m/s^2, magnitude
 
   // Integrates one frame. `handDelta` is this frame's commanded hand movement
   // in world metres and is ignored while `held` is false, because a released
