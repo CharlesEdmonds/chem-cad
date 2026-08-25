@@ -1,6 +1,7 @@
 // ChemCAD -- entry point, GLFW/OpenGL/ImGui bootstrap and the dock layout.
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -42,6 +43,7 @@
 #include "gfx/fluid_renderer.hpp"
 #include "gfx/gl_api.hpp"
 #include "ui/app_state.hpp"
+#include "ui/display_scale.hpp"
 #include "ui/theme.hpp"
 #include "ui/ui.hpp"
 
@@ -58,6 +60,12 @@ constexpr const char* kWinPreview3D = "Preview";
 constexpr const char* kWinTools = "Tools";
 constexpr const char* kWinPTable = "Periodic Table";
 constexpr const char* kWinProps = "Properties";
+
+// The bench was designed at 1.25: text and controls that read comfortably at
+// arm's length on a 1080p panel at 100% OS zoom. CHEMCAD_UI_SCALE replaces it;
+// the monitor's content scale multiplies it.
+constexpr float kDefaultUserScale = 1.25f;
+
 
 void glfwErrorCallback(int code, const char* description) {
   std::fprintf(stderr, "[glfw] error %d: %s\n", code, description);
@@ -99,16 +107,21 @@ void pumpWindowChrome(GLFWwindow* window, const AppState& st, ChromeState& chrom
   glfwGetWindowPos(window, &wx, &wy);
   glfwGetWindowSize(window, &ww, &wh);
   const bool maximized = glfwGetWindowAttrib(window, GLFW_MAXIMIZED) != 0;
+  // The cursor is tracked in DESKTOP coordinates (a drag moves the window, so
+  // window-relative coordinates would chase themselves), while the zones ImGui
+  // reports are CLIENT coordinates. Convert once, here.
+  const double localX = cursorX - wx;
+  const double localY = cursorY - wy;
 
   // ---- title-bar drag
   const auto& zone = st.titleDragZone;
-  const bool inDragZone = zone.x2 > zone.x1 && cursorX >= zone.x1 && cursorX < zone.x2 &&
-                          cursorY >= zone.y1 && cursorY < zone.y2;
+  const bool inDragZone = zone.x2 > zone.x1 && localX >= zone.x1 && localX < zone.x2 &&
+                          localY >= zone.y1 && localY < zone.y2;
   if (!chrome.dragging && chrome.resizeEdges == 0 && inDragZone && !maximized &&
       ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)) {
     chrome.dragging = true;
-    chrome.grabX = cursorX - wx;
-    chrome.grabY = cursorY - wy;
+    chrome.grabX = localX;
+    chrome.grabY = localY;
   }
   if (chrome.dragging) {
     if (!io.MouseDown[ImGuiMouseButton_Left]) {
@@ -121,15 +134,16 @@ void pumpWindowChrome(GLFWwindow* window, const AppState& st, ChromeState& chrom
   }
 
   // ---- edge resize
-  constexpr double kEdge = 6.0;
+  // A 6 px grab band is a 3 px band at 200% display zoom -- unhittable. Every
+  // chrome length is a design pixel.
+  const double edgeBand = chemcad::ui::dp(6.0f);
   int edges = 0;
   if (!maximized) {
-    const double lx = cursorX - wx, ly = cursorY - wy;
-    if (lx >= 0 && lx < ww && ly >= 0 && ly < wh) {
-      if (lx < kEdge) edges |= 1;
-      if (lx >= ww - kEdge) edges |= 2;
-      if (ly < kEdge) edges |= 4;
-      if (ly >= wh - kEdge) edges |= 8;
+    if (localX >= 0 && localX < ww && localY >= 0 && localY < wh) {
+      if (localX < edgeBand) edges |= 1;
+      if (localX >= ww - edgeBand) edges |= 2;
+      if (localY < edgeBand) edges |= 4;
+      if (localY >= wh - edgeBand) edges |= 8;
     }
   }
   static GLFWcursor* hCursor = nullptr;
@@ -167,8 +181,10 @@ void pumpWindowChrome(GLFWwindow* window, const AppState& st, ChromeState& chrom
     if (chrome.resizeEdges & 2) { nw += static_cast<int>(dx); }
     if (chrome.resizeEdges & 4) { ny += static_cast<int>(dy); nh -= static_cast<int>(dy); }
     if (chrome.resizeEdges & 8) { nh += static_cast<int>(dy); }
-    nw = std::max(nw, 760);
-    nh = std::max(nh, 480);
+    nw = std::max(nw, static_cast<int>(chemcad::ui::dp(
+                          static_cast<float>(chemcad::ui::kMinWindowWidth))));
+    nh = std::max(nh, static_cast<int>(chemcad::ui::dp(
+                          static_cast<float>(chemcad::ui::kMinWindowHeight))));
     glfwSetWindowPos(window, nx, ny);
     glfwSetWindowSize(window, nw, nh);
   }
@@ -274,6 +290,13 @@ void wireCallbacks(AppState& st) {
 // panels that are useful there -- the sketch keeps the full bench (tools,
 // periodic table, preview, properties), the planner and suite keep the
 // molecule panels, and the extraction calculator gets the whole bench top.
+//
+// The splits are budgeted in EMS, not in fractions of the viewport. A fraction
+// is only correct at one display scale: 30% of a 1080p viewport is a roomy
+// panel at 100% zoom and an unreadably narrow one at 200%. When the ems are not
+// there, the side panels are docked into the centre node instead, where they
+// become tabs beside the workspaces -- every panel stays reachable at full
+// width, and nothing is squeezed until it clips.
 void buildLayoutForTab(ImGuiID dockspaceId, chemcad::ui::MainTab tab) {
   using chemcad::ui::MainTab;
   // Window settings persist dock-node ids across sessions and across tab
@@ -283,27 +306,60 @@ void buildLayoutForTab(ImGuiID dockspaceId, chemcad::ui::MainTab tab) {
   ImGui::ClearIniSettings();
   ImGui::DockBuilderRemoveNode(dockspaceId);
   ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
-  ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
+  const ImVec2 work = ImGui::GetMainViewport()->WorkSize;
+  ImGui::DockBuilderSetNodeSize(dockspaceId, work);
+
+  // What each column needs to hold its contents: the tool palette is one
+  // button column, the right stack has to fit the periodic table's 18 groups,
+  // and the workspace itself is the point of the window.
+  const float em = ImGui::GetFontSize();
+  const float toolsEm = 14.0f;
+  const float stackEm = 28.0f;
+  const float workspaceEm = 34.0f;
+  const float widthEm = work.x / std::max(em, 1.0f);
+  const float heightEm = work.y / std::max(em, 1.0f);
+  // A short viewport cannot stack three panels either, however wide it is.
+  const bool roomForStack = widthEm >= stackEm + workspaceEm && heightEm >= 30.0f;
+  const bool roomForTools = widthEm >= stackEm + workspaceEm + toolsEm;
 
   ImGuiID center = dockspaceId;
 
   if (tab == MainTab::Sketch) {
-    const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.16f, nullptr, &center);
-    const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.30f, nullptr, &center);
-    ImGuiID rightBottom = right;
-    const ImGuiID rightTop = ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.44f, nullptr, &rightBottom);
-    ImGuiID rightProps = rightBottom;
-    const ImGuiID rightMid = ImGui::DockBuilderSplitNode(rightBottom, ImGuiDir_Up, 0.50f, nullptr, &rightProps);
-    ImGui::DockBuilderDockWindow(kWinTools, left);
-    ImGui::DockBuilderDockWindow(kWinPTable, rightTop);
-    ImGui::DockBuilderDockWindow(kWinPreview3D, rightMid);
-    ImGui::DockBuilderDockWindow(kWinProps, rightProps);
+    ImGuiID tools = center;
+    if (roomForTools) {
+      tools = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, toolsEm * em / work.x, nullptr,
+                                          &center);
+    }
+    if (roomForStack) {
+      ImGuiID rightBottom = ImGui::DockBuilderSplitNode(
+          center, ImGuiDir_Right, stackEm * em / std::max(work.x - toolsEm * em, 1.0f), nullptr,
+          &center);
+      const ImGuiID rightTop =
+          ImGui::DockBuilderSplitNode(rightBottom, ImGuiDir_Up, 0.44f, nullptr, &rightBottom);
+      ImGuiID rightProps = rightBottom;
+      const ImGuiID rightMid =
+          ImGui::DockBuilderSplitNode(rightBottom, ImGuiDir_Up, 0.50f, nullptr, &rightProps);
+      ImGui::DockBuilderDockWindow(kWinPTable, rightTop);
+      ImGui::DockBuilderDockWindow(kWinPreview3D, rightMid);
+      ImGui::DockBuilderDockWindow(kWinProps, rightProps);
+    } else {
+      ImGui::DockBuilderDockWindow(kWinPTable, center);
+      ImGui::DockBuilderDockWindow(kWinPreview3D, center);
+      ImGui::DockBuilderDockWindow(kWinProps, center);
+    }
+    ImGui::DockBuilderDockWindow(kWinTools, roomForTools ? tools : center);
   } else if (tab == MainTab::Planner || tab == MainTab::Solubility) {
-    const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
-    ImGuiID rightBottom = right;
-    const ImGuiID rightTop = ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.52f, nullptr, &rightBottom);
-    ImGui::DockBuilderDockWindow(kWinPreview3D, rightTop);
-    ImGui::DockBuilderDockWindow(kWinProps, rightBottom);
+    if (roomForStack) {
+      ImGuiID rightBottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right,
+                                                       stackEm * em / work.x, nullptr, &center);
+      const ImGuiID rightTop =
+          ImGui::DockBuilderSplitNode(rightBottom, ImGuiDir_Up, 0.52f, nullptr, &rightBottom);
+      ImGui::DockBuilderDockWindow(kWinPreview3D, rightTop);
+      ImGui::DockBuilderDockWindow(kWinProps, rightBottom);
+    } else {
+      ImGui::DockBuilderDockWindow(kWinPreview3D, center);
+      ImGui::DockBuilderDockWindow(kWinProps, center);
+    }
   }
   // Extraction: full-width workspace, no side panels.
 
@@ -346,6 +402,32 @@ void renderFluidStage(AppState& state, chemcad::gfx::FluidRenderer& renderer) {
   stage.status = status;
   stage.requested = false;
 }
+
+// ------------------------------------------------------------ display scale
+// The scale the bench should be drawn at RIGHT NOW, for the monitor this window
+// is on. Two window-system facts go into it:
+//
+//   * the content scale -- Windows display zoom, GNOME's text-scaling-factor,
+//     the macOS backing factor;
+//   * the framebuffer scale, framebuffer pixels per window unit. On Windows
+//     that is 1 and the content scale is ours to apply; on macOS and Wayland
+//     the window system has already applied it to the framebuffer, and scaling
+//     again would double-count.
+//
+// Queried every frame: it changes when the user drags the window to another
+// monitor or changes the OS zoom, and GLFW gives no promise about which of
+// those emits a callback on which platform.
+float currentDisplayScale(GLFWwindow* window, float userScale) {
+  float contentX = 1.0f, contentY = 1.0f;
+  glfwGetWindowContentScale(window, &contentX, &contentY);
+  int windowW = 0, windowH = 0, framebufferW = 0, framebufferH = 0;
+  glfwGetWindowSize(window, &windowW, &windowH);
+  glfwGetFramebufferSize(window, &framebufferW, &framebufferH);
+  const float framebufferScale =
+      windowW > 0 ? static_cast<float>(framebufferW) / static_cast<float>(windowW) : 1.0f;
+  return chemcad::ui::resolveDisplayScale(std::min(contentX, contentY), framebufferScale,
+                                          userScale);
+}
 }  // namespace
 
 int main(int, char**) {
@@ -363,14 +445,25 @@ int main(int, char**) {
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
   glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);  // the app draws its own chrome
+  // Placed explicitly below, once the monitor's scale and work area are known;
+  // showing it first would flash a wrongly-sized window.
+  glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
-  GLFWwindow* window = glfwCreateWindow(1600, 1000, "ChemCAD", nullptr, nullptr);
+  // Provisional size only. The app draws its own title bar and caption buttons,
+  // so a window larger than the screen is not merely awkward, it is unclosable;
+  // fitWindow() below is what makes the first frame safe on a 1366x768 laptop
+  // and on a 4K TV at 200% zoom alike.
+  GLFWwindow* window = glfwCreateWindow(chemcad::ui::kBaseWindowWidth,
+                                        chemcad::ui::kBaseWindowHeight, "ChemCAD", nullptr,
+                                        nullptr);
   if (!window) {
     contextVersion = 33;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    window = glfwCreateWindow(1600, 1000, "ChemCAD", nullptr, nullptr);
+    window = glfwCreateWindow(chemcad::ui::kBaseWindowWidth, chemcad::ui::kBaseWindowHeight,
+                              "ChemCAD", nullptr, nullptr);
   }
+  glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
   if (!window) {
     std::fprintf(stderr, "failed to create a window\n");
     glfwTerminate();
@@ -378,6 +471,22 @@ int main(int, char**) {
   }
   glfwMakeContextCurrent(window);
   glfwSwapInterval(1);
+
+  // ---- place and size the window for the monitor it actually opened on
+  const float userScale =
+      chemcad::ui::parseUserScale(std::getenv("CHEMCAD_UI_SCALE"), kDefaultUserScale);
+  {
+    const float initialScale = currentDisplayScale(window, userScale);
+    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+    int workX = 0, workY = 0, workW = 0, workH = 0;
+    if (monitor != nullptr) glfwGetMonitorWorkarea(monitor, &workX, &workY, &workW, &workH);
+    const chemcad::ui::WindowPlacement placement =
+        chemcad::ui::fitWindow(workX, workY, workW, workH, chemcad::ui::kBaseWindowWidth,
+                               chemcad::ui::kBaseWindowHeight, initialScale);
+    glfwSetWindowPos(window, placement.x, placement.y);
+    glfwSetWindowSize(window, placement.width, placement.height);
+    glfwShowWindow(window);
+  }
 
   // The fluid renderer needs modern GL entry points; ImGui's backend keeps its
   // own private loader and its header says plainly that the rest of the app
@@ -428,13 +537,11 @@ int main(int, char**) {
   static const std::string iniPath = (chemcad::core::cacheDir() / "imgui.ini").string();
   io.IniFilename = iniPath.c_str();
 
-  // UI scale: default 1.25, overridable for accessibility or dense displays.
-  float uiScale = 1.25f;
-  if (const char* env = std::getenv("CHEMCAD_UI_SCALE"); env && *env) {
-    if (const float parsed = std::strtof(env, nullptr); parsed >= 0.5f && parsed <= 3.0f)
-      uiScale = parsed;
-  }
-  chemcad::ui::applyTheme(uiScale);
+  // One factor for the whole bench: the monitor's content scale times the
+  // user's own CHEMCAD_UI_SCALE. Re-resolved after the window is placed, since
+  // placing it may have moved it onto a different monitor.
+  float appliedScale = currentDisplayScale(window, userScale);
+  chemcad::ui::applyTheme(appliedScale);
   chemcad::ui::style::fonts::load();
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init("#version 330");
@@ -472,6 +579,17 @@ int main(int, char**) {
     if (fbw <= 0 || fbh <= 0) {
       glfwWaitEventsTimeout(0.1);
       continue;
+    }
+
+    // The display zoom or the monitor under the window can change at any time.
+    // Rebuilding the theme is the whole response: every metric, every font size
+    // and the sketch canvas' pixels-per-bond are derived from this one factor.
+    // Done here, between frames -- ImGui forbids restyling mid-frame.
+    if (const float wanted = currentDisplayScale(window, userScale);
+        std::fabs(wanted - appliedScale) > 0.001f) {
+      appliedScale = wanted;
+      chemcad::ui::applyTheme(appliedScale);
+      layoutBuilt = false;  // dock split sizes are in pixels; re-split at the new scale
     }
 
     chemcad::core::profiler().beginFrame();

@@ -11,6 +11,7 @@
 
 #include "chem/bridge.hpp"
 #include "core/sprout.hpp"
+#include "ui/display_scale.hpp"
 #include "ui/theme.hpp"
 
 namespace chemcad::ui::canvas {
@@ -112,7 +113,10 @@ LabelData makeLabel(AppState& st, Runtime& rt, int molIndex, const core::Molecul
     st.statusMessage = std::string("Element display: ") + error.what();
   }
 
-  label.fontSize = std::clamp(ImGui::GetFontSize() * std::sqrt(st.cam.zoom), 12.0f, 32.0f);
+  // GetFontSize() already carries the display scale; the readability floor and
+  // the ceiling that keeps a big label from swallowing its bonds must too.
+  label.fontSize =
+      std::clamp(ImGui::GetFontSize() * std::sqrt(st.cam.zoom), dp(12.0f), dp(32.0f));
   label.smallSize = label.fontSize * 0.68f;
   if (atom.isotope != 0) label.isotope = std::to_string(atom.isotope);
   label.main = symbol;
@@ -127,7 +131,8 @@ LabelData makeLabel(AppState& st, Runtime& rt, int molIndex, const core::Molecul
   label.chargeWidth = textSize(font, label.smallSize, label.charge).x;
   const float totalWidth = label.isotopeWidth + label.mainWidth + label.subscriptWidth +
                            label.chargeWidth;
-  label.halfExtent = {totalWidth * 0.5f + 1.0f, label.fontSize * 0.62f + label.smallSize * 0.2f};
+  label.halfExtent = {totalWidth * 0.5f + dp(1.0f),
+                      label.fontSize * 0.62f + label.smallSize * 0.2f};
   return label;
 }
 
@@ -231,7 +236,7 @@ void drawBond(ImDrawList* draw, const AppState& st, const CanvasRect& rect, int 
   const float length = std::sqrt(dx * dx + dy * dy);
   if (length < 1e-3f) return;
   const ImVec2 perpendicular{-dy / length, dx / length};
-  const float thickness = std::max(1.2f, 2.0f * st.cam.zoom);
+  const float thickness = dp(std::max(1.2f, 2.0f * st.cam.zoom));
   const BondRef ref{molIndex, bond.id};
   const bool selected = st.sel.contains(ref);
   const ImU32 normal = IM_COL32(224, 228, 234, 255);
@@ -317,7 +322,7 @@ void drawBond(ImDrawList* draw, const AppState& st, const CanvasRect& rect, int 
   }
 
   if (st.hoverBond == ref) {
-    draw->AddLine(a, b, style::u32(style::col::Teal, 0.73f), thickness + 3.0f);
+    draw->AddLine(a, b, style::u32(style::col::Teal, 0.73f), thickness + dp(3.0f));
   }
 }
 
@@ -327,7 +332,7 @@ void drawLabel(ImDrawList* draw, const AppState& st, const CanvasRect& rect, int
   const AtomRef ref{molIndex, atom.id};
   const bool selected = st.sel.contains(ref);
   const bool hovered = st.hoverAtom == ref;
-  const float radius = std::max(label.halfExtent.x, label.halfExtent.y) + 3.0f;
+  const float radius = std::max(label.halfExtent.x, label.halfExtent.y) + dp(3.0f);
   draw->AddCircleFilled(center, radius, background, 24);
 
   ImFont* font = ImGui::GetFont();
@@ -353,9 +358,10 @@ void drawLabel(ImDrawList* draw, const AppState& st, const CanvasRect& rect, int
                   label.charge.c_str());
   }
   if (selected || hovered) {
-    draw->AddCircle(center, radius + 2.0f, selected ? style::u32(style::col::Accent, 0.90f)
-                                                  : style::u32(style::col::Teal, 0.86f),
-                    24, selected ? 2.2f : 1.4f);
+    draw->AddCircle(center, radius + dp(2.0f),
+                    selected ? style::u32(style::col::Accent, 0.90f)
+                             : style::u32(style::col::Teal, 0.86f),
+                    24, dp(selected ? 2.2f : 1.4f));
   }
 }
 
@@ -366,10 +372,12 @@ void drawUnlabelledAtomFeedback(ImDrawList* draw, const AppState& st, const Canv
   const bool hovered = st.hoverAtom == ref;
   if (!selected && !hovered) return;
   const ImVec2 center = toIm(st.cam.worldToScreen(atom.pos, rect.origin));
-  if (selected) draw->AddCircleFilled(center, 4.0f, style::u32(style::col::Accent, 0.86f), 16);
-  draw->AddCircle(center, 8.0f, hovered ? style::u32(style::col::Teal, 0.90f)
-                                      : style::u32(style::col::Accent, 0.90f),
-                  20, selected ? 2.2f : 1.4f);
+  if (selected)
+    draw->AddCircleFilled(center, dp(4.0f), style::u32(style::col::Accent, 0.86f), 16);
+  draw->AddCircle(center, dp(8.0f),
+                  hovered ? style::u32(style::col::Teal, 0.90f)
+                          : style::u32(style::col::Accent, 0.90f),
+                  20, dp(selected ? 2.2f : 1.4f));
 }
 
 void drawGesturePreview(ImDrawList* draw, const AppState& st, const Runtime& rt,
@@ -387,18 +395,20 @@ void drawGesturePreview(ImDrawList* draw, const AppState& st, const Runtime& rt,
                            atom->pos.y + direction.y * core::kBondLength};
       draw->AddLine(toIm(st.cam.worldToScreen(atom->pos, rect.origin)),
                     toIm(st.cam.worldToScreen(end, rect.origin)), preview,
-                    std::max(1.5f, 2.0f * st.cam.zoom));
-      draw->AddCircle(toIm(st.cam.worldToScreen(end, rect.origin)), 5.0f, preview, 16, 1.5f);
+                    dp(std::max(1.5f, 2.0f * st.cam.zoom)));
+      draw->AddCircle(toIm(st.cam.worldToScreen(end, rect.origin)), dp(5.0f), preview, 16,
+                      dp(1.5f));
     }
   } else if (rt.gesture == Gesture::Chain) {
     const std::vector<core::Vec2> points = makeChainPreview(st, rt);
     for (size_t i = 1; i < points.size(); ++i) {
       draw->AddLine(toIm(st.cam.worldToScreen(points[i - 1], rect.origin)),
                     toIm(st.cam.worldToScreen(points[i], rect.origin)), preview,
-                    std::max(1.5f, 2.0f * st.cam.zoom));
+                    dp(std::max(1.5f, 2.0f * st.cam.zoom)));
     }
   } else if (rt.gesture == Gesture::Marquee && rt.dragged) {
-    draw->AddRect(rt.downScreen, rt.currentScreen, style::u32(style::col::Teal, 0.90f), 0.0f, 0, 1.5f);
+    draw->AddRect(rt.downScreen, rt.currentScreen, style::u32(style::col::Teal, 0.90f), 0.0f, 0,
+                  dp(1.5f));
     draw->AddRectFilled(rt.downScreen, rt.currentScreen, style::u32(style::col::Teal, 0.10f));
   }
 }
@@ -414,7 +424,7 @@ void drawRingGhost(ImDrawList* draw, const AppState& st, const CanvasRect& rect)
                                                   rect.origin));
     const ImVec2 to = toIm(st.cam.worldToScreen(geometry.positions[static_cast<size_t>(b)],
                                                 rect.origin));
-    draw->AddLine(from, to, IM_COL32(126, 205, 255, 130), 1.6f);
+    draw->AddLine(from, to, IM_COL32(126, 205, 255, 130), dp(1.6f));
     if (geometry.orders[i] == core::BondOrder::Double ||
         geometry.orders[i] == core::BondOrder::Aromatic) {
       const ImVec2 delta{to.x - from.x, to.y - from.y};

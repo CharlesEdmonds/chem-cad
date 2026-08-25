@@ -161,7 +161,13 @@ std::optional<std::string> FileDialog::accept() {
 std::optional<std::string> FileDialog::draw() {
   if (!open_) return std::nullopt;
 
-  ImGui::SetNextWindowSize(ImVec2(620.0f, 470.0f), ImGuiCond_Appearing);
+  // Em-relative, and never taller than the viewport: a fixed 620x470 modal is
+  // a postage stamp on a 4K panel and taller than the window at 200% zoom.
+  const ImVec2 work = ImGui::GetMainViewport()->WorkSize;
+  const float em = ImGui::GetFontSize();
+  ImGui::SetNextWindowSize(ImVec2(std::min(em * 38.0f, work.x * 0.9f),
+                                  std::min(em * 29.0f, work.y * 0.9f)),
+                           ImGuiCond_Appearing);
   bool keepOpen = true;
   std::optional<std::string> result;
   if (ImGui::BeginPopupModal(title_.c_str(), &keepOpen, ImGuiWindowFlags_NoCollapse)) {
@@ -171,7 +177,13 @@ std::optional<std::string> FileDialog::draw() {
       setDirectory(pathBuffer_.data());
     }
 
-    if (ImGui::BeginListBox("##directory", ImVec2(-1.0f, 300.0f))) {
+    // The list takes what is left of the modal after its own chrome, so the
+    // dialog never grows a scrollbar or clips its buttons.
+    const float listHeight =
+        std::max(ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 2.0f -
+                     ImGui::GetTextLineHeightWithSpacing(),
+                 ImGui::GetTextLineHeightWithSpacing() * 3.0f);
+    if (ImGui::BeginListBox("##directory", ImVec2(-1.0f, listHeight))) {
       for (const Entry& entry : entries_) {
         const bool selected = !entry.directory && entry.path.filename() == filenameBuffer_.data();
         if (ImGui::Selectable(entry.label.c_str(), selected,

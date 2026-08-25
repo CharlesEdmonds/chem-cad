@@ -4,10 +4,13 @@ file(GLOB CHEMCAD_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/te
 
 foreach(test_src IN LISTS CHEMCAD_TEST_SOURCES)
   get_filename_component(test_name "${test_src}" NAME_WE)
-  # ui/camera.cpp is pure geometry with no ImGui dependency, so tests compile it
-  # directly rather than linking all of chemcad_ui (which would make every suite
-  # unbuildable whenever a panel is mid-edit).
-  add_executable(${test_name} "${test_src}" "${CMAKE_SOURCE_DIR}/src/ui/camera.cpp")
+  # ui/camera.cpp is pure geometry and ui/display_scale.cpp is the scale factor
+  # it reads; both are ImGui-free, so tests compile them directly rather than
+  # linking all of chemcad_ui (which would make every suite unbuildable
+  # whenever a panel is mid-edit).
+  add_executable(${test_name} "${test_src}"
+    "${CMAKE_SOURCE_DIR}/src/ui/camera.cpp"
+    "${CMAKE_SOURCE_DIR}/src/ui/display_scale.cpp")
   # chemcad_chem keeps RDKit PRIVATE on purpose (only bridge.cpp may see it), so
   # suites that validate reaction SMARTS directly need their own RDKit link.
   target_link_libraries(${test_name} PRIVATE

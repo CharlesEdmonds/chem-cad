@@ -1,8 +1,10 @@
 #pragma once
 // World <-> screen mapping for the sketch canvas.
-// One world unit == one standard bond length == kPixelsPerUnit screen px at zoom 1.
+// One world unit == one standard bond length == kPixelsPerUnit DESIGN pixels at
+// zoom 1, so a benzene ring keeps its physical size at any display zoom.
 
 #include "core/model.hpp"
+#include "ui/display_scale.hpp"
 
 namespace chemcad::ui {
 
@@ -14,7 +16,7 @@ struct Camera2D {
   core::Vec2 pan{0, 0};  // world point shown at the canvas origin
   float zoom = 1.0f;
 
-  float scale() const { return kPixelsPerUnit * zoom; }
+  float scale() const { return dp(kPixelsPerUnit) * zoom; }
 
   // `origin` is the canvas top-left in screen space.
   core::Vec2 worldToScreen(core::Vec2 w, core::Vec2 origin) const {

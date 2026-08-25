@@ -33,8 +33,9 @@ void Camera2D::fit(const core::Document& doc, core::Vec2 sizePx) {
   }
   const float w = std::max(maxX - minX, 1.0f) + 2.0f;  // 1 unit margin each side
   const float h = std::max(maxY - minY, 1.0f) + 2.0f;
-  zoom = std::clamp(std::min(sizePx.x / (w * kPixelsPerUnit), sizePx.y / (h * kPixelsPerUnit)),
-                    kMinZoom, kMaxZoom);
+  // sizePx is physical; the design bond length has to be scaled to match.
+  const float unit = dp(kPixelsPerUnit);
+  zoom = std::clamp(std::min(sizePx.x / (w * unit), sizePx.y / (h * unit)), kMinZoom, kMaxZoom);
   const float cx = (minX + maxX) * 0.5f, cy = (minY + maxY) * 0.5f;
   pan.x = cx - sizePx.x / (2 * scale());
   pan.y = cy + sizePx.y / (2 * scale());

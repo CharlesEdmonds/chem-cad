@@ -3,6 +3,7 @@
 #include <filesystem>
 
 #include "core/paths.hpp"
+#include "ui/display_scale.hpp"
 #include "ui/theme.hpp"
 #include "ui/ui.hpp"
 
@@ -81,6 +82,11 @@ void popFont(bool pushed) {
 }  // namespace style
 
 void applyTheme(float uiScale) {
+  // One factor for the whole app: every non-text length goes through dp(), and
+  // the sketch camera's pixels-per-bond rides on it too.
+  setDisplayScale(uiScale);
+  uiScale = displayScale();
+
   gMetrics.radiusSm = 2.0f * uiScale;
   gMetrics.radiusMd = 4.0f * uiScale;
   gMetrics.radiusLg = 10.0f * uiScale;

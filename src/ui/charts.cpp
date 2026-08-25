@@ -479,13 +479,19 @@ int rankedBars(const char* id, const BarRow* rows, int count, ImVec2 size) {
 
   const style::Metrics& metrics = style::metrics();
   const float fontSize = ImGui::GetFontSize();
-  const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
+  // Divide the budget rather than clipping rows off the bottom: a chart that
+  // silently drops its last families is worse than a slightly denser one. The
+  // floor keeps the labels readable; below that the card is genuinely too small.
+  const float naturalRow = ImGui::GetTextLineHeightWithSpacing();
+  const float rowFloor = layout::minReadablePx() * 1.25f;
+  const float rowHeight =
+      std::min(naturalRow, std::max(rect.size.y / static_cast<float>(count), rowFloor));
   const float padding = metrics.gap * 0.75f;
   const float columnGap = metrics.gap * 0.75f;
   const float innerWidth = std::max(0.0f, rect.size.x - padding * 2.0f);
 
   std::vector<double> magnitudes(static_cast<std::size_t>(count));
-  const float labelFont = chartLabelFont(fontSize * 0.88f);
+  const float labelFont = chartLabelFont(std::min(fontSize * 0.88f, rowHeight * 0.78f));
   float widestLabel = 0.0f;
   for (int index = 0; index < count; ++index) {
     magnitudes[static_cast<std::size_t>(index)] =

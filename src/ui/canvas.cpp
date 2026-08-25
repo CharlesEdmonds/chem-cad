@@ -5,6 +5,7 @@
 #include "imgui.h"
 
 #include "ui/canvas_internal.hpp"
+#include "ui/display_scale.hpp"
 #include "ui/icons.hpp"
 #include "ui/theme.hpp"
 #include "ui/ui.hpp"
@@ -296,7 +297,7 @@ void drawEraseOverlay(const AppState& st, const EraseDrag& drag,
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const float highlightAlpha = 0.62f + animation * 0.28f;
   const ImU32 danger = style::u32(style::col::Danger, highlightAlpha);
-  const float baseThickness = std::max(1.2f, 2.0f * st.cam.zoom);
+  const float baseThickness = dp(std::max(1.2f, 2.0f * st.cam.zoom));
 
   for (const BondRef& ref : drag.pending.bonds) {
     if (ref.mol < 0 || ref.mol >= static_cast<int>(st.doc.molecules.size())) continue;
@@ -309,7 +310,7 @@ void drawEraseOverlay(const AppState& st, const EraseDrag& drag,
     const core::Vec2 screenA = st.cam.worldToScreen(a->pos, rect.origin);
     const core::Vec2 screenB = st.cam.worldToScreen(b->pos, rect.origin);
     draw->AddLine({screenA.x, screenA.y}, {screenB.x, screenB.y}, danger,
-                  baseThickness + 1.5f + animation * 1.5f);
+                  baseThickness + dp(1.5f + animation * 1.5f));
   }
 
   for (const AtomRef& ref : drag.pending.atoms) {
@@ -321,9 +322,9 @@ void drawEraseOverlay(const AppState& st, const EraseDrag& drag,
     const bool labelled = atom->atomicNumber != 6 || atom->charge != 0 || atom->isotope != 0 ||
                           mol.degree(atom->id) == 0;
     const float fontSize =
-        std::clamp(ImGui::GetFontSize() * std::sqrt(st.cam.zoom), 12.0f, 32.0f);
-    const float radius = labelled ? fontSize * 0.95f : 8.0f;
-    draw->AddCircle({screen.x, screen.y}, radius, danger, 24, 1.4f + animation * 0.8f);
+        std::clamp(ImGui::GetFontSize() * std::sqrt(st.cam.zoom), dp(12.0f), dp(32.0f));
+    const float radius = labelled ? fontSize * 0.95f : dp(8.0f);
+    draw->AddCircle({screen.x, screen.y}, radius, danger, 24, dp(1.4f + animation * 0.8f));
   }
 
   if (st.tool == Tool::Eraser && (canvasHovered || drag.active)) {

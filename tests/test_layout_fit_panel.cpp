@@ -109,7 +109,9 @@ TEST_CASE("every workspace fits its page across display shapes and scales") {
 
   // Approximates the OS display scale and the app's own CHEMCAD_UI_SCALE: both
   // land on the font size, which is the unit every layout is written against.
-  const float scales[] = {1.0f, 1.25f, 1.75f};
+  // 2.5 is not academic -- a 4K TV at 200% zoom with the default 1.25 preference
+  // resolves to exactly that.
+  const float scales[] = {1.0f, 1.25f, 1.75f, 2.5f};
 
   for (const Surface& surface : surfaces) {
     for (const float scale : scales) {

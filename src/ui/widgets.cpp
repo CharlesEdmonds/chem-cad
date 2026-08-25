@@ -495,18 +495,35 @@ bool segmented(const char* id, const char* const* labels, int count, int& index,
   const ImVec2 indicatorMax(indicatorMin.x + cellWidth, max.y);
   dl->AddRectFilled(indicatorMin, indicatorMax, style::u32(style::col::Accent), m.radiusMd);
 
+  // A label wider than its cell spills into its neighbour -- which is what
+  // "VerticalHorizontaDiagonal" looks like. Shrink all cells by the same factor
+  // (they are one control, so one size), down to the readability floor, and clip
+  // what still does not fit.
+  ImFont* font = ImGui::GetFont();
+  float labelFont = ImGui::GetFontSize();
+  const float cellRoom = std::max(cellWidth - m.gap, 1.0f);
+  float widest = 0.0f;
+  for (int i = 0; i < count; ++i) {
+    if (labels[i]) widest = std::max(widest, ImGui::CalcTextSize(labels[i]).x);
+  }
+  if (widest > cellRoom) {
+    labelFont = std::max(layout::minReadablePx(), labelFont * cellRoom / widest);
+  }
+
   for (int i = 0; i < count; ++i) {
     const char* text = labels[i] ? labels[i] : "";
-    const ImVec2 textSize = ImGui::CalcTextSize(text);
-    const ImVec2 textPos(min.x + cellWidth * (static_cast<float>(i) + 0.5f) -
-                             textSize.x * 0.5f,
+    const ImVec2 textSize = font->CalcTextSizeA(labelFont, FLT_MAX, 0.0f, text);
+    const float cellLeft = min.x + cellWidth * static_cast<float>(i);
+    const ImVec2 textPos(cellLeft + (cellWidth - textSize.x) * 0.5f,
                          min.y + (size.y - textSize.y) * 0.5f);
     const ImU32 color =
         i == index
             ? style::u32(style::col::OnAccent)
             : style::mix(style::col::TextDim, style::col::Text,
                          i == hoveredCell ? 1.0f : 0.0f);
-    dl->AddText(textPos, color, text);
+    dl->PushClipRect(ImVec2(cellLeft, min.y), ImVec2(cellLeft + cellWidth, max.y), true);
+    dl->AddText(font, labelFont, textPos, color, text);
+    dl->PopClipRect();
   }
   return changed;
 }
@@ -1179,30 +1196,48 @@ void emptyState(icons::Icon icon, const char* headline, const char* body) {
   const ImVec2 headlineSize = ImGui::CalcTextSize(headline);
   style::popFont(semibold);
   const ImVec2 bodySize = ImGui::CalcTextSize(body, nullptr, false, bodyWidth);
-  const float contentHeight =
-      glyphSize + m.gap + headlineSize.y + m.gap * 0.7f + bodySize.y;
+  const float glyphBand = glyphSize + m.gap;
+  const float bodyBand = m.gap * 0.7f + bodySize.y;
+
+  // A band shorter than the block cannot show all three parts, and a clipped
+  // half-sentence is worse than none: shed the glyph first, then the body. The
+  // headline is the message. `avail <= 0` means an auto-height parent, where
+  // reserving the full block is exactly right.
+  const float avail = ImGui::GetContentRegionAvail().y;
+  bool showGlyph = true;
+  bool showBody = true;
+  if (avail > 0.0f) {
+    const float chrome = m.gap * 2.0f;
+    if (glyphBand + headlineSize.y + bodyBand + chrome > avail) showGlyph = false;
+    if (headlineSize.y + bodyBand + chrome > avail) showBody = false;
+  }
+  const float contentHeight = (showGlyph ? glyphBand : 0.0f) + headlineSize.y +
+                              (showBody ? bodyBand : 0.0f);
 
   // The block reserves its own content height before centring in it. Measuring
   // only the available region collapses to a single line inside an auto-height
   // card, which clipped everything below the glyph.
-  const float height =
-      std::max(ImGui::GetContentRegionAvail().y, contentHeight + m.gap * 2.0f);
+  const float height = std::max(avail, contentHeight + m.gap * 2.0f);
   ImGui::Dummy(ImVec2(width, height));
 
   const float top = min.y + std::max((height - contentHeight) * 0.5f, 0.0f);
   const float centreX = min.x + width * 0.5f;
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  icons::draw(dl, icon, ImVec2(centreX, top + glyphSize * 0.5f), glyphSize,
-              style::u32(style::col::TextFaint));
-  const float headlineY = top + glyphSize + m.gap;
+  if (showGlyph) {
+    icons::draw(dl, icon, ImVec2(centreX, top + glyphSize * 0.5f), glyphSize,
+                style::u32(style::col::TextFaint));
+  }
+  const float headlineY = top + (showGlyph ? glyphBand : 0.0f);
   dl->AddText(style::fonts::semibold(), fs,
               ImVec2(centreX - headlineSize.x * 0.5f, headlineY),
               style::u32(style::col::TextDim), headline);
-  const ImVec2 bodyPos(centreX - bodyWidth * 0.5f,
-                       headlineY + headlineSize.y + m.gap * 0.7f);
-  dl->AddText(nullptr, fs, bodyPos, style::u32(style::col::TextFaint), body, nullptr,
-              bodyWidth);
+  if (showBody) {
+    const ImVec2 bodyPos(centreX - bodyWidth * 0.5f,
+                         headlineY + headlineSize.y + m.gap * 0.7f);
+    dl->AddText(nullptr, fs, bodyPos, style::u32(style::col::TextFaint), body, nullptr,
+                bodyWidth);
+  }
 }
 
 void notice(icons::Icon icon, const char* text, ImVec4 accent) {

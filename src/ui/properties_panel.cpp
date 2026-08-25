@@ -711,8 +711,12 @@ void drawPropertiesPanel(AppState& st) {
   const float budget = std::min(page.size.y, layout::pageHeight());
   const DocumentSummary& summary = cachedDocumentSummary(st);
   if (summary.explicitAtoms == 0) {
-    const float weights[] = {0.8f, 1.2f};
-    const float minimums[] = {page.row * 4.0f, page.control};
+    // The build group is a fixed stack -- disclosure, input, button -- so it
+    // takes exactly what it needs and the empty state absorbs the rest. Sharing
+    // the band by weight instead clipped the input in a short dock node.
+    const float buildBand = page.control * 3.0f + page.gap * 2.0f;
+    const float weights[] = {1.0f, 0.0f};
+    const float minimums[] = {page.row * 2.0f, buildBand};
     float rows[2]{};
     layout::distribute(budget, weights, minimums, 2, page.gap, rows);
     if (ImGui::BeginChild("##properties_empty",

@@ -184,10 +184,19 @@ void drawFilterToolbar(ToolboxState& state, const layout::Frame& frame,
                                : widgets::actionButtonWidth(icons::Icon::Close, "Reset");
 
   widgets::beginToolbar("##toolbox_filter_toolbar");
+  // What the toolbar's own furniture costs. beginToolbar insets both ends by
+  // half a gap and sets ItemSpacing to half a gap, and each toolbarSeparator()
+  // is a full gap wide -- all of them in style::metrics().gap, NOT the frame's
+  // density-scaled gap. Leave any of that out and the last control is pushed
+  // off the end, the more so the higher the display scale.
+  const float unit = style::metrics().gap;
+  const float furniture = unit * 0.5f          // right inset
+                          + unit * 0.5f * 4.0f  // four SameLine spacings
+                          + unit * 2.0f;        // two separators
   const float available = ImGui::GetContentRegionAvail().x;
-  const float substrateWidth = std::max(
-      frame.em * (compact ? 7.0f : 10.0f),
-      available - layoutWidth - resetWidth - frame.gap * 3.0f);
+  const float substrateWidth =
+      std::max(frame.em * (compact ? 7.0f : 10.0f),
+               available - layoutWidth - resetWidth - furniture);
   drawSubstrateCombo(state, substrateWidth);
   ImGui::SameLine();
   widgets::toolbarSeparator();
@@ -218,10 +227,14 @@ void drawCombinedToolbar(ToolboxState& state, const layout::Frame& frame) {
   const float substrateWidth = frame.em * 12.0f;
 
   widgets::beginToolbar("##toolbox_toolbar");
+  // See drawFilterToolbar: five SameLine spacings here, plus the right inset
+  // and the two separators.
+  const float unit = style::metrics().gap;
+  const float furniture = unit * 0.5f + unit * 0.5f * 5.0f + unit * 2.0f;
   const float available = ImGui::GetContentRegionAvail().x;
-  const float searchWidth = std::max(
-      frame.em * 8.0f,
-      available - substrateWidth - layoutWidth - resetWidth - frame.gap * 4.0f);
+  const float searchWidth =
+      std::max(frame.em * 8.0f,
+               available - substrateWidth - layoutWidth - resetWidth - furniture);
   ImGui::SetNextItemWidth(searchWidth);
   widgets::stringInputWithHint("##query", "Search reactions, substrates, reagents",
                                state.query);
@@ -240,6 +253,20 @@ void drawCombinedToolbar(ToolboxState& state, const layout::Frame& frame) {
     resetFilters(state);
   }
   widgets::endToolbar();
+}
+
+// Does the one-row toolbar actually fit? Its items have fixed widths, so on a
+// narrow page -- or a normal page at a high display scale, which is the same
+// thing measured in ems -- the run overflows and the last control is pushed off
+// the end. When it does not fit, the caller splits it into two rows.
+bool combinedToolbarFits(const layout::Frame& frame) {
+  const float unit = style::metrics().gap;
+  const float furniture = unit * 0.5f * 6.0f + unit * 2.0f;
+  const float fixed = frame.em * 8.0f      // search, at its floor
+                      + frame.em * 12.0f   // substrate combo
+                      + frame.control * 2.25f  // layout toggle
+                      + widgets::actionButtonWidth(icons::Icon::Close, "Reset");
+  return fixed + furniture <= frame.size.x;
 }
 
 void drawRankedBarsCard(ToolboxState& state,
@@ -417,7 +444,11 @@ void drawToolbox(AppState& st) {
 
   widgets::sectionHeader("Reaction library", style::col::Data);
   const layout::Frame pageFrame = layout::measure();
-  const bool compact = pageFrame.density == layout::Density::Compact;
+  // Two independent questions, both of which used to be answered by "is the
+  // page compact": whether the toolbar run fits on one row, and whether the
+  // overview charts fit at all.
+  const bool compact =
+      pageFrame.density == layout::Density::Compact || !combinedToolbarFits(pageFrame);
 
   std::vector<std::string> histogramAnnotations(state.types.size());
   std::vector<charts::BarRow> histogramRows;
@@ -469,12 +500,19 @@ void drawToolbox(AppState& st) {
   const float overviewHeight =
       pageFrame.row * (static_cast<float>(state.types.size()) + 2.0f) +
       (overviewColumns ? 0.0f : pageFrame.row * 3.0f + pageFrame.gap);
-  const float headerMinimum = overviewHeight + pageFrame.gap + toolbarHeight;
+  // The overview cards are supplementary; the search and the results are the
+  // page. On a short page -- a small window, or a normal one at a high display
+  // scale -- the cards would be squeezed until they clipped their own rows, and
+  // half a histogram is worse than none, so they are dropped instead.
+  const float page = layout::pageHeight();
+  const bool showOverview =
+      overviewHeight + pageFrame.gap + toolbarHeight <= page * 0.55f;
+  const float headerMinimum =
+      showOverview ? overviewHeight + pageFrame.gap + toolbarHeight : toolbarHeight;
   const float pageWeights[] = {0.0f, 1.0f};
   const float pageMinimums[] = {headerMinimum, pageFrame.row * 5.0f};
   float pageRows[2] = {};
-  layout::distribute(layout::pageHeight(), pageWeights, pageMinimums, 2,
-                     pageFrame.gap, pageRows);
+  layout::distribute(page, pageWeights, pageMinimums, 2, pageFrame.gap, pageRows);
 
   const float headerY = ImGui::GetCursorPosY();
   if (ImGui::BeginChild("##toolbox_header", ImVec2(pageFrame.size.x, pageRows[0]),
@@ -482,15 +520,17 @@ void drawToolbox(AppState& st) {
                         ImGuiWindowFlags_NoScrollbar |
                             ImGuiWindowFlags_NoScrollWithMouse)) {
     const layout::Frame headerFrame = layout::measure();
-    const float headerWeights[] = {1.0f, 0.0f};
-    const float headerMinimums[] = {headerFrame.row * 4.0f, toolbarHeight};
-    float headerRows[2] = {};
-    layout::distribute(headerFrame.size.y, headerWeights, headerMinimums, 2,
-                       headerFrame.gap, headerRows);
-    const float overviewY = ImGui::GetCursorPosY();
-    drawOverview(state, histogramRows, aritySegments, aritySegmentCount,
-                 libraryTotal, ImVec2(headerFrame.size.x, headerRows[0]));
-    layout::nextRow(overviewY + headerRows[0] + headerFrame.gap);
+    if (showOverview) {
+      const float headerWeights[] = {1.0f, 0.0f};
+      const float headerMinimums[] = {headerFrame.row * 4.0f, toolbarHeight};
+      float headerRows[2] = {};
+      layout::distribute(headerFrame.size.y, headerWeights, headerMinimums, 2,
+                         headerFrame.gap, headerRows);
+      const float overviewY = ImGui::GetCursorPosY();
+      drawOverview(state, histogramRows, aritySegments, aritySegmentCount, libraryTotal,
+                   ImVec2(headerFrame.size.x, headerRows[0]));
+      layout::nextRow(overviewY + headerRows[0] + headerFrame.gap);
+    }
     if (compact) {
       const float searchY = ImGui::GetCursorPosY();
       drawSearchToolbar(state, headerFrame);
@@ -541,7 +581,12 @@ void drawToolbox(AppState& st) {
                             ImGuiWindowFlags_NoScrollWithMouse)) {
     const layout::Frame resultsFrame = layout::measure();
     const float resultWeights[] = {0.0f, 1.0f};
-    const float resultMinimums[] = {resultsFrame.row, resultsFrame.row * 3.0f};
+    // The summary band holds a badge inside a child window: a badge is taller
+    // than a text line, and the child adds its own padding. A bare `row` here
+    // clipped the badge at high display scales.
+    const float summaryBand = ImGui::GetFontSize() + style::metrics().gap * 0.55f +
+                              ImGui::GetStyle().WindowPadding.y * 2.0f;
+    const float resultMinimums[] = {summaryBand, resultsFrame.row * 3.0f};
     float resultRows[2] = {};
     layout::distribute(resultsFrame.size.y, resultWeights, resultMinimums, 2,
                        resultsFrame.gap, resultRows);

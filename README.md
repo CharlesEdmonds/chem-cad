@@ -411,12 +411,24 @@ empty list is not.
 | Properties (right) | Formula, MW, cLogP, rings, canonical SMILES, IUPAC name, name→structure |
 
 The UI uses the bundled Inter and JetBrains Mono fonts (SIL OFL, in
-`assets/fonts/`) and scales from font metrics, so any UI scale keeps its
-proportions — default 1.25, override with `CHEMCAD_UI_SCALE` (0.5–3.0):
+`assets/fonts/`) and every length is either an em or a design pixel, so the
+bench keeps its proportions on any surface.
+
+The scale it draws at is the monitor's content scale — Windows display zoom,
+the GNOME text-scaling factor, the macOS backing factor — multiplied by
+`CHEMCAD_UI_SCALE` (default 1.25, accepted range 0.5–4.0; the product is
+clamped to 4.0):
 
 ```bash
 CHEMCAD_UI_SCALE=1.5 ./build/chemcad
 ```
+
+Changing the display zoom, or dragging the window to a monitor with a different
+one, is picked up while running: the theme, the fonts and the sketch canvas'
+pixels-per-bond are all rebuilt from the new factor. The first window is sized
+from the monitor's work area, so it never opens larger than the screen. When a
+viewport is too small in ems to hold the side panels, they are docked as tabs
+beside the workspaces instead of being squeezed until they clip.
 
 ### Sketching
 

@@ -251,7 +251,14 @@ void drawStatusBar(AppState& st) {
 
   ImGuiViewport* viewport = ImGui::GetMainViewport();
   const style::Metrics& m = style::metrics();
-  const float height = ImGui::GetTextLineHeightWithSpacing() * 2.0f + m.gap * 1.15f;
+  // Two rows: a text line, then the badge/dot row, which is slightly taller
+  // than a text line. Derived from what is actually submitted -- the old
+  // "2 lines + 1.15 gap" was a fifth of a gap short and clipped the second row
+  // at every scale.
+  const ImGuiStyle& imstyle = ImGui::GetStyle();
+  const float badgeRow = ImGui::GetFontSize() + m.gap * 0.55f;
+  const float height = imstyle.WindowPadding.y * 2.0f + ImGui::GetTextLineHeight() + badgeRow +
+                       imstyle.ItemSpacing.y;
   constexpr ImGuiWindowFlags flags =
       ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking |
       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNavFocus |

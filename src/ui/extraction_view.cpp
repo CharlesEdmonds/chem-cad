@@ -26,6 +26,7 @@
 #include "sol/solubility.hpp"
 #include "ui/app_state.hpp"
 #include "ui/charts.hpp"
+#include "ui/display_scale.hpp"
 #include "ui/icons.hpp"
 #include "ui/layout.hpp"
 #include "ui/solubility_state.hpp"
@@ -131,22 +132,25 @@ struct Transform {
   float scale = 1.0f;         // pixels per metre
 };
 
-constexpr float kMarginLeft = 64.0f;    // room for the graduation scale
-constexpr float kMarginRight = 20.0f;
-constexpr float kMarginTop = 24.0f;
-constexpr float kMarginBottom = 20.0f;
+// Stage margins, in design pixels. The left margin holds the graduation scale
+// and its numbers, so it tracks the text size as well as the display scale --
+// at 200% zoom a fixed 64 px gutter would clip every label.
+float marginLeft() { return std::max(dp(64.0f), ImGui::GetFontSize() * 3.6f); }
+float marginRight() { return dp(20.0f); }
+float marginTop() { return dp(24.0f); }
+float marginBottom() { return dp(20.0f); }
 
 Transform buildTransform(const VesselGeometry& geo, ImVec2 regionMin, ImVec2 regionSize) {
-  const float usableW = std::max(regionSize.x - kMarginLeft - kMarginRight, 1.0f);
-  const float usableH = std::max(regionSize.y - kMarginTop - kMarginBottom, 1.0f);
+  const float usableW = std::max(regionSize.x - marginLeft() - marginRight(), 1.0f);
+  const float usableH = std::max(regionSize.y - marginTop() - marginBottom(), 1.0f);
   const float widthMetres = std::max(static_cast<float>(geo.halfWidthMetres) * 2.0f, 1e-4f);
   const float heightMetres = std::max(geo.heightMetres, 1e-4f);
   const float scale = std::min(usableW / widthMetres, usableH / heightMetres);
 
   Transform tf;
   tf.scale = scale;
-  tf.origin.x = regionMin.x + kMarginLeft + usableW * 0.5f;
-  tf.origin.y = regionMin.y + kMarginTop + heightMetres * scale;
+  tf.origin.x = regionMin.x + marginLeft() + usableW * 0.5f;
+  tf.origin.y = regionMin.y + marginTop() + heightMetres * scale;
   return tf;
 }
 
@@ -202,7 +206,7 @@ void drawGraduation(ImDrawList* draw, const VesselGeometry& geo, const Transform
   if (step <= 0.0) return;
   const ImU32 tickColor = style::u32(style::col::TextFaint);
   const ImU32 labelColor = style::u32(style::col::TextDim);
-  const float tickX = regionMin.x + kMarginLeft - 14.0f;
+  const float tickX = regionMin.x + marginLeft() - dp(14.0f);
   const float labelH = ImGui::GetFontSize();
   // Widen the step until no adjacent pair of labels can collide vertically.
   // Every interval is checked: the vessel neck compresses the top ticks even
@@ -222,11 +226,13 @@ void drawGraduation(ImDrawList* draw, const VesselGeometry& geo, const Transform
   for (double v = 0.0; v <= capacityMl + 1e-6; v += step) {
     const double hf = heightFractionForVolume(geo, v);
     const ImVec2 p = toScreen(tf, 0.0, hf * geo.heightMetres);
-    draw->AddLine(ImVec2(tickX, p.y), ImVec2(tickX + 10.0f, p.y), tickColor, 1.0f);
+    draw->AddLine(ImVec2(tickX, p.y), ImVec2(tickX + dp(10.0f), p.y), tickColor,
+                  style::metrics().hairline);
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%.0f", v);
     const ImVec2 textSize = ImGui::CalcTextSize(buf);
-    draw->AddText(ImVec2(tickX - 4.0f - textSize.x, p.y - textSize.y * 0.5f), labelColor, buf);
+    draw->AddText(ImVec2(tickX - dp(4.0f) - textSize.x, p.y - textSize.y * 0.5f), labelColor,
+                  buf);
   }
 }
 
@@ -384,36 +390,38 @@ void drawFurniture(ImDrawList* draw, const sol::Simulation& sim, const VesselGeo
   // The analytic neck is 0.20 of the maximum half-width at t = 1.
   const double neckW = widthFractionAt(sim.vessel, 1.0) * geo.halfWidthMetres;
   const ImVec2 topC = toScreen(tf, 0.0, geo.heightMetres);
-  const float capW = std::max(static_cast<float>(neckW) * tf.scale * 2.0f + 4.0f, 10.0f);
-  const float capH = std::min(std::max(6.0f, tf.scale * 0.009f), kMarginTop * 0.48f);
+  const float capW = std::max(static_cast<float>(neckW) * tf.scale * 2.0f + dp(4.0f), dp(10.0f));
+  const float capH = std::min(std::max(dp(6.0f), tf.scale * 0.009f), marginTop() * 0.48f);
+  const float edge = style::metrics().hairline * 1.2f;
   draw->AddRectFilled(ImVec2(topC.x - capW * 0.5f, topC.y - capH),
-                      ImVec2(topC.x + capW * 0.5f, topC.y + 1.0f), glassFill, capH * 0.35f);
+                      ImVec2(topC.x + capW * 0.5f, topC.y + dp(1.0f)), glassFill, capH * 0.35f);
   draw->AddRect(ImVec2(topC.x - capW * 0.5f, topC.y - capH),
-                ImVec2(topC.x + capW * 0.5f, topC.y + 1.0f), glassEdge, capH * 0.35f, 0, 1.2f);
+                ImVec2(topC.x + capW * 0.5f, topC.y + dp(1.0f)), glassEdge, capH * 0.35f, 0,
+                edge);
   const float knobR = capH * 0.36f;
   const ImVec2 knobC(topC.x, topC.y - capH - knobR * 0.75f);
   draw->AddCircleFilled(knobC, knobR, glassFill, 24);
-  draw->AddCircle(knobC, knobR, glassEdge, 24, 1.2f);
+  draw->AddCircle(knobC, knobR, glassEdge, 24, edge);
 
   // t = 0.24 is within the straight stem and below the body cone.
   constexpr double kStopcockT = 0.24;
   const double stemW = widthFractionAt(sim.vessel, kStopcockT) * geo.halfWidthMetres;
   const ImVec2 cockC = toScreen(tf, 0.0, kStopcockT * geo.heightMetres);
   const float stemWidthPx = static_cast<float>(stemW) * tf.scale;
-  const float maxStemHeight = std::max(5.0f, tf.scale * geo.heightMetres * 0.030f);
-  const float barH = std::min(std::max(6.0f, tf.scale * 0.008f), maxStemHeight);
-  const float barW = std::max(stemWidthPx * 2.0f + 10.0f, 20.0f);
+  const float maxStemHeight = std::max(dp(5.0f), tf.scale * geo.heightMetres * 0.030f);
+  const float barH = std::min(std::max(dp(6.0f), tf.scale * 0.008f), maxStemHeight);
+  const float barW = std::max(stemWidthPx * 2.0f + dp(10.0f), dp(20.0f));
   draw->AddRectFilled(ImVec2(cockC.x - barW * 0.5f, cockC.y - barH * 0.5f),
                       ImVec2(cockC.x + barW * 0.5f, cockC.y + barH * 0.5f), glassFill,
                       barH * 0.5f);
   draw->AddRect(ImVec2(cockC.x - barW * 0.5f, cockC.y - barH * 0.5f),
                 ImVec2(cockC.x + barW * 0.5f, cockC.y + barH * 0.5f), glassEdge,
-                barH * 0.5f, 0, 1.2f);
+                barH * 0.5f, 0, edge);
   const ImVec2 tabA(cockC.x + barW * 0.5f, cockC.y);
   const ImVec2 tabB(tabA.x + barH * 1.35f, tabA.y + barH * 0.75f);
-  draw->AddLine(tabA, tabB, glassEdge, 3.0f);
+  draw->AddLine(tabA, tabB, glassEdge, dp(3.0f));
   draw->AddCircleFilled(tabB, barH * 0.38f, glassFill, 24);
-  draw->AddCircle(tabB, barH * 0.38f, glassEdge, 24, 1.1f);
+  draw->AddCircle(tabB, barH * 0.38f, glassEdge, 24, style::metrics().hairline * 1.1f);
 }
 
 double halfWidthAtHeight(const sol::Simulation& sim, const VesselGeometry& geo,
@@ -500,7 +508,7 @@ void drawLiquidSection(ImDrawList* draw, const fluid::Snapshot& snapshot,
 
   const ImVec2 topLeft = toScreen(tf, -geo.halfWidthMetres, geo.heightMetres);
   const ImVec2 bottomRight = toScreen(tf, geo.halfWidthMetres, 0.0);
-  const float padding = influencePx + 2.0f;
+  const float padding = influencePx + dp(2.0f);
   const float minX = topLeft.x - padding, maxX = bottomRight.x + padding;
   const float minY = topLeft.y - padding, maxY = bottomRight.y + padding;
   if (!(maxX > minX) || !(maxY > minY)) return;
@@ -508,7 +516,7 @@ void drawLiquidSection(ImDrawList* draw, const fluid::Snapshot& snapshot,
   // Cell size follows the particle radius so the contour stays smooth at any
   // zoom, and the node budget bounds the cost when the stage is large.
   constexpr int kMaxNodes = 24000;
-  float cell = std::clamp(radiusPx * 0.5f, 3.0f, 16.0f);
+  float cell = std::clamp(radiusPx * 0.5f, dp(3.0f), dp(16.0f));
   int nx = static_cast<int>((maxX - minX) / cell) + 2;
   int ny = static_cast<int>((maxY - minY) / cell) + 2;
   if (nx * ny > kMaxNodes) {
